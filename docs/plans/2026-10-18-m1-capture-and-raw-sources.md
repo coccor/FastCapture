@@ -129,14 +129,14 @@ Copied from `C:\Projects\Fastpad` (read-only) with their tests, then trimmed to 
 
 ### Part 6: Tray app shell
 
-- [ ] `platform/instance.rs`: per-user mutex `Local\FastCapture-<SID>`; a second tray start exits quietly (or, with arguments, forwards them).
-- [ ] `ui/app.rs`: hidden message-only window; creates the tray icon, registers hotkeys, runs the pipe server on a thread that posts `WM_APP_ADD` with a boxed request, recovers the queue and runs the orphan scan on a worker after start-up.
-- [ ] `platform/tray.rs`: icon (light and dark variants following the taskbar theme), tooltip "FastCapture: n captures queued", left click → review window, right-click menu: Capture…, Capture clipboard, Review (n), Settings, Open notebook folder, Quit. Re-adds itself on `TaskbarCreated` (Explorer restart).
-- [ ] `platform/hotkey.rs`: `RegisterHotKey` for `capture_hotkey` and `clipboard_hotkey`; failure → one tray balloon naming the key and `fastcapture.ini`.
-- [ ] **Capture clipboard** (hotkey and menu): files the clipboard as a capture with no box (text, image, or Explorer files), then a balloon "Captured from clipboard" or the error.
-- [ ] `platform/startup.rs`: keep the `Run` value in step with `start_at_sign_in` on every start.
-- [ ] Tray › Settings opens `fastcapture.ini` (created with commented defaults first); the file is re-read when the tray app next gets focus or on `WM_APP_SETTINGS_CHANGED` from a directory watch on `%AppData%\FastCapture`.
-- **Done when:** the app sits in the tray at zero CPU, survives an Explorer restart, a second start doesn't make a second icon, and Capture clipboard writes a raw source.
+- [x] `platform/instance.rs`: mutex `Local\FastCapture` (`Local\` is already per session, as FastPad's is); a second tray start exits quietly. Arguments never reach a second tray start: `add` forwards over the pipe itself.
+- [x] `ui/app.rs`: a hidden top-level tool window (not message-only: only top-level windows get `TaskbarCreated`); creates the tray icon, registers hotkeys, runs the pipe server on a thread that answers with `add::handle` and posts `WM_APP_QUEUE`, recovers the queue and runs the orphan scan on a worker after start-up. The app state lives in a thread-local, borrowed briefly per message, never while the menu's own message loop runs.
+- [x] `platform/tray.rs`: one icon drawn in code (`src/icon.rs`, also embedded in the exe by `build.rs`): a blue square with a white mark, which reads on light and dark taskbars alike, so there are no theme variants. Tooltip "FastCapture → <notebook>" and the queued and failed counts. Right-click menu: Capture…, Capture clipboard, Review (n), Settings, Open notebook folder, Quit. Re-adds itself on `TaskbarCreated`, and removes itself before the window goes. **Until Parts 7 and 8:** Capture… and Review are greyed out, and a left click opens the raw folder.
+- [x] `platform/hotkey.rs`: `RegisterHotKey` for `capture_hotkey` and `clipboard_hotkey`; failure → one tray balloon naming the key and `fastcapture.ini`, not repeated for the same key.
+- [x] **Capture clipboard** (`ui/clipboard_capture.rs`, hotkey and menu): files the clipboard as a capture with no box (Explorer files first, then an image when there's no text, then text), then a balloon "Captured from clipboard" or the error. The window title is recorded for the hotkey (when `capture_source` is on), never for the menu, where the taskbar is in front. `capture/submit.rs` files and queues; `add` uses it too.
+- [x] `platform/startup.rs`: keep the `Run` value in step with `start_at_sign_in` on every start and settings change.
+- [x] Tray › Settings opens `fastcapture.ini` (created with commented defaults first); `platform/watch.rs` watches `%AppData%\FastCapture` and the app re-reads the file on `WM_APP_SETTINGS`. There is no re-read on focus: the tray app has no focus to get.
+- **Done when:** the app sits in the tray at zero CPU, survives an Explorer restart, a second start doesn't make a second icon, and Capture clipboard writes a raw source. **Checked:** start, a second start exiting, `add` answered by the tray app over the pipe, a clean exit on `WM_CLOSE`. Capture clipboard is covered by tests through `from_clipboard` and `submit`, not by pressing the hotkey. Not checked by hand: the icon's look and an Explorer restart. **Found:** on this PC `Ctrl+Alt+Space` is already registered by another app (`ERROR_HOTKEY_ALREADY_REGISTERED`), which is spec open question 1.
 
 ### Part 7: The capture box
 

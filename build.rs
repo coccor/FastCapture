@@ -1,6 +1,10 @@
-//! Embeds the application manifest (Common Controls v6, per-monitor DPI v2, UTF-8 code page) into
-//! the FastCapture executable as Win32 resource 1 of type RT_MANIFEST. Adapted from FastPad's
-//! `build.rs`, which embeds its icon the same way.
+//! Embeds the application manifest (Common Controls v6, per-monitor DPI v2, UTF-8 code page)
+//! and the icon into the FastCapture executable, as Win32 resources 1 (RT_MANIFEST) and 1
+//! (RT_ICON group). The icon is drawn by `src/icon.rs`. Adapted from FastPad's `build.rs`.
+
+#[path = "src/icon.rs"]
+#[allow(dead_code)]
+mod icon;
 
 use std::env;
 use std::path::{Path, PathBuf};
@@ -9,6 +13,7 @@ use std::process::Command;
 fn main() {
     println!("cargo:rerun-if-changed=build.rs");
     println!("cargo:rerun-if-changed=assets/fastcapture.manifest");
+    println!("cargo:rerun-if-changed=src/icon.rs");
     println!("cargo:rerun-if-env-changed=RC");
 
     if env::var("CARGO_CFG_TARGET_OS").as_deref() != Ok("windows")
@@ -32,10 +37,17 @@ fn main() {
     let script = out_dir.join("fastcapture.rc");
     let resource = out_dir.join("fastcapture.res");
 
+    let ico = out_dir.join("fastcapture.ico");
+    std::fs::write(&ico, icon::ico(&[16, 20, 24, 32, 40, 48, 64])).expect("write fastcapture.ico");
+
     // rc.exe treats backslashes in string literals as escapes. 24 is RT_MANIFEST.
     let manifest_literal = manifest.display().to_string().replace('\\', "/");
-    std::fs::write(&script, format!("1 24 \"{manifest_literal}\"\n"))
-        .expect("write fastcapture.rc");
+    let ico_literal = ico.display().to_string().replace('\\', "/");
+    std::fs::write(
+        &script,
+        format!("1 24 \"{manifest_literal}\"\n1 ICON \"{ico_literal}\"\n"),
+    )
+    .expect("write fastcapture.rc");
 
     let rc = find_resource_compiler();
     let status = Command::new(&rc)

@@ -6,6 +6,7 @@ pub mod draft;
 pub mod file;
 pub mod model;
 pub mod raw;
+pub mod submit;
 pub mod ulid;
 
 pub use model::{Attachment, Capture, Kind};

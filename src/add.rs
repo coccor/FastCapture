@@ -3,14 +3,13 @@
 //! the tray app processes it when it next runs. `handle` is shared: the tray app answers
 //! forwarded captures with it.
 
-use crate::capture::file::{self, FileError};
-use crate::capture::{Attachment, Capture, raw, ulid};
+use crate::capture::file::FileError;
+use crate::capture::submit::submit;
+use crate::capture::{Attachment, Capture};
 use crate::config::settings::{self, SettingsFile};
 use crate::ipc::pipe::{self, SendError};
 use crate::ipc::{Reply, Request};
 use crate::launch::{AddArgs, AddText, MAX_TEXT_BYTES, too_long};
-use crate::notebook::Conventions;
-use crate::queue::{Job, Store};
 use std::io::{Read, Write};
 use std::path::PathBuf;
 
@@ -121,46 +120,13 @@ pub fn handle(request: Request, context: &Context) -> Reply {
             "No notebook is set. Run fastcapture --settings.".to_owned(),
         );
     };
-    let conventions = Conventions::load(&root);
-    for warning in &conventions.warnings {
-        crate::log::line(&format!(
-            "{} line {}: {}",
-            warning.file.display(),
-            warning.line,
-            warning.message
-        ));
-    }
     let capture = Capture {
         text,
         attachments: attachments.into_iter().map(Attachment::File).collect(),
         source_window: None,
     };
-    let capture_id = ulid::new();
-    let (date, time) = crate::platform::clock::local_now();
-    let filed = file::file_capture(&file::Request {
-        conventions: &conventions,
-        capture: &capture,
-        capture_id: &capture_id,
-        date,
-        time,
-        allow_large: false,
-    });
-    match filed {
-        Ok(filed) => {
-            let job = Job::queued(
-                &capture_id,
-                root.clone(),
-                filed.raw.clone(),
-                raw::captured_stamp(date, time),
-            );
-            // A job that can't be written is found again by the orphan scan.
-            if let Some(queue) = &context.queue
-                && let Err(error) = Store::new(queue.clone()).put(&job)
-            {
-                crate::log::line(&format!("queue: {error}"));
-            }
-            Reply::Filed(root.join(filed.raw))
-        }
+    match submit(&root, &capture, context.queue.as_deref(), false) {
+        Ok(raw) => Reply::Filed(raw),
         Err(error @ FileError::TooLarge { .. }) => failed(2, format!("{error}.")),
         Err(FileError::Failed(message)) => failed(1, message),
     }
@@ -169,7 +135,8 @@ pub fn handle(request: Request, context: &Context) -> Reply {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::queue::State;
+    use crate::capture::file;
+    use crate::queue::{State, Store};
     use std::fs;
 
     struct Temp(PathBuf);

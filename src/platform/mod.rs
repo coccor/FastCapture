@@ -1,11 +1,19 @@
 //! Thin wrappers over Windows: atomic saves, the local clock, random bytes. Most are copied or
 //! adapted from FastPad, each naming its source on its first line.
 
+pub mod clipboard;
 pub mod clock;
 pub mod console;
+pub mod hotkey;
+pub mod instance;
+pub mod png;
 pub mod random;
 pub mod saver;
 pub mod shell;
+pub mod startup;
+pub mod tray;
+pub mod watch;
+pub mod window;
 
 use crate::Error;
 use std::os::windows::ffi::OsStrExt;

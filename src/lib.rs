@@ -6,6 +6,7 @@ pub mod add;
 pub mod capture;
 pub mod config;
 pub mod error;
+pub mod icon;
 pub mod ipc;
 pub mod launch;
 pub mod log;
@@ -13,6 +14,7 @@ pub mod notebook;
 pub mod paths;
 pub mod platform;
 pub mod queue;
+pub mod ui;
 
 pub use error::{Error, Result};
 
@@ -36,14 +38,7 @@ pub fn run() -> i32 {
         Launch::Settings => open_settings(),
         Launch::Version => print(&format!("FastCapture {}", env!("CARGO_PKG_VERSION"))),
         Launch::Help => print(launch::USAGE),
-        // The tray app arrives in M1 Part 6.
-        Launch::Tray => {
-            log::line(&format!(
-                "FastCapture {} started",
-                env!("CARGO_PKG_VERSION")
-            ));
-            0
-        }
+        Launch::Tray => ui::app::run(),
     }
 }
 
