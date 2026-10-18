@@ -98,10 +98,10 @@ src/
 
 ### Part 1: HTTP and secrets
 
-- [ ] `net/http.rs`: `Request { method, url, headers, body, timeout }` → `Response { status, headers, body }` over WinHTTP (`WinHttpOpen` with `WINHTTP_ACCESS_TYPE_AUTOMATIC_PROXY`, `WinHttpConnect`, `WinHttpOpenRequest` with `WINHTTP_FLAG_SECURE` for https, send, receive, read headers and body). Connect, send and receive timeouts; one session shared by the worker. Errors say whether they may pass (`ERROR_WINHTTP_TIMEOUT`, `CANNOT_CONNECT`, `NAME_NOT_RESOLVED`, `CONNECTION_ERROR`) or not (bad URL, TLS failure).
-- [ ] `net/test_server.rs` (tests only): binds `127.0.0.1:0`, answers each connection with the next scripted response (status, headers, body, optional delay) and records the request it got.
-- [ ] `secrets.rs`: `CredWriteW` / `CredReadW` / `CredDeleteW` with `CRED_TYPE_GENERIC`, target `FastCapture/<backend>`, persisted per user. The key is never logged, never in an error message, never in a file.
-- **Tests:** a GET and a POST against the test server (headers, body, status); a timeout; a refused connection is "may pass"; a secret round trip under a test target name, then deleted.
+- [x] `net/http.rs`: `Request { method, url, headers, body, timeout }` → `Response { status, headers, body }` over WinHTTP (`WinHttpOpen` with `WINHTTP_ACCESS_TYPE_AUTOMATIC_PROXY`, `WinHttpConnect`, `WinHttpOpenRequest` with `WINHTTP_FLAG_SECURE` for https, send, receive, read headers and body). Connect, send and receive timeouts, plus `WINHTTP_OPTION_RECEIVE_RESPONSE_TIMEOUT`, which governs the wait for the response headers (90 s by default) and isn't covered by `WinHttpSetTimeouts`. WinHTTP waits about 4 s at least, whatever is asked: irrelevant at the real 60 s and 5 min, so the timeout test uses an 8 s server delay. Errors say whether they may pass (`ERROR_WINHTTP_TIMEOUT`, `CANNOT_CONNECT`, `NAME_NOT_RESOLVED`, `CONNECTION_ERROR`) or not (bad URL, TLS failure, a response over 32 MB).
+- [x] `net/test_server.rs` (tests only): binds `127.0.0.1:0`, answers each connection with the next scripted response (status, headers, body, optional delay) and records the request it got.
+- [x] `secrets.rs`: `CredWriteW` / `CredReadW` / `CredDeleteW` with `CRED_TYPE_GENERIC`, target `FastCapture/<backend>`, persisted for this user on this PC (`CRED_PERSIST_LOCAL_MACHINE`, so a key doesn't roam to other PCs). The key is never logged, never in an error message, never in a file.
+- **Tests:** a GET and a POST against the test server (headers, body, status); error statuses come back as responses; a timeout; a refused connection is "may pass"; URL splitting; a secret round trip under a test target name, then deleted.
 
 ### Part 2: The note (pure + disk)
 

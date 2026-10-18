@@ -9,10 +9,12 @@ pub mod icon;
 pub mod ipc;
 pub mod launch;
 pub mod log;
+pub mod net;
 pub mod notebook;
 pub mod paths;
 pub mod platform;
 pub mod queue;
+pub mod secrets;
 pub mod ui;
 
 pub use error::{Error, Result};
