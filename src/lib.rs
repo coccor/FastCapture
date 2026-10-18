@@ -8,6 +8,7 @@ pub mod log;
 pub mod notebook;
 pub mod paths;
 pub mod platform;
+pub mod queue;
 
 pub use error::{Error, Result};
 

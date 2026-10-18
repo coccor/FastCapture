@@ -112,9 +112,9 @@ Copied from `C:\Projects\Fastpad` (read-only) with their tests, then trimmed to 
 
 ### Part 4: The queue
 
-- [ ] `queue/job.rs`: `Job` with `state: Queued | Working | Done | Failed`, `attempts`, `last_error`, `created`, serialized with `serde_json`.
-- [ ] `queue/store.rs`: one file per job, written atomically; `enqueue`, `list`, `set_state`, `remove`; `recover()` on start turns `Working` back into `Queued`; `orphans(root, conventions)` finds raw sources in `raw/` whose `capture_id` has no job (parsed with the front matter reader) and enqueues them.
-- [ ] No runner yet: M2 adds the worker that takes jobs. M1 only writes and lists them.
+- [x] `queue/job.rs`: `Job` with `state: Queued | Working | Done | Failed`, `attempts`, `last_error`, `created`, serialized with `serde_json`. The JSON is converted by hand through `serde_json::Value` (versioned), so no derive macros are added.
+- [x] `queue/store.rs`: one file per job, written atomically; `put`, `get`, `list`, `set_state`, `remove`; `recover()` on start turns `Working` back into `Queued`; `enqueue_orphans(conventions)` finds raw sources in `raw/` whose `capture_id` has no job (parsed with the front matter reader) and enqueues them. Capture ids must be 1–64 letters or digits before they name a file.
+- [x] No runner yet: M2 adds the worker that takes jobs. M1 only writes and lists them.
 - **Tests:** round trip; recovery; a corrupt job file is moved aside as `.bad` and logged, not fatal; orphan scan finds a raw source written while the app was closed and ignores ones with jobs.
 
 ### Part 5: Settings, command line and IPC

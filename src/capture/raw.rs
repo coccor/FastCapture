@@ -94,6 +94,16 @@ pub struct RawSource<'a> {
     pub source_window: Option<&'a str>,
 }
 
+/// `YYYY-MM-DDTHH:MM`, the `captured:` value.
+pub fn captured_stamp(date: Date, time: Time) -> String {
+    format!(
+        "{}T{:02}:{:02}",
+        dates::format(date, "YYYY-MM-DD"),
+        time.hour,
+        time.minute
+    )
+}
+
 /// A YAML double-quoted string.
 fn quoted(value: &str) -> String {
     let escaped = value
@@ -123,10 +133,13 @@ fn quoted(value: &str) -> String {
 pub fn raw_text(source: &RawSource<'_>) -> String {
     let kinds: Vec<&str> = source.kinds.iter().map(|kind| kind.key()).collect();
     let mut text = format!(
-        "---\ntype: raw\ncaptured: {}T{:02}:{:02}\nkind: [{}]\ncapture_id: {}\n",
-        dates::format(source.date, "YYYY-MM-DD"),
-        source.time.hour,
-        source.time.minute,
+        "---
+type: raw
+captured: {}
+kind: [{}]
+capture_id: {}
+",
+        captured_stamp(source.date, source.time),
         kinds.join(", "),
         source.capture_id,
     );
