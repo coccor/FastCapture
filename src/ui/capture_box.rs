@@ -69,6 +69,9 @@ const FOOTER_AT_96_DPI: i32 = 30;
 /// Posted to the box when the capture hotkey arrives while it is open: it comes to the front,
 /// or back from a snip without an image.
 pub const WM_CAPTURE_AGAIN: u32 = WM_APP + 0x60;
+/// A pasted bitmap finished encoding on its worker thread: a boxed `Result<Vec<u8>, String>` in
+/// lparam.
+const WM_IMAGE_READY: u32 = WM_APP + 0x61;
 const SNIP_TIMER: usize = 0x4350_534E;
 const SNIP_WAIT_MS: u32 = 30_000;
 const EDIT_HOOK: usize = 0x4350_4544;
@@ -279,9 +282,14 @@ struct CaptureBox {
     snipping: bool,
     /// The WM_CHAR of a Ctrl+Shift+V that attached an image must not paste text too.
     swallow_paste_char: bool,
+    /// Pasted bitmaps still being encoded to PNG on worker threads.
+    preparing: usize,
+    /// Ctrl+Enter came while images were being prepared: file once they are ready.
+    submit_when_ready: bool,
 }
 
 const SNIP_LABEL: &str = "+ Snip (Ctrl+Shift+S)";
+const PREPARING_LABEL: &str = "Preparing image\u{2026}";
 
 fn wide(text: &str) -> Vec<u16> {
     text.encode_utf16().chain(std::iter::once(0)).collect()
@@ -410,6 +418,8 @@ pub fn open(options: Open) -> Option<HWND> {
         layout: Layout::default(),
         snipping: false,
         swallow_paste_char: false,
+        preparing: 0,
+        submit_when_ready: false,
     });
     unsafe { SetWindowLongPtrW(hwnd, GWLP_USERDATA, Box::into_raw(state) as isize) };
     set_edit_text(edit, &restored.text);
@@ -521,6 +531,10 @@ fn relayout(hwnd: HWND) {
         .iter()
         .enumerate()
         .map(|(index, item)| text_width(hwnd, capture.body_font, &chip_label(item, index)))
+        .chain(
+            std::iter::repeat_n(PREPARING_LABEL, capture.preparing)
+                .map(|label| text_width(hwnd, capture.body_font, label)),
+        )
         .collect();
     let snip = text_width(hwnd, capture.body_font, SNIP_LABEL) + scale(8, capture.dpi);
     capture.layout = layout(capture.dpi, &widths, capture.error.is_some(), snip);
@@ -669,13 +683,54 @@ fn paste(hwnd: HWND, force_image: bool) -> bool {
             true
         }
         Paste::Image => {
-            match clipboard::image_png(hwnd) {
-                Some(Ok(png)) => attach(hwnd, Attachment::Png(png)),
-                Some(Err(error)) => set_error(hwnd, Some(error)),
+            match clipboard::image(hwnd) {
+                Some(clipboard::ClipboardImage::Png(png)) => attach(hwnd, Attachment::Png(png)),
+                Some(clipboard::ClipboardImage::Dib(dib)) => prepare_image(hwnd, dib),
                 None => {}
             }
             true
         }
+    }
+}
+
+/// Encodes a pasted bitmap on a worker thread, so a 4K screenshot doesn't freeze the box; a
+/// "Preparing image…" chip stands in for it until `WM_IMAGE_READY`.
+fn prepare_image(hwnd: HWND, dib: Vec<u8>) {
+    if let Some(capture) = state(hwnd) {
+        capture.preparing += 1;
+    }
+    relayout(hwnd);
+    let window = hwnd as usize;
+    std::thread::spawn(move || {
+        let result = Box::new(crate::platform::clipboard::encode_dib(&dib));
+        let payload = Box::into_raw(result);
+        let posted = unsafe {
+            windows_sys::Win32::UI::WindowsAndMessaging::PostMessageW(
+                window as HWND,
+                WM_IMAGE_READY,
+                0,
+                payload as isize,
+            )
+        };
+        // The box closed meanwhile: the image goes with it.
+        if posted == 0 {
+            drop(unsafe { Box::from_raw(payload) });
+        }
+    });
+}
+
+fn image_ready(hwnd: HWND, result: Result<Vec<u8>, String>) {
+    if let Some(capture) = state(hwnd) {
+        capture.preparing = capture.preparing.saturating_sub(1);
+    }
+    match result {
+        Ok(png) => attach(hwnd, Attachment::Png(png)),
+        Err(error) => set_error(hwnd, Some(error)),
+    }
+    let file_now =
+        state(hwnd).is_some_and(|capture| capture.preparing == 0 && capture.submit_when_ready);
+    if file_now {
+        submit(hwnd);
     }
 }
 
@@ -769,6 +824,14 @@ fn submit(hwnd: HWND) {
     let Some(capture) = state(hwnd) else {
         return;
     };
+    if capture.preparing > 0 {
+        capture.submit_when_ready = true;
+        set_error(
+            hwnd,
+            Some("Saving as soon as the image is ready\u{2026}".to_owned()),
+        );
+        return;
+    }
     let submitted = current_capture(capture);
     if submitted.is_empty() {
         close(hwnd);
@@ -973,18 +1036,30 @@ fn paint(hwnd: HWND) {
         );
         let remove = scale(CHIP_REMOVE_AT_96_DPI, capture.dpi);
         unsafe { SetTextColor(dc, colors.text) };
-        if let Some(item) = capture.items.get(index) {
+        let Some(item) = capture.items.get(index) else {
+            // An image still being prepared: no remove button yet.
+            unsafe { SetTextColor(dc, colors.muted) };
             draw_text(
                 dc,
-                &chip_label(item, index),
+                PREPARING_LABEL,
                 &RECT {
                     left: chip.left + pad / 2,
-                    right: chip.right - remove,
                     ..*chip
                 },
                 DT_LEFT | DT_END_ELLIPSIS,
             );
-        }
+            continue;
+        };
+        draw_text(
+            dc,
+            &chip_label(item, index),
+            &RECT {
+                left: chip.left + pad / 2,
+                right: chip.right - remove,
+                ..*chip
+            },
+            DT_LEFT | DT_END_ELLIPSIS,
+        );
         unsafe { SetTextColor(dc, colors.muted) };
         draw_text(
             dc,
@@ -1165,6 +1240,13 @@ unsafe extern "system" fn box_proc(
             dropped(hwnd, wparam as HDROP);
             0
         }
+        WM_IMAGE_READY => {
+            if lparam != 0 {
+                let result = unsafe { Box::from_raw(lparam as *mut Result<Vec<u8>, String>) };
+                image_ready(hwnd, *result);
+            }
+            0
+        }
         WM_CLIPBOARDUPDATE => {
             if state(hwnd).is_some_and(|capture| capture.snipping)
                 && crate::platform::clipboard::has_image()
@@ -1339,7 +1421,7 @@ mod tests {
     }
 
     /// What a test sink filed, and into which notebook.
-    type Filed = Rc<RefCell<Vec<(Capture, PathBuf)>>>;
+    pub(super) type Filed = Rc<RefCell<Vec<(Capture, PathBuf)>>>;
 
     /// Files into a list, or fails with `fail` when set.
     struct Recorder {
@@ -1371,7 +1453,7 @@ mod tests {
         dir
     }
 
-    fn open_box(draft_dir: &Path, fail: Option<&str>) -> (HWND, Filed) {
+    pub(super) fn open_box(draft_dir: &Path, fail: Option<&str>) -> (HWND, Filed) {
         let filed = Rc::new(RefCell::new(Vec::new()));
         let hwnd = open(Open {
             sink: Box::new(Recorder {
@@ -1474,6 +1556,71 @@ mod tests {
         unsafe { SendMessageW(hwnd, WM_CAPTURE_AGAIN, 0, 0) };
         assert!(!state(hwnd).unwrap().snipping);
         unsafe { DestroyWindow(hwnd) };
+        draft::clear(&drafts);
+    }
+}
+
+#[cfg(test)]
+mod preparing_tests {
+    use super::tests::open_box;
+    use super::*;
+    use crate::platform::clipboard::{self, tests::Backup};
+
+    /// A 2 × 1 32-bit bottom-up DIB, as the PrintScreen key puts on the clipboard.
+    fn dib() -> Vec<u8> {
+        let mut bytes = Vec::new();
+        for value in [40u32, 2, 1] {
+            bytes.extend_from_slice(&value.to_le_bytes());
+        }
+        bytes.extend_from_slice(&1u16.to_le_bytes());
+        bytes.extend_from_slice(&32u16.to_le_bytes());
+        bytes.extend_from_slice(&[0; 24]);
+        bytes.extend_from_slice(&[255, 0, 0, 255, 0, 255, 0, 255]);
+        bytes
+    }
+
+    /// Runs this thread's messages until `done` or two seconds pass.
+    fn pump_until(done: impl Fn() -> bool) {
+        use windows_sys::Win32::UI::WindowsAndMessaging::{PM_REMOVE, PeekMessageW};
+        let until = std::time::Instant::now() + std::time::Duration::from_secs(2);
+        while !done() && std::time::Instant::now() < until {
+            let mut message: MSG = unsafe { std::mem::zeroed() };
+            while unsafe { PeekMessageW(&mut message, std::ptr::null_mut(), 0, 0, PM_REMOVE) } != 0
+            {
+                unsafe {
+                    windows_sys::Win32::UI::WindowsAndMessaging::TranslateMessage(&message);
+                    windows_sys::Win32::UI::WindowsAndMessaging::DispatchMessageW(&message);
+                }
+            }
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+    }
+
+    use windows_sys::Win32::UI::WindowsAndMessaging::MSG;
+
+    #[test]
+    fn a_pasted_bitmap_is_encoded_off_the_ui_thread_and_ctrl_enter_waits_for_it() {
+        let _backup = Backup::take();
+        let format = u32::from(windows_sys::Win32::System::Ole::CF_DIB);
+        clipboard::set(std::ptr::null_mut(), format, &dib()).unwrap();
+        let drafts =
+            std::env::temp_dir().join(format!("fastcapture-box-preparing-{}", std::process::id()));
+        let (hwnd, filed) = open_box(&drafts, None);
+        assert!(
+            paste(hwnd, false),
+            "a lone image is attached, not pasted as text"
+        );
+        assert_eq!(state(hwnd).unwrap().preparing, 1);
+        assert!(state(hwnd).unwrap().items.is_empty());
+        submit(hwnd);
+        assert!(filed.borrow().is_empty(), "waits for the image");
+        pump_until(|| !filed.borrow().is_empty());
+        let filed = filed.borrow();
+        assert_eq!(filed.len(), 1);
+        match &filed[0].0.attachments[..] {
+            [Attachment::Png(png)] => assert!(png.starts_with(b"\x89PNG")),
+            other => panic!("{other:?}"),
+        }
         draft::clear(&drafts);
     }
 }

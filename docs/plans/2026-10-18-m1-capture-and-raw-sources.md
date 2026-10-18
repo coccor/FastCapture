@@ -161,10 +161,10 @@ Copied from `C:\Projects\Fastpad` (read-only) with their tests, then trimmed to 
 
 ### Part 9: Polish, docs and a release build
 
-- [ ] Performance checks against spec §14: hotkey to box visible under 100 ms, Ctrl+Enter to closed under 150 ms with a 4K screenshot (PNG encoded on a worker after the draft is safe), idle memory under 30 MB. A small `--bench` hidden flag or an integration test that times them.
-- [ ] README: install, hotkeys, `fastcapture add`, `fastcapture.ini` keys, what M1 does and doesn't do yet.
-- [ ] Spec: add a "§19 Implementation notes" section with decisions made while building M1, as FastPad does.
-- [ ] A release zip (x64 and ARM64) from CI. An installer (and its "start at sign-in" task) is left for after M2.
+- [x] Performance checks against spec §14, with `examples/bench.rs` (release build) rather than a hidden flag: hotkey to box visible 61 ms (budget 100), Ctrl+Enter with a 4K screenshot 34 ms (150), idle tray app 11.6 MB working set and no CPU (30 MB). **Found and fixed:** a pasted 4K *bitmap* took about 1.2 s to encode on the UI thread. It is now encoded on a worker thread behind a "Preparing image…" chip, and Ctrl+Enter files once it's ready. Images on the clipboard as `PNG` need no encoding.
+- [x] README: hotkeys, the capture box's keys, `fastcapture add`, the review window, where files go, `fastcapture.ini` keys, what M1 does and doesn't do yet, building.
+- [x] Spec: a "§19 Implementation notes" section with decisions made while building M1, as FastPad does.
+- [x] A release zip (x64 and ARM64) with a SHA-256 file, from CI's `package` job. Checked locally for x64; CI hasn't run because the repo has no GitHub remote yet. An installer (and its "start at sign-in" task) is left for after M2.
 
 ## Testing approach
 

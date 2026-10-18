@@ -473,3 +473,21 @@ Six milestones. Each is usable on its own.
 4. **Topic note entry format.** A dated link line (§10.3) is the simplest. Some users will want the summary under a heading, or the tasks copied over.
 5. **Sharing the capture folder with FastPad.** If a notebook's `capture_folder` is also where FastPad writes one-file quick captures, the two kinds of file share a folder. They're told apart by `type: capture`, but a separate `notes_folder` key in `capture.ini` may be clearer.
 6. **Picking candidate notes by keyword only** may miss related notes that use different words. If it does, a small local embedding model in both modes could be added, sending nothing extra in Cloud mode.
+
+## 19. Implementation notes
+
+Decisions made while building M1 (plan `docs/plans/2026-10-18-m1-capture-and-raw-sources.md`), not anticipated by the sections above.
+
+- **The default capture hotkey is Ctrl+Alt+C** (§5.1, §18.1), after Ctrl+Alt+Space and Win+Shift+C were held by other apps on the development PC.
+- **The raw source keeps URL lines in its body** as you typed them, and lists them again under `urls:` in front matter, each quoted. `captured` has no seconds, as in FastPad's captures.
+- **A capture with only links is named after the first link's host** (`2026-10-19 1030 example.com.md`).
+- **Copied FastPad code** (dates, front matter reading, file name cleaning, relative link targets, `notebook.ini`, Obsidian's attachment folder, the atomic saver, clipboard and PNG code, pipe security, the capture box) names its source file on its first line, so the two can be compared until §18.2 is decided.
+- **FastPad's `folders.ini` is in `%LocalAppData%\FastPad`**, where FastCapture looks for the first-run notebook.
+- **Queue jobs are converted to JSON by hand** (versioned, through `serde_json::Value`), so FastCapture has no derive macros. A capture id must be 1–64 letters or digits before it names a job file; a job file that can't be read is renamed `.bad` and logged. Jobs whose raw source is gone are removed when the review window loads.
+- **`fastcapture add` talks to the tray app over a per-session duplex pipe**, `\.\pipe\FastCapture-<session>`, like FastPad's. The server is the pipe's only instance; the client checks the server's user and session before sending anything, and files the capture itself when no tray app is running. Frames carry UTF-16, so any Windows path survives.
+- **The tray icon is drawn in code** (`src/icon.rs`), and the same pixels are embedded in the executable as its icon. One design reads on light and dark taskbars, so there are no theme variants.
+- **There is no Settings window in M1.** Tray › Settings opens `fastcapture.ini`, created with every key commented out; a watch on its folder applies changes on save. `review_*`, `mode*` and `backend*` keys are reserved and never warned about.
+- **The capture box differs from FastPad's** in that files dropped on it arrive through `WM_DROPFILES` rather than an OLE drop target, the 20 MB question is a Yes/No message box, and its colors follow the Windows app light/dark setting from a small built-in palette (high contrast isn't handled yet). Its chips are drawn, as in FastPad, not child controls, so a screen reader doesn't announce them one by one.
+- **A pasted bitmap is encoded to PNG on a worker thread.** Encoding a 4K screenshot can take over a second, so a "Preparing image…" chip stands in for it, and Ctrl+Enter files once it is ready. Images on the clipboard as `PNG` (browsers, Snipping Tool) need no encoding.
+- **The review window recycles with `SHFileOperationW`** (`FOF_ALLOWUNDO`), which needs no COM. **Del** recycles the raw source and the attachments no other raw source links to; in M1 there is no note to discard first. FastPad is found through its `App Paths` entry only. The list's column header stays light in dark mode.
+- **Measured on the development PC** (release build, `examples/bench.rs`): hotkey to box visible 61 ms (§14: 100 ms); Ctrl+Enter with a 4K screenshot 34 ms (150 ms); a 4K bitmap to PNG 1.2 s on the worker, with noise added so it compresses worse than a real screenshot; the idle tray app 11.6 MB working set, 1.8 MB private, no CPU over 10 s (30 MB).

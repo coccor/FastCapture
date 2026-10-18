@@ -122,26 +122,45 @@ pub(crate) fn dropped_paths(drop: windows_sys::Win32::UI::Shell::HDROP) -> Vec<P
     paths
 }
 
-/// The clipboard's image as PNG bytes: the `PNG` format as it is, else a `CF_DIBV5` or `CF_DIB`
-/// bitmap encoded with WIC. `None` when it holds no image.
-pub fn image_png(owner: HWND) -> Option<Result<Vec<u8>, String>> {
+/// An image read from the clipboard, before any encoding.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum ClipboardImage {
+    /// The registered `PNG` format, as it is (browsers, Snipping Tool).
+    Png(Vec<u8>),
+    /// A `CF_DIBV5` or `CF_DIB` block (the PrintScreen key, many apps), still to be encoded.
+    Dib(Vec<u8>),
+}
+
+/// The clipboard's image as it is, or `None` when it holds none. Copying it out is quick;
+/// encoding a bitmap is not, so that is left to `encode_dib`, off the UI thread.
+pub fn image(owner: HWND) -> Option<ClipboardImage> {
     if !has_image() || !open(owner) {
         return None;
     }
     let png = read_global(png_format()).filter(|bytes| bytes.starts_with(b"\x89PNG"));
     let dib = png
         .is_none()
-        .then(|| read_global(u32::from(CF_DIBV5)).or_else(|| read_global(u32::from(CF_DIB))));
+        .then(|| read_global(u32::from(CF_DIBV5)).or_else(|| read_global(u32::from(CF_DIB))))
+        .flatten();
     unsafe { CloseClipboard() };
-    if let Some(png) = png {
-        return Some(Ok(png));
-    }
-    let pixels = dib
-        .flatten()
-        .and_then(|dib| super::png::dib_to_pixels(&dib));
-    Some(match pixels {
+    png.map(ClipboardImage::Png)
+        .or(dib.map(ClipboardImage::Dib))
+}
+
+/// A clipboard bitmap as PNG bytes, encoded with WIC.
+pub fn encode_dib(dib: &[u8]) -> Result<Vec<u8>, String> {
+    match super::png::dib_to_pixels(dib) {
         Some(pixels) => super::png::encode_png(&pixels),
         None => Err("FastCapture can't read this kind of image from the clipboard.".to_owned()),
+    }
+}
+
+/// The clipboard's image as PNG bytes: the `PNG` format as it is, else a bitmap encoded here.
+/// `None` when it holds no image.
+pub fn image_png(owner: HWND) -> Option<Result<Vec<u8>, String>> {
+    Some(match image(owner)? {
+        ClipboardImage::Png(png) => Ok(png),
+        ClipboardImage::Dib(dib) => encode_dib(&dib),
     })
 }
 

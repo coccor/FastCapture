@@ -22,14 +22,37 @@ jobs:
         run: cargo clippy --locked --all-targets --all-features -- -D warnings
       - name: Unit and Windows integration tests (serial)
         run: cargo test --locked -- --test-threads=1
-      - name: Release build (x64)
-        run: cargo build --locked --release
 
-  arm64:
+  package:
+    needs: windows
     runs-on: windows-latest
+    strategy:
+      matrix:
+        include:
+          - target: x86_64-pc-windows-msvc
+            arch: x64
+          - target: aarch64-pc-windows-msvc
+            arch: arm64
     steps:
       - uses: actions/checkout@v4
-      - name: Install the ARM64 target
-        run: rustup target add aarch64-pc-windows-msvc
-      - name: Release build (ARM64, build only)
-        run: cargo build --locked --release --target aarch64-pc-windows-msvc
+      - name: Install the target
+        run: rustup target add ${{ matrix.target }}
+      - name: Release build
+        run: cargo build --locked --release --target ${{ matrix.target }}
+      - name: Portable zip
+        shell: pwsh
+        run: |
+          $version = (cargo metadata --no-deps --format-version 1 | ConvertFrom-Json).packages[0].version
+          $name = "FastCapture-$version-windows-${{ matrix.arch }}"
+          $stage = Join-Path dist $name
+          New-Item -ItemType Directory -Force $stage | Out-Null
+          Copy-Item "target/${{ matrix.target }}/release/fastcapture.exe", README.md, LICENSE $stage
+          Compress-Archive -Path "$stage/*" -DestinationPath "dist/$name.zip" -Force
+          (Get-FileHash "dist/$name.zip" -Algorithm SHA256).Hash.ToLower() + "  $name.zip" | Set-Content "dist/$name.sha256"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: FastCapture-windows-${{ matrix.arch }}
+          path: |
+            dist/*.zip
+            dist/*.sha256
+          if-no-files-found: error
