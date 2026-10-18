@@ -103,12 +103,12 @@ Copied from `C:\Projects\Fastpad` (read-only) with their tests, then trimmed to 
 
 ### Part 3: Captures on disk (pure + disk, no window)
 
-- [ ] `capture/model.rs`, `capture/detect.rs`: a line that is only an `http(s)://` URL is a link; several are several links; a URL inside a sentence stays text. Kinds: text, link, screenshot (pasted or snipped image), image (dropped image file), file.
-- [ ] `capture/ulid.rs`: 48-bit ms time + 80 random bits (`BCryptGenRandom`), Crockford base32, monotonic within a process.
-- [ ] `capture/raw.rs`: raw file name `YYYY-MM-DD HHmm <first words>.md` (`capture` when there's no text, the first URL's host when there are only links); raw source text as in spec §6.1, with `type: raw`, `captured`, `kind`, `capture_id`, `urls` (when any), `source_window` (when recorded, quoted and escaped), then your text, the URL lines and one link line per attachment.
-- [ ] `capture/file.rs`: `file_capture(&Capture, &Conventions, now) -> Result<Filed, String>`: copies attachments into the attachments folder (20 MB check returned as `NeedsConfirm` for the box, refused for `add`), then writes the raw source with `save_atomic_new` (never overwrites, ` 2`, ` 3`… on a clash). Any failure removes the files already written.
-- [ ] `capture/draft.rs`: save, load and clear the box draft (text plus pasted images as PNGs plus dropped paths).
-- **Tests:** detection examples; raw names (text, links only, empty); raw source text for each kind, CRLF-free LF output, escaping in `source_window`; links relative to `raw/` (`../attachments/…`) and with Obsidian's `./` setting; a read-only attachments folder leaves nothing behind; a name clash; draft round trip.
+- [x] `capture/model.rs`, `capture/detect.rs`: a line that is only an `http(s)://` URL is a link; several are several links; a URL inside a sentence stays text. Kinds: text, link, screenshot (pasted or snipped image), image (dropped image file), file.
+- [x] `capture/ulid.rs`: 48-bit ms time + 80 random bits (`BCryptGenRandom`, in `platform/random.rs`), Crockford base32, monotonic within a process.
+- [x] `capture/raw.rs`: raw file name `YYYY-MM-DD HHmm <first words>.md` (`capture` when there's no text, the first URL's host when there are only links); raw source text as in spec §6.1, with `type: raw`, `captured`, `kind`, `capture_id`, `urls` (when any), `source_window` (when recorded, quoted and escaped), then your text (URL lines included) and one link line per attachment.
+- [x] `capture/file.rs`: `file_capture(&Request) -> Result<Filed, FileError>`, where the request carries the conventions, the capture, its id, the time and `allow_large`. `FileError::TooLarge` (checked before anything is written) lets the box ask and `add` refuse. Attachments are copied first, then the raw source is written with `save_atomic_new` (never overwrites, ` 2`, ` 3`… on a clash). Any failure removes the files already written. `platform/saver.rs` and `platform/clock.rs` are copied from FastPad here.
+- [x] `capture/draft.rs`: save, load and clear the box draft (text plus pasted images as PNGs plus dropped paths).
+- **Tests:** detection examples; raw names (text, links only, empty); raw source text for each kind, CRLF-free LF output, escaping in `source_window`; links relative to `raw/` (`../attachments/…`) and with Obsidian's `./` setting; a missing attachment and an unwritable raw folder leave nothing behind; a name clash; draft round trip. FastPad's `encoding` module is not needed until M3 reads captured text files, so it isn't copied yet.
 
 ### Part 4: The queue
 

@@ -2,10 +2,12 @@
 //! notebook as raw sources, and turns them into Markdown notes
 //! (`docs/specs/2026-10-18-fastcapture-design.md`).
 
+pub mod capture;
 pub mod error;
 pub mod log;
 pub mod notebook;
 pub mod paths;
+pub mod platform;
 
 pub use error::{Error, Result};
 

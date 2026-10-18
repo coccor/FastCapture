@@ -8,6 +8,12 @@ build = "build.rs"
 
 [dependencies]
 serde_json = "=1.0.151"
+windows-sys = { version = "=0.61.2", features = [
+    "Win32_Foundation",
+    "Win32_Security_Cryptography",
+    "Win32_Storage_FileSystem",
+    "Win32_System_SystemInformation",
+] }
 
 [profile.release]
 opt-level = 3
