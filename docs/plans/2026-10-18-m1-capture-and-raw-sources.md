@@ -73,7 +73,7 @@ Copied from `C:\Projects\Fastpad` (read-only) with their tests, then trimmed to 
 
 ### Dependencies
 
-`windows` / `windows-sys` (pinned to FastPad's versions, `=0.62.2` / `=0.61.2`, with only the features used), `serde` + `serde_json` (queue jobs), `pulldown-cmark` `=0.13.4` (front matter options, the review preview in M2). No others in M1. `cargo deny`-style review of the lock file in Part 1.
+`windows` / `windows-sys` (pinned to FastPad's versions, `=0.62.2` / `=0.61.2`, with only the features used), `serde` + `serde_json` (queue jobs), `pulldown-cmark` `=0.13.4` (front matter options, the review preview in M2). No others in M1. Each part adds only the dependencies it uses; Part 1 has none.
 
 ## Deliberate scope choices for M1
 
@@ -87,12 +87,12 @@ Copied from `C:\Projects\Fastpad` (read-only) with their tests, then trimmed to 
 
 ### Part 1: Project skeleton
 
-- [ ] `cargo init --lib` plus `src/main.rs`; edition 2024; `rust-toolchain.toml` pinned to the installed stable (1.99); `[profile.release]` with `lto = "thin"`, `panic = "abort"`, `strip = true`.
-- [ ] `#![windows_subsystem = "windows"]` in `main.rs`; an application manifest (per-monitor DPI v2, Common Controls v6, UTF-8 code page) embedded through a `build.rs` with a `.rc` file.
-- [ ] `error.rs`; a diagnostic log in `%LocalAppData%\FastCapture\log\` that never receives capture text.
-- [ ] `.gitignore` (`/target`), `README.md` (what it is, build, the spec link), MIT `LICENSE` to match FastPad.
-- [ ] GitHub Actions workflow: `windows-latest`, fmt, clippy, test, release build for x64 and ARM64 (`aarch64-pc-windows-msvc`, build only).
-- **Done when:** `cargo run` starts and exits cleanly, CI is green.
+- [x] `cargo init --lib` plus `src/main.rs`; edition 2024; `rust-toolchain.toml` on the stable channel, as FastPad has it; `[profile.release]` with `lto = "thin"`, `panic = "abort"`, `strip = true`.
+- [x] `#![windows_subsystem = "windows"]` in `main.rs`; an application manifest (per-monitor DPI v2, Common Controls v6, UTF-8 code page) embedded as `RT_MANIFEST` by a `build.rs` that runs `rc.exe`, adapted from FastPad's icon script.
+- [x] `error.rs`; a diagnostic log in `%LocalAppData%\FastCapture\log\` that never receives capture text.
+- [x] `.gitignore` (`/target`), `README.md` (what it is, build, the spec link), MIT `LICENSE` to match FastPad.
+- [x] GitHub Actions workflow: `windows-latest`, fmt, clippy, test, release build for x64 and ARM64 (`aarch64-pc-windows-msvc`, build only).
+- **Done when:** `cargo run` starts and exits cleanly, CI is green. (Local run verified; CI runs once the repo has a GitHub remote.)
 
 ### Part 2: Notebook conventions (pure)
 
