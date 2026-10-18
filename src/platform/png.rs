@@ -15,10 +15,10 @@ use windows::Win32::System::Com::{
 };
 
 /// COM for this thread while it lives, when this call started it.
-struct ComScope(bool);
+pub(crate) struct ComScope(bool);
 
 impl ComScope {
-    fn enter() -> Self {
+    pub(crate) fn enter() -> Self {
         Self(unsafe { CoInitializeEx(None, COINIT_MULTITHREADED) }.is_ok())
     }
 }

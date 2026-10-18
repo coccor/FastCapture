@@ -9,6 +9,7 @@ pub mod icon;
 pub mod ipc;
 pub mod launch;
 pub mod log;
+pub mod model;
 pub mod net;
 pub mod note;
 pub mod notebook;

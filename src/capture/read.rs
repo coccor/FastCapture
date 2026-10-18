@@ -61,7 +61,7 @@ pub fn read(raw: &Path, text: &str) -> RawInfo {
 
 /// A line that is one Markdown link or image, `[label](target)` or `![](target)`: its label
 /// (unescaped) and target.
-fn link_of(line: &str) -> Option<(String, String)> {
+pub(crate) fn link_of(line: &str) -> Option<(String, String)> {
     let line = line.strip_prefix('!').unwrap_or(line);
     let rest = line.strip_prefix('[')?;
     let mut label = String::new();
