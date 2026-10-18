@@ -1,7 +1,7 @@
 //! `%AppData%\FastCapture\fastcapture.ini`: per-PC settings. `key=value` lines; `#`
 //! or `;` comments. FastCapture writes it by changing only the lines it sets, so comments,
 //! unknown keys and their order survive. A bad value falls back to its default with a warning
-//! naming its line. M1's keys are below; the mode and backend keys come with M2.
+//! naming its line.
 
 use super::keymap::KeyStroke;
 use crate::notebook::notebook_ini::Warning;
@@ -28,6 +28,29 @@ pub struct Settings {
     pub clipboard_hotkey: Option<KeyStroke>,
     pub capture_source: bool,
     pub start_at_sign_in: bool,
+    /// Where notes are written: `None` until chosen in Settings.
+    pub mode: Option<Mode>,
+    /// Cloud mode's backend.
+    pub backend: CloudBackend,
+    /// Local mode: the server's address and the model to use.
+    pub local_endpoint: Option<String>,
+    pub local_model: Option<String>,
+    pub claude_model: String,
+    /// The first-use screen for Cloud mode was accepted.
+    pub cloud_accepted: bool,
+}
+
+/// One model provider at a time: on this PC, or in the cloud.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum Mode {
+    Local,
+    Cloud,
+}
+
+/// Cloud mode's backends; more arrive in later milestones.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum CloudBackend {
+    Claude,
 }
 
 impl Default for Settings {
@@ -39,6 +62,12 @@ impl Default for Settings {
             clipboard_hotkey: None,
             capture_source: false,
             start_at_sign_in: true,
+            mode: None,
+            backend: CloudBackend::Claude,
+            local_endpoint: None,
+            local_model: None,
+            claude_model: crate::model::claude::DEFAULT_MODEL.to_owned(),
+            cloud_accepted: false,
         }
     }
 }
@@ -106,6 +135,30 @@ pub fn parse(text: &str) -> (Settings, Vec<Warning>) {
             }
             "capture_source" => parse_bool(value).map(|on| settings.capture_source = on),
             "start_at_sign_in" => parse_bool(value).map(|on| settings.start_at_sign_in = on),
+            "mode" => match value.to_ascii_lowercase().as_str() {
+                "local" => Some(Some(Mode::Local)),
+                "cloud" => Some(Some(Mode::Cloud)),
+                "" => Some(None),
+                _ => None,
+            }
+            .map(|mode| settings.mode = mode),
+            "backend" => value
+                .eq_ignore_ascii_case("claude")
+                .then(|| settings.backend = CloudBackend::Claude),
+            "local_endpoint" if value.is_empty() => {
+                settings.local_endpoint = None;
+                Some(())
+            }
+            "local_endpoint" => crate::net::http::parse_url(value)
+                .ok()
+                .map(|_| settings.local_endpoint = Some(value.to_owned())),
+            "local_model" => {
+                settings.local_model = (!value.is_empty()).then(|| value.to_owned());
+                Some(())
+            }
+            "claude_model" => (!value.is_empty() && !value.contains(char::is_whitespace))
+                .then(|| settings.claude_model = value.to_owned()),
+            "cloud_accepted" => parse_bool(value).map(|on| settings.cloud_accepted = on),
             // Kept for later milestones and other versions; never an error.
             _ if is_reserved(key) => Some(()),
             _ => {
@@ -123,7 +176,7 @@ pub fn parse(text: &str) -> (Settings, Vec<Warning>) {
 /// Keys FastCapture writes itself that `parse` doesn't read: window placement and later
 /// milestones' keys.
 fn is_reserved(key: &str) -> bool {
-    key.starts_with("review_") || key.starts_with("mode") || key.starts_with("backend")
+    key.starts_with("review_") || key.starts_with("openai_") || key.starts_with("claude_code")
 }
 
 /// The file's text, kept line by line so FastCapture can change one setting and leave the rest.
@@ -294,6 +347,31 @@ mod tests {
             settings.capture_hotkey.unwrap().to_string(),
             DEFAULT_CAPTURE_HOTKEY
         );
+    }
+
+    #[test]
+    fn model_settings_are_read_and_bad_ones_named() {
+        let (settings, warnings) = parse(
+            "mode=Local\nlocal_endpoint=http://localhost:11434\nlocal_model=qwen2.5vl:7b\n\
+             backend=claude\nclaude_model=claude-opus-5-5\ncloud_accepted=true\n",
+        );
+        assert!(warnings.is_empty(), "{warnings:?}");
+        assert_eq!(settings.mode, Some(Mode::Local));
+        assert_eq!(
+            settings.local_endpoint.as_deref(),
+            Some("http://localhost:11434")
+        );
+        assert_eq!(settings.local_model.as_deref(), Some("qwen2.5vl:7b"));
+        assert_eq!(settings.claude_model, "claude-opus-5-5");
+        assert!(settings.cloud_accepted);
+
+        let (settings, warnings) = parse(
+            "mode=remote\nlocal_endpoint=localhost:11434\nbackend=gpt\nclaude_model=a b\nmode=\n",
+        );
+        let lines: Vec<usize> = warnings.iter().map(|warning| warning.line).collect();
+        assert_eq!(lines, [1, 2, 3, 4]);
+        assert_eq!(settings.mode, None);
+        assert_eq!(settings.claude_model, crate::model::claude::DEFAULT_MODEL);
     }
 
     #[test]

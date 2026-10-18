@@ -1,6 +1,7 @@
 //! The tray app: a hidden window that owns the tray icon and the hotkeys, a
-//! thread answering `fastcapture add` over the pipe, a watch on the settings folder, and a
-//! start-up pass over the queue. Everything that touches windows runs on this thread.
+//! thread answering `fastcapture add` over the pipe, a watch on the settings folder, a
+//! start-up pass over the queue, and the worker that turns captures into notes. Everything
+//! that touches windows runs on this thread.
 
 use crate::add::{self, Context};
 use crate::capture::Capture;
@@ -12,11 +13,13 @@ use crate::platform::tray::{self, MenuItem, Tray};
 use crate::platform::window::SendHwnd;
 use crate::platform::{hotkey, instance, shell, startup};
 use crate::queue::{State, Store};
+use crate::runner::from_settings::FromSettings;
+use crate::runner::{Status, Waker, Worker};
 use crate::ui::{capture_box, review};
 use std::cell::RefCell;
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, OnceLock};
 use windows_sys::Win32::Foundation::{HWND, LPARAM, LRESULT, POINT, WPARAM};
 use windows_sys::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows_sys::Win32::UI::WindowsAndMessaging::{
@@ -40,6 +43,7 @@ const MENU_REVIEW: u32 = 3;
 const MENU_SETTINGS: u32 = 4;
 const MENU_FOLDER: u32 = 5;
 const MENU_QUIT: u32 = 6;
+const MENU_PAUSE: u32 = 7;
 
 struct App {
     window: HWND,
@@ -51,6 +55,19 @@ struct App {
     /// doesn't repeat the notice.
     reported: Vec<String>,
     taskbar_created: u32,
+    worker: Option<Worker>,
+    /// The last error pause reported, so the notice shows once.
+    reported_pause: Option<String>,
+}
+
+/// Wakes the worker from any thread of this process, after a capture is filed.
+static WAKER: OnceLock<Waker> = OnceLock::new();
+
+/// Tells the worker a job may be waiting.
+fn wake_worker() {
+    if let Some(waker) = WAKER.get() {
+        waker.wake();
+    }
 }
 
 thread_local! {
@@ -94,16 +111,19 @@ pub fn run() -> i32 {
         settings: Settings::default(),
         notebook: None,
         reported: Vec::new(),
-        context,
         taskbar_created,
+        worker: None,
+        reported_pause: None,
+        context,
     };
     APP.with(|slot| *slot.borrow_mut() = Some(app));
     with_app(App::apply_settings);
+    start_worker(window);
 
     let stop = Arc::new(AtomicBool::new(false));
     start_pipe(window, stop.clone());
     start_settings_watch(window);
-    start_queue_recovery(window);
+    start_orphan_scan(window);
 
     let mut message: MSG = unsafe { std::mem::zeroed() };
     while unsafe { GetMessageW(&mut message, std::ptr::null_mut(), 0, 0) } > 0 {
@@ -173,10 +193,37 @@ fn start_pipe(window: HWND, stop: Arc<AtomicBool>) {
                 crate::ipc::Reply::Filed(_) => "pipe: filed a capture from fastcapture add",
                 crate::ipc::Reply::Failed { .. } => "pipe: refused a capture from fastcapture add",
             });
+            wake_worker();
             unsafe { PostMessageW(window.get(), WM_APP_QUEUE, 0, 0) };
             reply
         });
     });
+}
+
+/// Jobs left working by a crash are queued again, then the worker starts on the queue.
+fn start_worker(window: HWND) {
+    let Some((queue, settings)) =
+        with_app(|app| (app.context.queue.clone(), app.context.settings.clone()))
+    else {
+        return;
+    };
+    let Some(queue) = queue else {
+        return;
+    };
+    let recovered = Store::new(queue.clone()).recover();
+    if recovered > 0 {
+        crate::log::line(&format!("queue: {recovered} interrupted jobs queued again"));
+    }
+    let window = SendHwnd::new(window);
+    let worker = Worker::start(
+        queue,
+        Box::new(FromSettings { settings }),
+        Box::new(move || unsafe {
+            PostMessageW(window.get(), WM_APP_QUEUE, 0, 0);
+        }),
+    );
+    let _ = WAKER.set(worker.waker());
+    with_app(|app| app.worker = Some(worker));
 }
 
 fn start_settings_watch(window: HWND) {
@@ -195,27 +242,24 @@ fn start_settings_watch(window: HWND) {
     }
 }
 
-/// After a restart: interrupted jobs are queued again, and raw sources with no job get one.
-fn start_queue_recovery(window: HWND) {
+/// After a restart: raw sources with no job (written while the tray app was closed) get one.
+fn start_orphan_scan(window: HWND) {
     let Some(queue) = with_app(|app| app.context.queue.clone()).flatten() else {
         return;
     };
     let notebook = with_app(|app| app.notebook.clone()).flatten();
     let window = SendHwnd::new(window);
     std::thread::spawn(move || {
-        let store = Store::new(queue);
-        let recovered = store.recover();
         let added = notebook
             .map(|root| {
-                store
+                Store::new(queue)
                     .enqueue_orphans(&crate::notebook::Conventions::load(&root))
                     .len()
             })
             .unwrap_or(0);
-        if recovered + added > 0 {
-            crate::log::line(&format!(
-                "queue: {recovered} interrupted, {added} raw sources without a job"
-            ));
+        if added > 0 {
+            crate::log::line(&format!("queue: {added} raw sources without a job"));
+            wake_worker();
         }
         unsafe { PostMessageW(window.get(), WM_APP_QUEUE, 0, 0) };
     });
@@ -282,24 +326,33 @@ impl App {
         }
 
         self.settings = settings;
+        if let Some(worker) = &self.worker {
+            worker.waker().settings_changed();
+        }
         self.refresh_tip();
     }
 
-    fn queue_counts(&self) -> (usize, usize) {
+    /// Captures waiting, notes written, and failures.
+    fn queue_counts(&self) -> (usize, usize, usize) {
         let Some(queue) = &self.context.queue else {
-            return (0, 0);
+            return (0, 0, 0);
         };
         let jobs = Store::new(queue.clone()).list();
-        let waiting = jobs
-            .iter()
-            .filter(|job| matches!(job.state, State::Queued | State::Working))
-            .count();
-        let failed = jobs.iter().filter(|job| job.state == State::Failed).count();
-        (waiting, failed)
+        let count =
+            |wanted: fn(&crate::queue::Job) -> bool| jobs.iter().filter(|job| wanted(job)).count();
+        (
+            count(|job| matches!(job.state, State::Queued | State::Working)),
+            count(|job| job.state == State::Done && job.note.is_some()),
+            count(|job| job.state == State::Failed),
+        )
+    }
+
+    fn status(&self) -> Status {
+        self.worker.as_ref().map_or(Status::Idle, Worker::status)
     }
 
     fn refresh_tip(&mut self) {
-        let (waiting, failed) = self.queue_counts();
+        let (waiting, notes, failed) = self.queue_counts();
         let mut tip = match &self.notebook {
             Some(notebook) => format!(
                 "FastCapture → {}",
@@ -307,13 +360,33 @@ impl App {
             ),
             None => "FastCapture: no notebook set".to_owned(),
         };
-        tip.push_str(&match waiting {
-            0 => "\nNothing waiting".to_owned(),
-            1 => "\n1 capture queued".to_owned(),
-            n => format!("\n{n} captures queued"),
+        let status = self.status();
+        tip.push('\n');
+        tip.push_str(&match &status {
+            Status::Working => "Writing a note…".to_owned(),
+            Status::Paused(None) => "Paused".to_owned(),
+            Status::Paused(Some(reason)) | Status::Unready(reason) => reason.clone(),
+            Status::Waiting { .. } => "Waiting to retry".to_owned(),
+            Status::Idle if waiting == 0 => "Nothing waiting".to_owned(),
+            Status::Idle => format!("{waiting} queued"),
         });
+        if notes > 0 {
+            tip.push_str(&format!(
+                "\n{notes} note{} to review",
+                if notes == 1 { "" } else { "s" }
+            ));
+        }
         if failed > 0 {
             tip.push_str(&format!(", {failed} failed"));
+        }
+        // An error that paused the queue is said once, out loud.
+        match &status {
+            Status::Paused(Some(reason)) if self.reported_pause.as_ref() != Some(reason) => {
+                self.tray.notify("FastCapture paused", reason, true);
+                self.reported_pause = Some(reason.clone());
+            }
+            Status::Paused(Some(_)) => {}
+            _ => self.reported_pause = None,
         }
         self.tray.set_tip(&tip);
     }
@@ -337,6 +410,7 @@ impl App {
             });
         match result {
             Ok(raw) => {
+                wake_worker();
                 let name = raw.file_stem().unwrap_or_default().to_string_lossy();
                 self.tray.notify("Captured from clipboard", &name, false);
             }
@@ -417,6 +491,9 @@ impl capture_box::Sink for BoxSink {
     fn file(&mut self, capture: &Capture, notebook: &Path) -> Result<(), String> {
         // Large files were asked about when they were attached.
         let filed = submit(notebook, capture, self.queue.as_deref(), true);
+        if filed.is_ok() {
+            wake_worker();
+        }
         unsafe { PostMessageW(self.window.get(), WM_APP_QUEUE, 0, 0) };
         filed.map(|_| ()).map_err(|error| error.to_string())
     }
@@ -463,8 +540,16 @@ fn open_capture_box(window: HWND, source_window: Option<String>) {
 }
 
 fn show_menu(window: HWND, at: POINT) {
-    let Some(waiting) = with_app(|app| app.queue_counts().0) else {
+    let Some((waiting, notes, paused)) = with_app(|app| {
+        let (waiting, notes, _) = app.queue_counts();
+        (waiting, notes, matches!(app.status(), Status::Paused(_)))
+    }) else {
         return;
+    };
+    let pause_text = if paused {
+        "Resume processing"
+    } else {
+        "Pause processing"
     };
     let clipboard_text = with_app(|app| {
         app.settings
@@ -480,7 +565,7 @@ fn show_menu(window: HWND, at: POINT) {
             .map_or("Capture…".to_owned(), |key| format!("Capture…\t{key}"))
     })
     .unwrap_or_default();
-    let review_text = format!("Review ({waiting})");
+    let review_text = format!("Review ({})", waiting + notes);
     // The app isn't borrowed while the menu is open: the menu runs a message loop of its own.
     let chosen = tray::menu(
         window,
@@ -499,6 +584,11 @@ fn show_menu(window: HWND, at: POINT) {
             MenuItem::Command {
                 id: MENU_REVIEW,
                 text: &review_text,
+                enabled: true,
+            },
+            MenuItem::Command {
+                id: MENU_PAUSE,
+                text: pause_text,
                 enabled: true,
             },
             MenuItem::Separator,
@@ -524,6 +614,13 @@ fn show_menu(window: HWND, at: POINT) {
         // The window in front is the taskbar here, so no source is recorded.
         MENU_CAPTURE => open_capture_box(window, None),
         MENU_REVIEW => open_review(window),
+        MENU_PAUSE => {
+            with_app(|app| {
+                if let Some(worker) = &app.worker {
+                    worker.set_paused(!paused);
+                }
+            });
+        }
         MENU_CLIPBOARD => {
             with_app(|app| app.capture_clipboard(None));
         }

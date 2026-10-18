@@ -16,6 +16,7 @@ pub mod notebook;
 pub mod paths;
 pub mod platform;
 pub mod queue;
+pub mod runner;
 pub mod secrets;
 pub mod ui;
 
