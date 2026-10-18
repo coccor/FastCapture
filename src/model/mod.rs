@@ -1,5 +1,12 @@
-//! Asking a model for a note: the prompt, the images, and the request every backend sends.
+//! Asking a model for a note: the prompt, the images, the request every backend sends, and the
+//! backends themselves.
 
+pub mod backend;
+pub mod claude;
 pub mod images;
+pub mod local;
+pub mod openai;
 pub mod prompt;
 pub mod request;
+
+pub use backend::{Backend, BackendError};

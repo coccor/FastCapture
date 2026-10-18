@@ -120,10 +120,10 @@ src/
 
 ### Part 4: The backends
 
-- [ ] `model/backend.rs`: the trait; `BackendError::{Retry { after: Option<Duration>, reason }, Pause(reason), Fail(reason), Invalid(ReplyError)}`.
-- [ ] `model/claude.rs`: builds the request above from a `NoteRequest`; maps responses and errors as above; reads `usage` (input, cache read, output tokens) into the job's log line (counts only).
-- [ ] `model/openai.rs`: builds the chat request; `response_format` fallback; maps errors the same way (401/403 pause, 404 model fails, 429 waits, 5xx and network retry).
-- [ ] `model/local.rs`: probes `localhost:11434` (Ollama), `localhost:1234` (LM Studio) and Foundry Local (`foundry service status` for its port, only when `foundry` is on `PATH`) with `GET /v1/models`, 1 s timeout each; the loopback check (resolve with `GetAddrInfoW`, every address must be loopback); a vision probe (a one-pixel PNG, cached per endpoint and model for the session).
+- [x] `model/backend.rs`: the trait (`label`, `complete`); `BackendError::{Retry { after: Option<Duration>, reason }, Pause(reason), Fail(reason), Invalid(ReplyError)}`; one status mapping shared by both backends (401/403 and 402 pause, 404 fails pointing at Settings, 429 and 5xx retry with `retry-after` when given, other statuses fail with the server's message).
+- [x] `model/claude.rs`: builds the request above from a `NoteRequest`; maps responses and errors as above; logs `usage` (input, cache read, output tokens; counts only). The model list Settings offers lives here (`MODELS`).
+- [x] `model/openai.rs`: builds the chat request (images as `data:` URLs); the `response_format` fallback, remembered for the backend's life; `finish_reason: "length"` fails like `max_tokens`; an optional Bearer key for M5; `list_models`.
+- [x] `model/local.rs`: probes `localhost:11434` (Ollama), `localhost:1234` (LM Studio) and Foundry Local (`foundry service status` for its port, when the command exists; 3 s at most) with `GET /v1/models`; the loopback check (`localhost`, a loopback IP, or a name that resolves only to loopback addresses, through the system resolver); a vision probe (a one-pixel PNG, cached per endpoint and model for the session; `None` when the server's answer doesn't say).
 - **Tests:** against the test server: the exact Claude request body and headers (the key in `x-api-key`, never elsewhere); a good reply; `refusal`, `max_tokens`; 401, 402, 404, 429 with `retry-after: 7`, 529; the OpenAI request, a reply, the `response_format` fallback; model listing; the loopback check for `localhost`, `127.0.0.1`, `[::1]`, `192.168.1.5` and a name; a server without vision.
 
 ### Part 5: The runner
