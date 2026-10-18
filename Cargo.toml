@@ -1,0 +1,16 @@
+[package]
+name = "fastcapture"
+version = "0.1.0"
+edition = "2024"
+description = "Capture anything on Windows and turn it into well-written Markdown notes."
+license = "MIT"
+build = "build.rs"
+
+[dependencies]
+
+[profile.release]
+opt-level = 3
+lto = "thin"
+codegen-units = 1
+panic = "abort"
+strip = true

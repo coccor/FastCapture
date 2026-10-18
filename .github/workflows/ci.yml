@@ -1,0 +1,35 @@
+name: ci
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Format check
+        run: cargo fmt --all -- --check
+      - name: Clippy (warnings denied)
+        run: cargo clippy --locked --all-targets --all-features -- -D warnings
+      - name: Unit and Windows integration tests (serial)
+        run: cargo test --locked -- --test-threads=1
+      - name: Release build (x64)
+        run: cargo build --locked --release
+
+  arm64:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install the ARM64 target
+        run: rustup target add aarch64-pc-windows-msvc
+      - name: Release build (ARM64, build only)
+        run: cargo build --locked --release --target aarch64-pc-windows-msvc
