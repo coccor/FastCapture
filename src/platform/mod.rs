@@ -2,8 +2,10 @@
 //! adapted from FastPad, each naming its source on its first line.
 
 pub mod clock;
+pub mod console;
 pub mod random;
 pub mod saver;
+pub mod shell;
 
 use crate::Error;
 use std::os::windows::ffi::OsStrExt;

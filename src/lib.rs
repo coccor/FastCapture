@@ -2,8 +2,12 @@
 //! notebook as raw sources, and turns them into Markdown notes
 //! (`docs/specs/2026-10-18-fastcapture-design.md`).
 
+pub mod add;
 pub mod capture;
+pub mod config;
 pub mod error;
+pub mod ipc;
+pub mod launch;
 pub mod log;
 pub mod notebook;
 pub mod paths;
@@ -12,11 +16,61 @@ pub mod queue;
 
 pub use error::{Error, Result};
 
-/// Runs the app and returns the process exit code. M1 Part 1: start, log, and exit.
+use launch::Launch;
+use std::io::Write;
+
+/// Runs the app with the process's arguments and returns its exit code.
 pub fn run() -> i32 {
-    log::line(&format!(
-        "FastCapture {} started",
-        env!("CARGO_PKG_VERSION")
-    ));
+    let args: Vec<_> = std::env::args_os().skip(1).collect();
+    let cwd = std::env::current_dir().unwrap_or_default();
+    let launch = match launch::parse(&args, &cwd) {
+        Ok(launch) => launch,
+        Err(message) => {
+            platform::console::attach();
+            let _ = writeln!(std::io::stderr(), "fastcapture: {message}");
+            return 2;
+        }
+    };
+    match launch {
+        Launch::Add(args) => add::run(args),
+        Launch::Settings => open_settings(),
+        Launch::Version => print(&format!("FastCapture {}", env!("CARGO_PKG_VERSION"))),
+        Launch::Help => print(launch::USAGE),
+        // The tray app arrives in M1 Part 6.
+        Launch::Tray => {
+            log::line(&format!(
+                "FastCapture {} started",
+                env!("CARGO_PKG_VERSION")
+            ));
+            0
+        }
+    }
+}
+
+fn print(text: &str) -> i32 {
+    platform::console::attach();
+    let _ = writeln!(std::io::stdout(), "{text}");
     0
+}
+
+/// Opens `fastcapture.ini` in its default program, writing the starter file first when there
+/// is none.
+fn open_settings() -> i32 {
+    let Some(path) = config::settings::settings_path() else {
+        return 1;
+    };
+    if !path.exists() {
+        let file = config::settings::SettingsFile::load(&path);
+        if let Err(error) = file.save(&path) {
+            log::line(&format!("settings: {error}"));
+            return 1;
+        }
+    }
+    match platform::shell::open(&path) {
+        Ok(()) => 0,
+        Err(error) => {
+            log::line(&format!("settings: {error}"));
+            1
+        }
+    }
 }
