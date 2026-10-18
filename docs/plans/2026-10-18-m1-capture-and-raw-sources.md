@@ -96,9 +96,9 @@ Copied from `C:\Projects\Fastpad` (read-only) with their tests, then trimmed to 
 
 ### Part 2: Notebook conventions (pure)
 
-- [ ] Copy the `notebook/` modules (table above) with their tests; remove FastPad-only parts; make them compile with no FastPad types.
-- [ ] `capture_ini.rs`: `raw_folder` (default `raw`, must stay inside the notebook, using `notebook_ini`'s `inside_path` rule), `home_types` (comma list, default `topic, project, moc`). Bad value → default plus a `Warning` with its line.
-- [ ] `notebook::Conventions::load(root)`: reads `.fastpad\notebook.ini`, `.fastcapture\capture.ini` and `.obsidian\app.json` (each optional), and gives `capture_folder`, `raw_folder`, `attachments_folder_for(note)`, `daily_folder`, `daily_format`, plus warnings.
+- [x] Copy the `notebook/` modules (table above) with their tests; remove FastPad-only parts; make them compile with no FastPad types. (`frontmatter` without `add_alias`; `notebook_ini` without `starter_text`, whose text became a test fixture.)
+- [x] `capture_ini.rs`: `raw_folder` (default `raw`, must stay inside the notebook, using `notebook_ini`'s `inside_path` rule), `home_types` (comma list, default `topic, project, moc`). Bad value → default plus a `Warning` with its line.
+- [x] `notebook::Conventions::load(root)`: reads `.fastpad\notebook.ini`, `.fastcapture\capture.ini` and `.obsidian\app.json` (each optional), and gives `capture_folder`, `raw_folder`, `attachments_folder_for(note)`, `daily_folder`, `daily_format`, plus warnings naming their file. The settings files are read as UTF-8 or BOM-marked UTF-16 by a small reader in `notebook`; FastPad's full `encoding` module arrives with Part 3, for captured text files.
 - **Tests:** copied tests pass; `capture_ini` defaults, bad values and paths that leave the notebook; `Conventions` with no files, FastPad's file only, Obsidian only, and both (notebook.ini wins).
 
 ### Part 3: Captures on disk (pure + disk, no window)

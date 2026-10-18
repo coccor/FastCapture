@@ -4,6 +4,7 @@
 
 pub mod error;
 pub mod log;
+pub mod notebook;
 pub mod paths;
 
 pub use error::{Error, Result};
