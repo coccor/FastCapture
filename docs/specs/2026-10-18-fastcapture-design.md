@@ -90,7 +90,7 @@ Rejected alternatives:
 
 | Entry point | Result |
 |---|---|
-| Global hotkey `capture_hotkey` (default **Ctrl+Alt+Space**) | Opens the capture box |
+| Global hotkey `capture_hotkey` (default **Ctrl+Alt+C**) | Opens the capture box |
 | Global hotkey `clipboard_hotkey` (default none) | Captures the clipboard as it is, with no box, and shows a short tray toast "Captured from clipboard" |
 | Tray icon: left click | Opens the review window |
 | Tray icon: right click | Menu: Capture…, Capture clipboard, Review (n), Pause processing, Settings, Quit |
@@ -467,7 +467,7 @@ Six milestones. Each is usable on its own.
 
 ## 18. Open questions
 
-1. **Default hotkey.** Ctrl+Alt+Space is free in most setups, but some IMEs and launchers use it. Win+Shift+C is the alternative.
+1. **Default hotkey.** Ctrl+Alt+C, chosen after Ctrl+Alt+Space and Win+Shift+C turned out to be held by other apps on the development PC (Ctrl+Shift+Space was free but is Word's non-breaking space and VS Code's parameter hints). Ctrl+Alt is AltGr on some keyboard layouts, so Ctrl+Alt+C may also type a character there (© in Word); the hotkey failure notice and `capture_hotkey` cover that, and a first-run hotkey check could pick a free key automatically.
 2. **Shared crate with FastPad.** Copying the notebook modules is simple now. Extracting `notebook-conventions` as a crate both repos use would keep them in step, at the cost of a cross-repo dependency.
 3. **Claude Code CLI checks** (before M6): image content blocks over `--input-format stream-json` in `-p` mode, the result and exit code when the subscription limit is reached, and whether Anthropic's rules for personal tools that start the CLI change.
 4. **Topic note entry format.** A dated link line (§10.3) is the simplest. Some users will want the summary under a heading, or the tasks copied over.

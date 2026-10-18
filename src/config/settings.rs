@@ -8,7 +8,7 @@ use crate::notebook::notebook_ini::Warning;
 use std::path::{Path, PathBuf};
 
 pub const SETTINGS_FILE: &str = "fastcapture.ini";
-pub const DEFAULT_CAPTURE_HOTKEY: &str = "Ctrl+Alt+Space";
+pub const DEFAULT_CAPTURE_HOTKEY: &str = "Ctrl+Alt+C";
 /// How many notebooks the box's picker remembers.
 pub const RECENT_LIMIT: usize = 10;
 
@@ -221,7 +221,7 @@ pub fn starter_text() -> String {
         "# The notebook captures go to (a folder).",
         "# notebook=C:\\Users\\you\\Documents\\FastPad",
         "# Hotkeys: Ctrl, Shift, Alt and Win with a letter, digit, F1-F24 or a named key. Empty turns one off.",
-        "# capture_hotkey=Ctrl+Alt+Space",
+        "# capture_hotkey=Ctrl+Alt+C",
         "# Captures the clipboard with no box.",
         "# clipboard_hotkey=",
         "# Record the title of the window in front when you capture (it may contain private things).",
