@@ -10,6 +10,7 @@ pub mod ipc;
 pub mod launch;
 pub mod log;
 pub mod net;
+pub mod note;
 pub mod notebook;
 pub mod paths;
 pub mod platform;
