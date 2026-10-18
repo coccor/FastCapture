@@ -2,4 +2,6 @@
 //! parts) the capture box and the review window.
 
 pub mod app;
+pub mod capture_box;
 pub mod clipboard_capture;
+pub mod theme;

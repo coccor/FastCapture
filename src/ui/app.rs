@@ -3,6 +3,7 @@
 //! start-up pass over the queue. Everything that touches windows runs on this thread.
 
 use crate::add::{self, Context};
+use crate::capture::Capture;
 use crate::capture::file::FileError;
 use crate::capture::submit::submit;
 use crate::config::settings::{Settings, SettingsFile};
@@ -11,16 +12,17 @@ use crate::platform::tray::{self, MenuItem, Tray};
 use crate::platform::window::SendHwnd;
 use crate::platform::{hotkey, instance, shell, startup};
 use crate::queue::{State, Store};
+use crate::ui::capture_box;
 use std::cell::RefCell;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use windows_sys::Win32::Foundation::{HWND, LPARAM, LRESULT, POINT, WPARAM};
 use windows_sys::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows_sys::Win32::UI::WindowsAndMessaging::{
     CreateWindowExW, DefWindowProcW, DestroyWindow, DispatchMessageW, GetMessageW, MSG,
-    PostMessageW, PostQuitMessage, RegisterClassExW, RegisterWindowMessageW, TranslateMessage,
-    WM_APP, WM_DESTROY, WM_HOTKEY, WNDCLASSEXW, WS_EX_TOOLWINDOW, WS_OVERLAPPED,
+    PostMessageW, PostQuitMessage, RegisterClassExW, RegisterWindowMessageW, SendMessageW,
+    TranslateMessage, WM_APP, WM_DESTROY, WM_HOTKEY, WNDCLASSEXW, WS_EX_TOOLWINDOW, WS_OVERLAPPED,
 };
 
 const WM_APP_TRAY: u32 = WM_APP + 1;
@@ -366,6 +368,66 @@ impl App {
     }
 }
 
+/// Files the capture box's captures and queues them.
+struct BoxSink {
+    window: SendHwnd,
+    queue: Option<PathBuf>,
+    notebooks: Vec<PathBuf>,
+}
+
+impl capture_box::Sink for BoxSink {
+    fn notebooks(&self) -> Vec<PathBuf> {
+        self.notebooks.clone()
+    }
+
+    fn file(&mut self, capture: &Capture, notebook: &Path) -> Result<(), String> {
+        // Large files were asked about when they were attached.
+        let filed = submit(notebook, capture, self.queue.as_deref(), true);
+        unsafe { PostMessageW(self.window.get(), WM_APP_QUEUE, 0, 0) };
+        filed.map(|_| ()).map_err(|error| error.to_string())
+    }
+}
+
+/// The capture hotkey or menu item: opens the box, or brings the open one forward.
+fn open_capture_box(window: HWND, source_window: Option<String>) {
+    if let Some(open) = capture_box::find() {
+        unsafe { SendMessageW(open, capture_box::WM_CAPTURE_AGAIN, 0, 0) };
+        return;
+    }
+    let Some((notebook, queue, notebooks)) = with_app(|app| {
+        (
+            app.notebook.clone(),
+            app.context.queue.clone(),
+            app.settings.recent_notebooks.clone(),
+        )
+    }) else {
+        return;
+    };
+    let Some(notebook) = notebook else {
+        with_app(|app| {
+            app.tray.notify(
+                "No notebook is set",
+                "Choose one with notebook= in fastcapture.ini (tray menu › Settings).",
+                true,
+            )
+        });
+        return;
+    };
+    let opened = capture_box::open(capture_box::Open {
+        sink: Box::new(BoxSink {
+            window: SendHwnd::new(window),
+            queue,
+            notebooks,
+        }),
+        notebook,
+        draft_dir: crate::capture::draft::default_dir(),
+        source_window,
+    });
+    if opened.is_none() {
+        crate::log::line("capture box: could not open");
+    }
+}
+
 fn show_menu(window: HWND, at: POINT) {
     let Some(waiting) = with_app(|app| app.queue_counts().0) else {
         return;
@@ -390,17 +452,17 @@ fn show_menu(window: HWND, at: POINT) {
         window,
         at,
         &[
-            // The capture box (Part 7) and the review window (Part 8) come next.
             MenuItem::Command {
                 id: MENU_CAPTURE,
                 text: &capture_text,
-                enabled: false,
+                enabled: true,
             },
             MenuItem::Command {
                 id: MENU_CLIPBOARD,
                 text: &clipboard_text,
                 enabled: true,
             },
+            // The review window comes with M1 Part 8.
             MenuItem::Command {
                 id: MENU_REVIEW,
                 text: &review_text,
@@ -426,6 +488,8 @@ fn show_menu(window: HWND, at: POINT) {
         ],
     );
     match chosen {
+        // The window in front is the taskbar here, so no source is recorded.
+        MENU_CAPTURE => open_capture_box(window, None),
         MENU_CLIPBOARD => {
             // The window in front is the taskbar here, so no source is recorded.
             with_app(|app| app.capture_clipboard(None));
@@ -459,7 +523,13 @@ extern "system" fn window_proc(
                         .flatten();
                     with_app(|app| app.capture_clipboard(source));
                 }
-                HOTKEY_CAPTURE => crate::log::line("capture box: arrives in M1 Part 7"),
+                HOTKEY_CAPTURE => {
+                    let source = with_app(|app| app.settings.capture_source)
+                        .unwrap_or(false)
+                        .then(crate::platform::window::foreground_title)
+                        .flatten();
+                    open_capture_box(window, source);
+                }
                 _ => {}
             }
             0
@@ -503,5 +573,60 @@ extern "system" fn window_proc(
             }
             unsafe { DefWindowProcW(window, message, wparam, lparam) }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::platform::clipboard::{self, tests::Backup};
+    use crate::queue::store::raw_sources;
+    use windows_sys::Win32::UI::WindowsAndMessaging::IsWindow;
+
+    #[test]
+    fn the_box_files_a_pasted_image_and_text_into_the_notebook_and_queue() {
+        let temp = std::env::temp_dir().join(format!("fastcapture-app-box-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&temp);
+        let notebook = temp.join("Notes");
+        let queue = temp.join("queue");
+        std::fs::create_dir_all(&notebook).unwrap();
+
+        let _backup = Backup::take();
+        let png_format: Vec<u16> = "PNG\0".encode_utf16().collect();
+        let format = unsafe {
+            windows_sys::Win32::System::DataExchange::RegisterClipboardFormatW(png_format.as_ptr())
+        };
+        clipboard::set(std::ptr::null_mut(), format, b"\x89PNG\r\n\x1a\nimage").unwrap();
+
+        let hwnd = capture_box::open(capture_box::Open {
+            sink: Box::new(BoxSink {
+                window: SendHwnd::new(std::ptr::null_mut()),
+                queue: Some(queue.clone()),
+                notebooks: Vec::new(),
+            }),
+            notebook: notebook.clone(),
+            draft_dir: Some(temp.join("draft")),
+            source_window: None,
+        })
+        .unwrap();
+        capture_box::paste_for_test(hwnd);
+        capture_box::set_text_for_test(hwnd, "lag spikes during ledger batch??");
+        capture_box::run_for_test(hwnd, capture_box::Action::Submit);
+        assert_eq!(unsafe { IsWindow(hwnd) }, 0, "the box closed");
+
+        let raws = raw_sources(&notebook, Path::new("raw"));
+        assert_eq!(raws.len(), 1);
+        let text = std::fs::read_to_string(notebook.join(&raws[0].path)).unwrap();
+        assert!(text.contains("kind: [text, screenshot]"), "{text}");
+        assert!(text.contains("lag spikes during ledger batch??"), "{text}");
+        let image = notebook.join("attachments").join(format!(
+            "{}.png",
+            raws[0].path.file_stem().unwrap().to_string_lossy()
+        ));
+        assert_eq!(std::fs::read(&image).unwrap(), b"\x89PNG\r\n\x1a\nimage");
+        let jobs = Store::new(queue).list();
+        assert_eq!(jobs.len(), 1);
+        assert_eq!(jobs[0].capture_id, raws[0].capture_id);
+        let _ = std::fs::remove_dir_all(&temp);
     }
 }

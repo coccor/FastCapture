@@ -140,16 +140,16 @@ Copied from `C:\Projects\Fastpad` (read-only) with their tests, then trimmed to 
 
 ### Part 7: The capture box
 
-- [ ] Port FastPad's box layout and key logic (its first half is pure and tested) and its window code, then change:
-  - title "Capture → <notebook name>"; footer shows the detected kinds (Part 3) and the keys;
-  - **Ctrl+N** opens a small list of `recent_notebooks` for this capture only;
-  - no target cycling (FastCapture always writes a raw source);
-  - Ctrl+Enter files through Part 3, enqueues, clears the draft and closes; Esc keeps the draft.
-- [ ] Attachments exactly as in FastPad: Ctrl+V image (when no text), Ctrl+Shift+V image anyway, Explorer files, OLE drop, Snip with `ms-screenclip:` and `AddClipboardFormatListener` (30 s timeout), named chips with remove buttons.
-- [ ] `capture_source`: when on, the foreground window's title is read when the hotkey fires, before the box takes focus.
-- [ ] Box opens on the monitor under the mouse, top-most, follows the system light/dark theme, per-monitor DPI.
-- [ ] Accessibility: the window's accessible name is "Capture to <notebook>"; chips are buttons with names; everything works from the keyboard.
-- **Tests:** the pure layout and key tests carried over and adapted; a window test that opens the box, sets text, sends Ctrl+Enter and finds the raw source and the job; an image put on the clipboard with `SetClipboardData` and pasted is saved as PNG and linked.
+- [x] Port FastPad's box layout and key logic (its first half is pure and tested) and its window code (`ui/capture_box.rs`), then change:
+  - title "Capture → <notebook name>"; footer shows the detected kinds (Part 3) and the keys, and follows typing;
+  - **Ctrl+N** opens a menu of `recent_notebooks` (the current one checked) for this capture only;
+  - no target cycling (FastCapture always writes a raw source), and no Ctrl+Shift+Enter (there is no editor to open);
+  - Ctrl+Enter files through `capture::submit`, enqueues, clears the draft and closes; Esc keeps the draft. The capture hotkey while the box is open brings it forward, or back from a snip.
+- [x] Attachments as in FastPad: Ctrl+V image (when no text), Ctrl+Shift+V image anyway, Explorer files, file drops, Snip with `ms-screenclip:` and `AddClipboardFormatListener` (30 s timeout), named chips with remove buttons. **Changed:** drops arrive through `WM_DROPFILES` (`DragAcceptFiles`) instead of FastPad's OLE drop target, and the 20 MB question is a Yes/No message box instead of FastPad's own prompt.
+- [x] `capture_source`: when on, the foreground window's title is read when the hotkey fires, before the box takes focus. The tray menu's Capture… records none, since the taskbar is in front.
+- [x] Box opens on the monitor under the mouse, top-most, follows the Windows app light/dark setting (`ui/theme.rs`, a small stand-in for FastPad's palette and type ramp: Segoe UI, two palettes), per-monitor DPI. High-contrast colors are not handled yet.
+- [x] Accessibility: the window's accessible name is "Capture to <notebook>"; everything works from the keyboard (Tab to the strip, arrows, Delete, Enter or Space on Snip). **Not done:** chips are drawn, not child buttons, as in FastPad, so a screen reader doesn't announce them one by one.
+- **Tests:** the pure layout and key tests carried over and adapted; window tests for Ctrl+Enter, Esc and the draft coming back, a failure staying in the box, folders and the 20 MB question, and a snip ended by the hotkey; and `ui::app`'s end-to-end test: an image put on the clipboard with `SetClipboardData` is pasted into the real box, text typed, Ctrl+Enter, and the raw source, the PNG and the job are all there. **Checked by hand:** `Ctrl+Alt+C` opens the box over other apps (screenshot), Esc closes it.
 
 ### Part 8: The review window (M1 form)
 
