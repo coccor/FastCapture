@@ -1,4 +1,4 @@
-//! Starting at sign-in (spec §5.1): a value under
+//! Starting at sign-in: a value under
 //! `HKCU\Software\Microsoft\Windows\CurrentVersion\Run`, kept in step with `start_at_sign_in`.
 
 use super::last_error;

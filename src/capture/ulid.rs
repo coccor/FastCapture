@@ -1,4 +1,4 @@
-//! `capture_id` (spec §6.1): a ULID, 48 bits of milliseconds since 1970 then 80 random bits, in
+//! `capture_id`: a ULID, 48 bits of milliseconds since 1970 then 80 random bits, in
 //! Crockford base32. IDs sort by time, and are monotonic within this process: two in the same
 //! millisecond differ by one in their random part.
 

@@ -1,4 +1,4 @@
-//! The tray app (spec §5.1, §12): a hidden window that owns the tray icon and the hotkeys, a
+//! The tray app: a hidden window that owns the tray icon and the hotkeys, a
 //! thread answering `fastcapture add` over the pipe, a watch on the settings folder, and a
 //! start-up pass over the queue. Everything that touches windows runs on this thread.
 
@@ -12,7 +12,7 @@ use crate::platform::tray::{self, MenuItem, Tray};
 use crate::platform::window::SendHwnd;
 use crate::platform::{hotkey, instance, shell, startup};
 use crate::queue::{State, Store};
-use crate::ui::capture_box;
+use crate::ui::{capture_box, review};
 use std::cell::RefCell;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -107,6 +107,10 @@ pub fn run() -> i32 {
 
     let mut message: MSG = unsafe { std::mem::zeroed() };
     while unsafe { GetMessageW(&mut message, std::ptr::null_mut(), 0, 0) } > 0 {
+        // Tab, Enter and Esc in the review window.
+        if review::dialog_message(&message) {
+            continue;
+        }
         unsafe {
             TranslateMessage(&message);
             DispatchMessageW(&message);
@@ -368,6 +372,36 @@ impl App {
     }
 }
 
+/// The tray icon's click and the Review menu item: opens the review window, or brings it forward.
+fn open_review(window: HWND) {
+    let Some((queue, settings, notebook)) = with_app(|app| {
+        (
+            app.context.queue.clone(),
+            app.context.settings.clone(),
+            app.notebook.clone(),
+        )
+    }) else {
+        return;
+    };
+    let Some(queue) = queue else {
+        return;
+    };
+    let window = SendHwnd::new(window);
+    let opened = review::open(review::Open {
+        queue,
+        settings,
+        notebook,
+        actions: Box::new(review::ShellActions {
+            on_change: Box::new(move || unsafe {
+                PostMessageW(window.get(), WM_APP_QUEUE, 0, 0);
+            }),
+        }),
+    });
+    if opened.is_none() {
+        crate::log::line("review: could not open");
+    }
+}
+
 /// Files the capture box's captures and queues them.
 struct BoxSink {
     window: SendHwnd,
@@ -462,11 +496,10 @@ fn show_menu(window: HWND, at: POINT) {
                 text: &clipboard_text,
                 enabled: true,
             },
-            // The review window comes with M1 Part 8.
             MenuItem::Command {
                 id: MENU_REVIEW,
                 text: &review_text,
-                enabled: false,
+                enabled: true,
             },
             MenuItem::Separator,
             MenuItem::Command {
@@ -490,8 +523,8 @@ fn show_menu(window: HWND, at: POINT) {
     match chosen {
         // The window in front is the taskbar here, so no source is recorded.
         MENU_CAPTURE => open_capture_box(window, None),
+        MENU_REVIEW => open_review(window),
         MENU_CLIPBOARD => {
-            // The window in front is the taskbar here, so no source is recorded.
             with_app(|app| app.capture_clipboard(None));
         }
         MENU_SETTINGS => {
@@ -554,6 +587,9 @@ extern "system" fn window_proc(
         }
         WM_APP_QUEUE => {
             with_app(App::refresh_tip);
+            if let Some(open) = review::find() {
+                unsafe { PostMessageW(open, review::WM_REVIEW_REFRESH, 0, 0) };
+            }
             0
         }
         WM_APP_SETTINGS => {

@@ -1,4 +1,4 @@
-//! The notification-area icon (spec §5.1, §10.1): `Shell_NotifyIconW` with version 4, a tooltip,
+//! The notification-area icon: `Shell_NotifyIconW` with version 4, a tooltip,
 //! balloons, and a popup menu. The icon is drawn from `crate::icon` at the size Windows asks
 //! for, so it needs no resource and looks the same in light and dark taskbars.
 

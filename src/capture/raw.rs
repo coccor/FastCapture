@@ -1,4 +1,4 @@
-//! A raw source's name and text (spec §6.1). `first_words`, `capture_stem` and `link_lines` are
+//! A raw source's name and text. `first_words`, `capture_stem` and `link_lines` are
 //! copied from FastPad `src/library/capture.rs`, so captures from both apps are named and linked
 //! alike. Nothing here touches the disk.
 

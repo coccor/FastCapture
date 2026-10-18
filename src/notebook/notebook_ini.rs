@@ -1,6 +1,6 @@
 //! Copied from FastPad `src/library/notebook_ini.rs` (read-only: without `starter_text`).
 //!
-//! `.fastpad\notebook.ini` (FastPad second brain phase 1 spec §9.1): a notebook's conventions,
+//! `.fastpad\notebook.ini`: a notebook's conventions,
 //! shared with whoever else works in it. A missing file means the defaults; a bad value falls
 //! back to its default and is reported with its line. FastCapture reads it and never writes it.
 
@@ -18,7 +18,7 @@ pub fn notebook_file(folder: &Path) -> PathBuf {
     folder.join(FASTPAD_DIR).join(NOTEBOOK_FILE)
 }
 
-/// Where a capture goes (§10.3).
+/// Where a capture goes.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum CaptureTarget {
     Inbox,
@@ -36,7 +36,7 @@ pub struct NotebookSettings {
     pub inbox: PathBuf,
     pub capture_folder: PathBuf,
     pub capture_target: CaptureTarget,
-    /// `None` until set: the default, or the Obsidian vault's own folder (§9.1).
+    /// `None` until set: the default, or the Obsidian vault's own folder.
     pub attachments_folder: Option<PathBuf>,
 }
 

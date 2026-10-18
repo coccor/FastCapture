@@ -1,4 +1,4 @@
-//! `.fastcapture\capture.ini` (spec §11): FastCapture's own keys for a notebook, kept apart from
+//! `.fastcapture\capture.ini`: FastCapture's own keys for a notebook, kept apart from
 //! FastPad's `notebook.ini`. A missing file means the defaults; a bad value falls back to its
 //! default and is reported with its line, as `notebook.ini` does. M1 only reads it.
 
@@ -16,9 +16,9 @@ pub fn capture_file(folder: &Path) -> PathBuf {
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct CaptureSettings {
-    /// Folder for raw sources, relative to the notebook (spec §6.1).
+    /// Folder for raw sources, relative to the notebook.
     pub raw_folder: PathBuf,
-    /// Front matter `type:` values that mark a note as a possible home (spec §9), lowercase.
+    /// Front matter `type:` values that mark a note as a possible home, lowercase.
     pub home_types: Vec<String>,
 }
 

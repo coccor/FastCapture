@@ -1,4 +1,4 @@
-//! The command line (spec §5.1):
+//! The command line:
 //!
 //! ```text
 //! fastcapture                       the tray app

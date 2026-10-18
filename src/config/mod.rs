@@ -1,4 +1,4 @@
-//! FastCapture's own settings (spec §11).
+//! FastCapture's own settings.
 
 pub mod keymap;
 pub mod settings;

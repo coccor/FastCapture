@@ -1,4 +1,4 @@
-//! Working out what a capture is (spec §5.2): a line that is only an `http(s)://` URL is a link
+//! Working out what a capture is: a line that is only an `http(s)://` URL is a link
 //! to fetch; a URL inside a sentence stays text.
 
 use super::model::{Attachment, Capture, Kind};

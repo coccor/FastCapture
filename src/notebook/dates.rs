@@ -1,6 +1,6 @@
 //! Copied from FastPad `src/library/dates.rs`.
 //!
-//! Dates for daily notes and capture names (FastPad second brain phase 1 spec §9.2, §9.3): a
+//! Dates for daily notes and capture names: a
 //! calendar date, the format tokens FastPad knows, and reading a daily note's name back.
 
 /// A calendar date. The weekday is worked out, never stored.

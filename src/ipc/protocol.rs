@@ -1,4 +1,4 @@
-//! Frames between `fastcapture add` and the tray app (spec §5.1). Each message is a 4-byte
+//! Frames between `fastcapture add` and the tray app. Each message is a 4-byte
 //! little-endian length, then `FCAP`, a version byte, a kind byte and its fields. Strings and
 //! paths are UTF-16 (so every Windows path survives), each a 4-byte unit count then the units.
 

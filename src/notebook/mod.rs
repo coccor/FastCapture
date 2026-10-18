@@ -1,4 +1,4 @@
-//! A notebook's conventions (spec §3, §11): FastPad's `.fastpad\notebook.ini`, FastCapture's own
+//! A notebook's conventions: FastPad's `.fastpad\notebook.ini`, FastCapture's own
 //! `.fastcapture\capture.ini` and Obsidian's attachment folder, read together. Every file is
 //! optional and none is ever written here. The pure modules are copied from FastPad, each naming
 //! its source on its first line.

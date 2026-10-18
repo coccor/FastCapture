@@ -1,4 +1,4 @@
-//! Filing a capture and queuing it (spec §6.1, §6.3): what `fastcapture add`, the clipboard
+//! Filing a capture and queuing it: what `fastcapture add`, the clipboard
 //! hotkey and the capture box all do once a capture is ready.
 
 use super::file::{self, FileError};

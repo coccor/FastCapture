@@ -1,4 +1,4 @@
-//! `fastcapture add` (spec §5.1): a capture with no window. When the tray app is running the
+//! `fastcapture add`: a capture with no window. When the tray app is running the
 //! capture is forwarded to it over the pipe; otherwise this process files it and queues it, and
 //! the tray app processes it when it next runs. `handle` is shared: the tray app answers
 //! forwarded captures with it.

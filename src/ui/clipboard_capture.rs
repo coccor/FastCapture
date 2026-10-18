@@ -1,4 +1,4 @@
-//! Capture clipboard (spec §5.1): the clipboard as it is, with no box. Files copied in Explorer
+//! Capture clipboard: the clipboard as it is, with no box. Files copied in Explorer
 //! come first; then an image when there is no text (as in FastPad, copying a paragraph from Word
 //! also puts a picture of it on the clipboard, and that must not win over its text); then text.
 

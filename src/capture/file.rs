@@ -1,4 +1,4 @@
-//! Writing a capture into the notebook (spec §6.1): the attachments are copied into the
+//! Writing a capture into the notebook: the attachments are copied into the
 //! attachments folder first, then the raw source is written into `raw/`. All or nothing: a
 //! failure removes the files already written. `store` and `save_attachments` follow FastPad
 //! `src/library/capture_file.rs`. Works without a window, for the box and `fastcapture add`.
@@ -13,7 +13,7 @@ use crate::platform::saver;
 use std::path::{Path, PathBuf};
 
 /// A file this large is asked about before it is copied into the notebook, and `add` refuses
-/// it (spec §6.1, as FastPad).
+/// it (as FastPad does).
 pub const LARGE_FILE_BYTES: u64 = 20 * 1024 * 1024;
 
 /// One capture to write.

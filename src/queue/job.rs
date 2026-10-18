@@ -1,4 +1,4 @@
-//! A job (spec §6.3): one raw source waiting to become a note, with its state. Stored as JSON,
+//! A job: one raw source waiting to become a note, with its state. Stored as JSON,
 //! converted by hand so the queue needs no derive macros.
 
 use serde_json::{Map, Value, json};

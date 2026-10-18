@@ -16,8 +16,7 @@ pub enum Attachment {
 pub struct Capture {
     pub text: String,
     pub attachments: Vec<Attachment>,
-    /// The title of the window in front when the hotkey was pressed, when `capture_source` is on
-    /// (spec §5.3).
+    /// The title of the window in front when the hotkey was pressed, when `capture_source` is on.
     pub source_window: Option<String>,
 }
 
@@ -28,7 +27,7 @@ impl Capture {
     }
 }
 
-/// What a capture contains, for its `kind:` and the box's footer (spec §5.2, §6.1).
+/// What a capture contains, for its `kind:` and the box's footer.
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
 pub enum Kind {
     Text,

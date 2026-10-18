@@ -1,4 +1,4 @@
-//! The capture box's draft (spec §5.2): what was in the box when it closed without saving, kept
+//! The capture box's draft: what was in the box when it closed without saving, kept
 //! in `%LocalAppData%\FastCapture\draft` and brought back the next time it opens. Text goes in
 //! `draft.txt`; pasted images are saved beside it as PNGs; `attachments.txt` lists the
 //! attachments in order, `png:<name>` or `file:<path>` (dropped files are kept as their paths).

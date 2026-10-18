@@ -1,8 +1,8 @@
 //! Copied from FastPad `src/library/capture.rs` (`obsidian_attachments`, `attachments_folder`).
 //!
 //! Where attachments go: `notebook.ini`'s `attachments_folder`, else Obsidian's
-//! `attachmentFolderPath` from `.obsidian\app.json`, else `attachments` (FastPad second brain
-//! phase 1 spec §9.1). FastCapture only reads `app.json`, never writes it.
+//! `attachmentFolderPath` from `.obsidian\app.json`, else `attachments`.
+//! FastCapture only reads `app.json`, never writes it.
 
 use std::path::{Path, PathBuf};
 

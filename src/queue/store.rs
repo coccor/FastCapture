@@ -1,4 +1,4 @@
-//! The per-PC queue (spec §6.3): one JSON file per job in `%LocalAppData%\FastCapture\queue`,
+//! The per-PC queue: one JSON file per job in `%LocalAppData%\FastCapture\queue`,
 //! named by its capture id and written atomically. It survives restarts: on start, jobs left
 //! `working` go back to `queued`, and raw sources with no job get one.
 

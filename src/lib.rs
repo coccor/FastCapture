@@ -1,6 +1,5 @@
 //! FastCapture: a Windows tray app that captures text, screenshots, links and files into a
-//! notebook as raw sources, and turns them into Markdown notes
-//! (`docs/specs/2026-10-18-fastcapture-design.md`).
+//! notebook as raw sources, and turns them into Markdown notes.
 
 pub mod add;
 pub mod capture;

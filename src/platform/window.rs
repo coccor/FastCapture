@@ -30,7 +30,7 @@ pub(crate) fn title(window: HWND) -> String {
     String::from_utf16_lossy(&buffer[..copied.max(0) as usize])
 }
 
-/// The title of the window in front, when there is one with a title (spec §5.3).
+/// The title of the window in front, when there is one with a title.
 pub fn foreground_title() -> Option<String> {
     let window = unsafe { GetForegroundWindow() };
     if window.is_null() {

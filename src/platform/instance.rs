@@ -1,4 +1,4 @@
-//! One tray app per Windows session (spec §5.1), guarded by a named mutex, as FastPad does.
+//! One tray app per Windows session, guarded by a named mutex, as FastPad does.
 
 use std::os::windows::io::{FromRawHandle, OwnedHandle};
 use windows_sys::Win32::Foundation::{ERROR_ALREADY_EXISTS, GetLastError};

@@ -1,4 +1,4 @@
-//! The named pipe between `fastcapture add` and the tray app (spec §5.1), after FastPad's
+//! The named pipe between `fastcapture add` and the tray app, after FastPad's
 //! `ipc` module: one pipe per Windows session, `\\.\pipe\FastCapture-<session>`, that only the
 //! current user can open and that refuses remote clients. Unlike FastPad's inbound pipe it is
 //! duplex: the tray app answers each request with where the capture went. The server blocks on

@@ -1,4 +1,4 @@
-//! `%AppData%\FastCapture\fastcapture.ini` (spec §11): per-PC settings. `key=value` lines; `#`
+//! `%AppData%\FastCapture\fastcapture.ini`: per-PC settings. `key=value` lines; `#`
 //! or `;` comments. FastCapture writes it by changing only the lines it sets, so comments,
 //! unknown keys and their order survive. A bad value falls back to its default with a warning
 //! naming its line. M1's keys are below; the mode and backend keys come with M2.
@@ -155,6 +155,15 @@ impl SettingsFile {
 
     pub fn settings(&self) -> (Settings, Vec<Warning>) {
         parse(&self.text())
+    }
+
+    /// The value of `key`'s first line, for keys `parse` doesn't read (window placement).
+    pub fn value(&self, key: &str) -> Option<String> {
+        self.lines
+            .iter()
+            .find(|line| Self::key_of(line) == Some(key))
+            .and_then(|line| line.split_once('='))
+            .map(|(_, value)| value.trim().to_owned())
     }
 
     fn key_of(line: &str) -> Option<&str> {

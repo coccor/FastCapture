@@ -1,4 +1,4 @@
-//! Where FastCapture keeps its own files (spec §11): settings under `%AppData%\FastCapture`,
+//! Where FastCapture keeps its own files: settings under `%AppData%\FastCapture`,
 //! per-PC state (queue, index, drafts, logs) under `%LocalAppData%\FastCapture`.
 
 use std::path::PathBuf;

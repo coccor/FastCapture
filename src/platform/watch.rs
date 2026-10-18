@@ -1,5 +1,5 @@
 //! Watching a folder for changes on a thread of its own (`FindFirstChangeNotificationW`), for
-//! re-reading `fastcapture.ini` when it is saved (spec §11).
+//! re-reading `fastcapture.ini` when it is saved.
 
 use super::wide_path;
 use std::path::Path;

@@ -1,7 +1,7 @@
 //! Copied from FastPad `src/library/frontmatter.rs` (without `add_alias`).
 //!
-//! Front matter: the YAML block between `---` lines at the top of a Markdown note (FastPad
-//! second brain phase 1 spec §6.2). Only a subset of YAML is read: `key: value`, quoted strings, flow lists
+//! Front matter: the YAML block between `---` lines at the top of a Markdown note.
+//! Only a subset of YAML is read: `key: value`, quoted strings, flow lists
 //! (`[a, b]`) and block lists (`- a`). Anything else is kept as raw text for its key and is never
 //! an error. Pure: no disk, no window.
 

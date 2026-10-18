@@ -1,4 +1,4 @@
-//! Global hotkeys (spec §5.1) with `RegisterHotKey`. `WM_HOTKEY` arrives at the window with the
+//! Global hotkeys with `RegisterHotKey`. `WM_HOTKEY` arrives at the window with the
 //! hotkey's id.
 
 use super::last_error;

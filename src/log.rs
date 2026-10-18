@@ -1,4 +1,4 @@
-//! The diagnostic log, `%LocalAppData%\FastCapture\log\fastcapture.log` (spec §11, §13). It
+//! The diagnostic log, `%LocalAppData%\FastCapture\log\fastcapture.log`. It
 //! records what the app did and what failed, never capture text, page content, prompts or keys.
 //! Callers pass only their own wording and paths. Logging never fails the caller.
 

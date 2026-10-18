@@ -8,7 +8,7 @@ const RESERVED: [&str; 22] = [
     "COM9", "LPT1", "LPT2", "LPT3", "LPT4", "LPT5", "LPT6", "LPT7", "LPT8", "LPT9",
 ];
 
-/// Image files FastPad lists and shows (FastPad image preview spec §4). SVG is listed but opens
+/// Image files FastPad lists and shows. SVG is listed but opens
 /// as text, so `is_raster_image_extension` leaves it out.
 pub const IMAGE_EXTENSIONS: [&str; 16] = [
     "png", "jpg", "jpeg", "jpe", "jfif", "gif", "bmp", "dib", "ico", "tif", "tiff", "webp", "heic",

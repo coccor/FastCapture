@@ -1,4 +1,4 @@
-//! The capture box (spec §5.2), ported from FastPad `src/window/capture_box.rs`: a small
+//! The capture box, ported from FastPad `src/window/capture_box.rs`: a small
 //! top-most window with a multi-line edit, a strip of attachments, and keys to save, close,
 //! paste images, snip and pick a notebook. It files nothing itself: a `Sink` does. The first
 //! half of the file is pure layout and key logic.
@@ -323,7 +323,7 @@ pub struct Open {
     pub notebook: PathBuf,
     /// Where the draft lives; `None` keeps no draft.
     pub draft_dir: Option<PathBuf>,
-    /// The window that was in front when the hotkey was pressed (spec §5.3).
+    /// The window that was in front when the hotkey was pressed.
     pub source_window: Option<String>,
 }
 
