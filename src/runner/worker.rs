@@ -49,6 +49,9 @@ struct Signals {
     paused_by_user: bool,
     /// An error paused the queue; cleared by `resume` or a settings change.
     paused_by_error: Option<String>,
+    /// A limit paused the queue until a time (milliseconds since 1970); it lifts itself then,
+    /// or on `resume` or a settings change.
+    paused_until: Option<(u64, String)>,
 }
 
 struct Shared {
@@ -72,6 +75,7 @@ impl Waker {
         self.signal(|signals| {
             signals.rebuild = true;
             signals.paused_by_error = None;
+            signals.paused_until = None;
             signals.woken = true;
         });
     }
@@ -143,6 +147,7 @@ impl Worker {
             signals.paused_by_user = paused;
             if !paused {
                 signals.paused_by_error = None;
+                signals.paused_until = None;
             }
             signals.woken = true;
         });
@@ -214,16 +219,26 @@ fn run(
 ) {
     let mut backend: Option<Box<dyn Backend>> = None;
     loop {
-        let (stop, rebuild, paused) = match shared.signals.lock() {
-            Ok(mut signals) => (
-                signals.stop,
-                std::mem::take(&mut signals.rebuild),
-                if signals.paused_by_user {
-                    Some(None)
-                } else {
-                    signals.paused_by_error.clone().map(Some)
-                },
-            ),
+        let (stop, rebuild, paused, paused_until) = match shared.signals.lock() {
+            Ok(mut signals) => {
+                if signals
+                    .paused_until
+                    .as_ref()
+                    .is_some_and(|(until, _)| *until <= process::now_ms())
+                {
+                    signals.paused_until = None;
+                }
+                (
+                    signals.stop,
+                    std::mem::take(&mut signals.rebuild),
+                    if signals.paused_by_user {
+                        Some(None)
+                    } else {
+                        signals.paused_by_error.clone().map(Some)
+                    },
+                    signals.paused_until.clone(),
+                )
+            }
             Err(_) => return,
         };
         if stop {
@@ -235,6 +250,14 @@ fn run(
         if let Some(reason) = paused {
             set_status(shared, Status::Paused(reason), changed);
             if !sleep(shared, None) {
+                return;
+            }
+            continue;
+        }
+        if let Some((until, reason)) = paused_until {
+            set_status(shared, Status::Paused(Some(reason)), changed);
+            let wait = process::until(until, process::now_ms()).min(IDLE_CHECK);
+            if !sleep(shared, Some(wait)) {
                 return;
             }
             continue;
@@ -309,6 +332,12 @@ fn run(
                 crate::log::line(&format!("runner: paused: {reason}"));
                 if let Ok(mut signals) = shared.signals.lock() {
                     signals.paused_by_error = Some(reason.clone());
+                }
+            }
+            Outcome::PauseUntil { until, reason } => {
+                crate::log::line(&format!("runner: paused until {until}: {reason}"));
+                if let Ok(mut signals) = shared.signals.lock() {
+                    signals.paused_until = Some((*until, reason.clone()));
                 }
             }
         }
@@ -678,6 +707,40 @@ mod tests {
         );
         worker.waker().settings_changed();
         assert!(eventually(|| builds.load(Ordering::SeqCst) >= 2));
+        worker.stop();
+    }
+
+    #[test]
+    fn a_limit_pauses_the_queue_until_its_time_then_it_goes_on() {
+        let temp = Temp::new("pause-until");
+        let first = temp.capture("first");
+        let until = process::now_ms() + 700;
+        let script = Arc::new(Scripted::new(vec![
+            Err(BackendError::PauseUntil {
+                until,
+                reason: "The usage limit is reached".into(),
+            }),
+            Ok(note("After")),
+        ]));
+        let worker = Worker::start(
+            temp.0.join("queue"),
+            Box::new(Ready(script, Arc::new(AtomicUsize::new(0)))),
+            None,
+            None,
+            Box::new(|| {}),
+        );
+        assert!(eventually(
+            || worker.status() == Status::Paused(Some("The usage limit is reached".into()))
+        ));
+        let store = temp.store();
+        assert_eq!(store.get(&first.capture_id).unwrap().state, State::Queued);
+        assert!(
+            eventually(|| store
+                .get(&first.capture_id)
+                .is_some_and(|job| job.state == State::Done)),
+            "it goes on by itself"
+        );
+        assert!(process::now_ms() >= until);
         worker.stop();
     }
 

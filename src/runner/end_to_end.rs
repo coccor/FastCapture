@@ -548,6 +548,10 @@ fn an_openai_compatible_api_writes_notes_counts_their_tokens_and_stops_at_the_ca
     assert_eq!(body["model"], "gpt-test");
     assert_eq!(body["response_format"]["type"], "json_schema");
     let today = super::usage::today();
+    // The job is saved as done just before its tokens are recorded.
+    wait_for("the tokens", || {
+        super::usage::Ledger::load(&ledger).day(&today).total() > 0
+    });
     assert_eq!(
         super::usage::Ledger::load(&ledger).day(&today),
         crate::model::Usage {

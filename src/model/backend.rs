@@ -58,6 +58,9 @@ pub enum BackendError {
     },
     /// Stop the whole queue until the user fixes something (a refused key, billing).
     Pause(String),
+    /// Stop the whole queue until `until` (milliseconds since 1970), then carry on: a plan's
+    /// usage limit, which resets on its own.
+    PauseUntil { until: u64, reason: String },
     /// This job can't be done as it is (a request the server refuses, a declined capture).
     Fail(String),
     /// The reply came but isn't a usable note; the runner asks once more.
@@ -67,9 +70,10 @@ pub enum BackendError {
 impl std::fmt::Display for BackendError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Self::Retry { reason, .. } | Self::Pause(reason) | Self::Fail(reason) => {
-                f.write_str(reason)
-            }
+            Self::Retry { reason, .. }
+            | Self::Pause(reason)
+            | Self::PauseUntil { reason, .. }
+            | Self::Fail(reason) => f.write_str(reason),
             Self::Invalid(problems) => write!(f, "the reply wasn't a usable note: {problems}"),
         }
     }

@@ -20,6 +20,9 @@ pub enum Outcome {
     Retry { at: u64, reason: String },
     /// The whole queue should stop until the user fixes something; the job stays queued.
     Pause(String),
+    /// The whole queue should stop until `until` (milliseconds since 1970); the job stays
+    /// queued.
+    PauseUntil { until: u64, reason: String },
     /// The job failed for good.
     Failed(String),
 }
@@ -58,7 +61,7 @@ pub fn process_with(
             job.retry_at = Some(now + wait.as_millis() as u64);
             job.last_error = Some(reason.clone());
         }
-        Err(BackendError::Pause(reason)) => {
+        Err(BackendError::Pause(reason) | BackendError::PauseUntil { reason, .. }) => {
             // Not the job's fault: it keeps its place, and its try doesn't count.
             job.state = State::Queued;
             job.attempts = job.attempts.saturating_sub(1);
@@ -77,6 +80,7 @@ pub fn process_with(
             reason,
         },
         Err(BackendError::Pause(reason)) => Outcome::Pause(reason),
+        Err(BackendError::PauseUntil { until, reason }) => Outcome::PauseUntil { until, reason },
         Err(error) => Outcome::Failed(error.to_string()),
     }
 }
