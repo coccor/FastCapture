@@ -1,7 +1,7 @@
 //! The Claude API backend: one Messages API request per note, with the note schema as structured
 //! output, the writing rules cached as the system prompt, and the API's own refusal fallback.
 
-use super::backend::{self, Backend, BackendError};
+use super::backend::{self, Backend, BackendError, Meter, Usage};
 use super::request::NoteRequest;
 use crate::net::http::{Client, Request};
 use crate::note::{NoteJson, reply, schema};
@@ -33,17 +33,7 @@ pub struct Claude {
     model: String,
     key: String,
     effort: &'static str,
-    last_usage: std::sync::Mutex<Option<Usage>>,
-}
-
-/// The tokens one request used, as the API counted them.
-#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
-pub struct Usage {
-    /// Input not read from the cache.
-    pub input: u64,
-    pub cache_read: u64,
-    pub cache_write: u64,
-    pub output: u64,
+    usage: Meter,
 }
 
 impl Claude {
@@ -61,13 +51,8 @@ impl Claude {
             model: model.to_owned(),
             key,
             effort: DEFAULT_EFFORT,
-            last_usage: std::sync::Mutex::new(None),
+            usage: Meter::default(),
         })
-    }
-
-    /// The tokens the last request used, when the API said.
-    pub fn last_usage(&self) -> Option<Usage> {
-        self.last_usage.lock().ok().and_then(|usage| *usage)
     }
 
     /// The same backend at another effort (`low`, `medium`, `high`…), for comparing them.
@@ -145,9 +130,7 @@ impl Backend for Claude {
                 "claude: {} input ({} cached), {} output tokens",
                 usage.input, usage.cache_read, usage.output
             ));
-            if let Ok(mut last) = self.last_usage.lock() {
-                *last = Some(usage);
-            }
+            self.usage.add(usage);
         }
         match message.get("stop_reason").and_then(Value::as_str) {
             Some("refusal") => {
@@ -177,11 +160,14 @@ impl Backend for Claude {
             })?;
         reply::parse(text).map_err(BackendError::Invalid)
     }
+
+    fn take_usage(&self) -> Option<Usage> {
+        self.usage.take()
+    }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::Usage;
     use super::*;
     use crate::model::images::ModelImage;
     use crate::model::request::CaptureFacts;
@@ -239,7 +225,7 @@ mod tests {
         assert_eq!(note.tags, ["ops"]);
         assert_eq!(claude.label(), "cloud/claude-sonnet-5-5");
         assert_eq!(
-            claude.last_usage(),
+            claude.take_usage(),
             Some(Usage {
                 input: 1200,
                 cache_read: 900,
@@ -247,6 +233,7 @@ mod tests {
                 output: 210
             })
         );
+        assert_eq!(claude.take_usage(), None, "taken");
 
         let seen = &server.requests()[0];
         assert_eq!(seen.path, "/v1/messages");

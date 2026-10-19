@@ -2,7 +2,7 @@
 //! Local serve it on this PC (and cloud endpoints, later). The note schema goes as
 //! `response_format`; a server that rejects that gets the schema in the system prompt instead.
 
-use super::backend::{self, Backend, BackendError};
+use super::backend::{self, Backend, BackendError, Meter, Usage};
 use super::request::NoteRequest;
 use crate::net::http::{Client, Request};
 use crate::note::{NoteJson, reply, schema};
@@ -21,6 +21,7 @@ pub struct OpenAi {
     timeout: Duration,
     /// The server rejected `response_format` once: ask with the schema in the prompt.
     schema_in_prompt: AtomicBool,
+    usage: Meter,
 }
 
 /// `endpoint` without a trailing `/` or `/v1`.
@@ -52,6 +53,7 @@ impl OpenAi {
             mode,
             timeout,
             schema_in_prompt: AtomicBool::new(false),
+            usage: Meter::default(),
         })
     }
 
@@ -144,6 +146,13 @@ impl Backend for OpenAi {
                 after: None,
                 reason: format!("{} sent a reply that isn't JSON: {error}", self.service()),
             })?;
+        if let Some(usage) = usage_of(&reply) {
+            crate::log::line(&format!(
+                "openai: {} input ({} cached), {} output tokens",
+                usage.input, usage.cache_read, usage.output
+            ));
+            self.usage.add(usage);
+        }
         let choice = &reply["choices"][0];
         if choice["finish_reason"].as_str() == Some("length") {
             return Err(BackendError::Fail(format!(
@@ -156,6 +165,24 @@ impl Backend for OpenAi {
         })?;
         reply::parse(text).map_err(BackendError::Invalid)
     }
+
+    fn take_usage(&self) -> Option<Usage> {
+        self.usage.take()
+    }
+}
+
+/// A reply's `usage`: `prompt_tokens` includes the cached ones, which are counted apart.
+fn usage_of(reply: &Value) -> Option<Usage> {
+    let usage = reply.get("usage").filter(|usage| usage.is_object())?;
+    let count = |value: &Value| value.as_u64().unwrap_or(0);
+    let prompt = count(&usage["prompt_tokens"]);
+    let cached = count(&usage["prompt_tokens_details"]["cached_tokens"]).min(prompt);
+    Some(Usage {
+        input: prompt - cached,
+        cache_read: cached,
+        cache_write: 0,
+        output: count(&usage["completion_tokens"]),
+    })
 }
 
 /// The model ids the server at `endpoint` lists (`GET /v1/models`).
@@ -229,6 +256,63 @@ mod tests {
     fn chat(content: &str, finish: &str) -> String {
         json!({"choices": [{"index": 0, "message": {"role": "assistant", "content": content}, "finish_reason": finish}]})
             .to_string()
+    }
+
+    fn chat_with_usage(content: &str, usage: Value) -> String {
+        let mut reply: Value = serde_json::from_str(&chat(content, "stop")).unwrap();
+        reply["usage"] = usage;
+        reply.to_string()
+    }
+
+    #[test]
+    fn usage_is_read_from_replies_and_added_up_until_taken() {
+        let server = TestServer::start(vec![
+            Scripted::json(
+                200,
+                &chat_with_usage(
+                    "not a note",
+                    json!({"prompt_tokens": 1000, "completion_tokens": 50,
+                           "prompt_tokens_details": {"cached_tokens": 600}}),
+                ),
+            ),
+            Scripted::json(
+                200,
+                &chat_with_usage(
+                    NOTE,
+                    json!({"prompt_tokens": 400, "completion_tokens": 120}),
+                ),
+            ),
+            Scripted::json(200, &chat(NOTE, "stop")),
+        ]);
+        let cloud = OpenAi::new(
+            &server.url(),
+            "m",
+            Some("sk-test".into()),
+            "cloud",
+            Duration::from_secs(5),
+        )
+        .unwrap();
+        assert!(matches!(
+            cloud.complete(&request()),
+            Err(BackendError::Invalid(_))
+        ));
+        assert_eq!(cloud.complete(&request()).unwrap().title, "Lag");
+        assert_eq!(
+            cloud.take_usage(),
+            Some(Usage {
+                input: 800,
+                cache_read: 600,
+                cache_write: 0,
+                output: 170
+            })
+        );
+        assert_eq!(cloud.take_usage(), None, "taken");
+        cloud.complete(&request()).unwrap();
+        assert_eq!(
+            cloud.take_usage(),
+            None,
+            "a reply without usage counts nothing"
+        );
     }
 
     #[test]

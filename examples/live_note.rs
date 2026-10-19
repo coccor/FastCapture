@@ -173,12 +173,11 @@ fn main() {
         Err(error) => println!("No note: {error}"),
     }
     println!("--- {} in {:.1} s", backend.label(), elapsed.as_secs_f64());
-    // The usage line the Claude backend logs, when it is the backend.
-    if let Some(log) = fastcapture::paths::log_dir()
-        .and_then(|dir| std::fs::read_to_string(dir.join("fastcapture.log")).ok())
-        && let Some(line) = log.lines().rev().find(|line| line.contains("claude: "))
-    {
-        println!("--- {line}");
+    if let Some(usage) = backend.take_usage() {
+        println!(
+            "--- {} input ({} cached, {} written to the cache), {} output tokens",
+            usage.input, usage.cache_read, usage.cache_write, usage.output
+        );
     }
     let _ = std::fs::remove_dir_all(&scratch);
 }

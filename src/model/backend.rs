@@ -5,7 +5,48 @@ use super::request::NoteRequest;
 use crate::net::http::{HttpError, Response};
 use crate::note::NoteJson;
 use crate::note::reply::ReplyError;
+use std::sync::Mutex;
 use std::time::Duration;
+
+/// The tokens requests used, as the API counted them.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct Usage {
+    /// Input not read from the cache.
+    pub input: u64,
+    pub cache_read: u64,
+    pub cache_write: u64,
+    pub output: u64,
+}
+
+impl Usage {
+    /// Every token, cached ones included.
+    pub fn total(&self) -> u64 {
+        self.input + self.cache_read + self.cache_write + self.output
+    }
+
+    pub fn add(&mut self, other: Usage) {
+        self.input += other.input;
+        self.cache_read += other.cache_read;
+        self.cache_write += other.cache_write;
+        self.output += other.output;
+    }
+}
+
+/// What a backend's requests used since it was last asked.
+#[derive(Debug, Default)]
+pub struct Meter(Mutex<Option<Usage>>);
+
+impl Meter {
+    pub fn add(&self, usage: Usage) {
+        if let Ok(mut meter) = self.0.lock() {
+            meter.get_or_insert_with(Usage::default).add(usage);
+        }
+    }
+
+    pub fn take(&self) -> Option<Usage> {
+        self.0.lock().ok().and_then(|mut meter| meter.take())
+    }
+}
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum BackendError {
@@ -39,6 +80,10 @@ pub trait Backend: Send {
     fn label(&self) -> String;
     /// Asks for one note. The note is parsed, not yet checked (`note::reply::check`).
     fn complete(&self, request: &NoteRequest) -> Result<NoteJson, BackendError>;
+    /// The tokens this backend's requests used since it was last asked, when the API said.
+    fn take_usage(&self) -> Option<Usage> {
+        None
+    }
 }
 
 /// A transport failure as a backend error: offline and timeouts retry, the rest fail.
@@ -145,6 +190,36 @@ mod tests {
             from_status(&response(529, claude, &[]), "Claude"),
             BackendError::Retry { after: None, .. }
         ));
+    }
+
+    #[test]
+    fn a_meter_adds_requests_up_until_it_is_read() {
+        let meter = Meter::default();
+        assert_eq!(meter.take(), None);
+        meter.add(Usage {
+            input: 10,
+            cache_read: 5,
+            cache_write: 0,
+            output: 3,
+        });
+        meter.add(Usage {
+            input: 1,
+            cache_read: 0,
+            cache_write: 2,
+            output: 4,
+        });
+        let usage = meter.take().unwrap();
+        assert_eq!(
+            usage,
+            Usage {
+                input: 11,
+                cache_read: 5,
+                cache_write: 2,
+                output: 7
+            }
+        );
+        assert_eq!(usage.total(), 25);
+        assert_eq!(meter.take(), None, "taken");
     }
 
     #[test]

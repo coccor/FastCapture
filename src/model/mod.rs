@@ -9,4 +9,4 @@ pub mod openai;
 pub mod prompt;
 pub mod request;
 
-pub use backend::{Backend, BackendError};
+pub use backend::{Backend, BackendError, Usage};

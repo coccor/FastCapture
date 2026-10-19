@@ -45,9 +45,9 @@ src/
 
 ### Part 1: Usage from every API backend
 
-- [ ] `model/backend.rs`: `Usage { input, cache_read, cache_write, output }` moves here, with `total()` and `add`. `Backend::take_usage(&self) -> Option<Usage>` (default `None`) returns what the backend's requests used since it was last asked, so the worker gets both requests of a capture asked twice.
-- [ ] `model/claude.rs`: keeps adding into its usage instead of replacing `last_usage`; `examples/live_note.rs` reads it through `take_usage`.
-- [ ] `model/openai.rs`: reads `usage` from replies (`prompt_tokens`, `completion_tokens`, `prompt_tokens_details.cached_tokens` as cache reads, so `input` is the rest), logs it as Claude does, and returns it through `take_usage`. A reply without `usage` counts nothing.
+- [x] `model/backend.rs`: `Usage { input, cache_read, cache_write, output }` moves here, with `total()` and `add`. `Backend::take_usage(&self) -> Option<Usage>` (default `None`) returns what the backend's requests used since it was last asked, so the worker gets both requests of a capture asked twice. A `Meter` holds it for each backend.
+- [x] `model/claude.rs`: keeps adding into its usage instead of replacing `last_usage`; `examples/live_note.rs` reads it through `take_usage`.
+- [x] `model/openai.rs`: reads `usage` from replies (`prompt_tokens`, `completion_tokens`, `prompt_tokens_details.cached_tokens` as cache reads, so `input` is the rest), logs it as Claude does, and returns it through `take_usage`. A reply without `usage` counts nothing.
 - **Tests:** Claude and OpenAI-compatible replies with and without usage; two requests add up; taking it empties it.
 
 ### Part 2: The OpenAI-compatible cloud backend
