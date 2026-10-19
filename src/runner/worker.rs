@@ -18,6 +18,10 @@ const IDLE_CHECK: Duration = Duration::from_secs(60);
 /// Builds the backend the settings choose, or says what's missing.
 pub trait Factory: Send {
     fn backend(&self) -> Result<Box<dyn Backend>, String>;
+    /// The most tokens cloud requests may use in a month, read when a cloud job is due.
+    fn token_cap(&self) -> Option<u64> {
+        None
+    }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -286,8 +290,15 @@ fn run(
             continue;
         };
 
-        set_status(shared, Status::Working, changed);
         let day = today();
+        if let Some(reason) = cap_reached(active, factory, usage, &day) {
+            set_status(shared, Status::Paused(Some(reason)), changed);
+            if !sleep(shared, Some(IDLE_CHECK)) {
+                return;
+            }
+            continue;
+        }
+        set_status(shared, Status::Working, changed);
         let outcome = process::process_with(store, job, active, now, &day, indexes);
         record_usage(active, usage, &day);
         match &outcome {
@@ -307,6 +318,21 @@ fn run(
         }
         changed();
     }
+}
+
+/// Why a cloud job must wait: this month's tokens have reached the cap. Checked again at each
+/// wake and idle check, so raising the cap or a new month lets jobs run.
+fn cap_reached(
+    backend: &dyn Backend,
+    factory: &dyn Factory,
+    ledger: Option<&Path>,
+    day: &str,
+) -> Option<String> {
+    if !backend.label().starts_with("cloud/") {
+        return None;
+    }
+    let cap = factory.token_cap()?;
+    super::usage::cap_reached(&super::usage::Ledger::load(ledger?), day, cap)
 }
 
 /// Adds what a cloud backend's last job used to the ledger. Local servers aren't counted.
@@ -391,7 +417,7 @@ mod tests {
         }
     }
 
-    struct Once(Mutex<Option<Metered>>);
+    struct Once(Mutex<Option<Metered>>, Arc<std::sync::atomic::AtomicU64>);
 
     impl Factory for Once {
         fn backend(&self) -> Result<Box<dyn Backend>, String> {
@@ -402,17 +428,31 @@ mod tests {
                 .map(|backend| Box::new(backend) as Box<dyn Backend>)
                 .ok_or_else(|| "built once".to_owned())
         }
+        fn token_cap(&self) -> Option<u64> {
+            Some(self.1.load(Ordering::SeqCst)).filter(|cap| *cap > 0)
+        }
     }
 
     fn metered(
         label: &'static str,
         answers: Vec<Result<crate::note::NoteJson, BackendError>>,
     ) -> Box<Once> {
-        Box::new(Once(Mutex::new(Some(Metered {
-            label,
-            script: Scripted::new(answers),
-            meter: Default::default(),
-        }))))
+        capped(label, answers, Arc::default())
+    }
+
+    fn capped(
+        label: &'static str,
+        answers: Vec<Result<crate::note::NoteJson, BackendError>>,
+        cap: Arc<std::sync::atomic::AtomicU64>,
+    ) -> Box<Once> {
+        Box::new(Once(
+            Mutex::new(Some(Metered {
+                label,
+                script: Scripted::new(answers),
+                meter: Default::default(),
+            })),
+            cap,
+        ))
     }
 
     #[test]
@@ -442,6 +482,77 @@ mod tests {
                 .unwrap()
                 .contains(" cloud/test-model ")
         );
+    }
+
+    #[test]
+    fn a_cloud_job_waits_once_the_month_reaches_the_cap_until_it_is_raised() {
+        let temp = Temp::new("cap");
+        let ledger = temp.0.join(super::super::usage::FILE);
+        super::super::usage::record(
+            &ledger,
+            &today(),
+            "cloud/test-model",
+            crate::model::Usage {
+                input: 900,
+                output: 100,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        let job = temp.capture("first");
+        let cap = Arc::new(std::sync::atomic::AtomicU64::new(1000));
+        let worker = Worker::start(
+            temp.0.join("queue"),
+            capped("cloud/test-model", vec![Ok(note("One"))], cap.clone()),
+            None,
+            Some(ledger.clone()),
+            Box::new(|| {}),
+        );
+        assert!(eventually(|| matches!(
+            worker.status(),
+            Status::Paused(Some(ref reason)) if reason.starts_with("This month's token cap (1,000) is reached")
+        )));
+        let store = temp.store();
+        assert_eq!(store.get(&job.capture_id).unwrap().state, State::Queued);
+        cap.store(2000, Ordering::SeqCst);
+        worker.waker().wake();
+        assert!(eventually(|| store
+            .get(&job.capture_id)
+            .is_some_and(|job| job.state == State::Done)));
+        worker.stop();
+    }
+
+    #[test]
+    fn local_mode_isnt_capped() {
+        let temp = Temp::new("cap-local");
+        let ledger = temp.0.join(super::super::usage::FILE);
+        super::super::usage::record(
+            &ledger,
+            &today(),
+            "cloud/test-model",
+            crate::model::Usage {
+                input: 5000,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        let job = temp.capture("first");
+        let worker = Worker::start(
+            temp.0.join("queue"),
+            capped(
+                "local/test-model",
+                vec![Ok(note("One"))],
+                Arc::new(std::sync::atomic::AtomicU64::new(1000)),
+            ),
+            None,
+            Some(ledger),
+            Box::new(|| {}),
+        );
+        let store = temp.store();
+        assert!(eventually(|| store
+            .get(&job.capture_id)
+            .is_some_and(|job| job.state == State::Done)));
+        worker.stop();
     }
 
     #[test]

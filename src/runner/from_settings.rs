@@ -83,6 +83,11 @@ impl Factory for FromSettings {
             .unwrap_or_default();
         build(&settings, crate::secrets::load)
     }
+
+    fn token_cap(&self) -> Option<u64> {
+        let path = self.settings.as_deref()?;
+        SettingsFile::load(path).settings().0.token_cap
+    }
 }
 
 #[cfg(test)]

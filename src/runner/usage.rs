@@ -178,6 +178,29 @@ impl Ledger {
     }
 }
 
+/// `count` with a comma between thousands: `2,000,000`.
+pub fn thousands(count: u64) -> String {
+    let digits = count.to_string();
+    let mut text = String::new();
+    for (index, digit) in digits.chars().enumerate() {
+        if index > 0 && (digits.len() - index).is_multiple_of(3) {
+            text.push(',');
+        }
+        text.push(digit);
+    }
+    text
+}
+
+/// Why the queue pauses: this month's tokens in `ledger` have reached `cap`.
+pub fn cap_reached(ledger: &Ledger, day: &str, cap: u64) -> Option<String> {
+    (ledger.month(day).total() >= cap).then(|| {
+        format!(
+            "This month's token cap ({}) is reached. Raise it in Settings, or wait for next month.",
+            thousands(cap)
+        )
+    })
+}
+
 /// Adds `usage` to the ledger at `path` and saves it.
 pub fn record(path: &Path, day: &str, label: &str, usage: Usage) -> crate::Result<()> {
     let mut ledger = Ledger::load(path);
@@ -257,6 +280,28 @@ mod tests {
         assert_eq!(ledger.day("2026-10-19").total(), 17);
         assert!(ledger.text().contains("2026-10-19 cloud/m input=lots\r\n"));
         assert!(ledger.text().contains("cloud/name with spaces input=1"));
+    }
+
+    #[test]
+    fn the_cap_is_reached_by_this_months_tokens_only() {
+        let mut ledger = Ledger::default();
+        ledger.add("2026-10-19", "cloud/m", usage(600, 400));
+        assert_eq!(cap_reached(&ledger, "2026-10-19", 1001), None);
+        assert_eq!(
+            cap_reached(&ledger, "2026-10-20", 1000).as_deref(),
+            Some(
+                "This month's token cap (1,000) is reached. Raise it in Settings, or wait for next month."
+            )
+        );
+        assert_eq!(
+            cap_reached(&ledger, "2026-11-01", 1000),
+            None,
+            "a new month"
+        );
+        assert_eq!(thousands(0), "0");
+        assert_eq!(thousands(999), "999");
+        assert_eq!(thousands(2_000_000), "2,000,000");
+        assert_eq!(thousands(12_345), "12,345");
     }
 
     #[test]

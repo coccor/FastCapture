@@ -65,8 +65,8 @@ src/
 
 ### Part 4: The token cap
 
-- [ ] `config/settings.rs`: `token_cap`: empty or `0` for none (the default), else a whole number, with `k` or `M` allowed (`2M`, `500k`); a bad value warns and means none.
-- [ ] `runner/worker.rs`: the factory gives the cap with the backend. Before a cloud job, when this month's tokens have reached the cap, the queue pauses with "This month's token cap (2,000,000) is reached. Raise it in Settings, or wait for next month." The tray shows it once, as other pauses. The pause is checked again when the settings change, and at the usual idle check, so a new month resumes on its own. Local mode ignores the cap.
+- [x] `config/settings.rs`: `token_cap`: empty or `0` for none (the default), else a whole number, with `k` or `M` allowed (`2M`, `500k`); a bad value warns and means none.
+- [x] `runner/worker.rs`: the factory gives the cap with the backend. Before a cloud job, when this month's tokens have reached the cap, the queue pauses with "This month's token cap (2,000,000) is reached. Raise it in Settings, or wait for next month." The tray shows it once, as other pauses. The pause is checked again when the settings change, and at the usual idle check, so a new month resumes on its own. Local mode ignores the cap. The cap is checked only when a cloud job is due, from `Factory::token_cap`, which reads the settings file each time. **Resume processing** in the tray menu checks it again, so it stays paused while the cap is reached.
 - **Tests:** the cap's values; a job waits once the month reaches the cap and goes on after the cap is raised; a new month lifts it; Local mode isn't capped.
 
 ### Part 5: Settings

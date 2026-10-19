@@ -43,6 +43,8 @@ pub struct Settings {
     pub openai_model: Option<String>,
     /// The host the first-use screen was accepted for, for the OpenAI-compatible API.
     pub openai_accepted: Option<String>,
+    /// The most tokens cloud requests may use in a month; `None` for no cap.
+    pub token_cap: Option<u64>,
 }
 
 /// One model provider at a time: on this PC, or in the cloud.
@@ -89,6 +91,7 @@ impl Default for Settings {
             openai_endpoint: None,
             openai_model: None,
             openai_accepted: None,
+            token_cap: None,
         }
     }
 }
@@ -109,6 +112,24 @@ fn parse_hotkey(value: &str) -> Option<Option<KeyStroke>> {
     KeyStroke::parse(value)
         .filter(|stroke| stroke.has_modifier())
         .map(Some)
+}
+
+/// A token count: digits, with `k` or `M` allowed (`500k`, `2M`). Empty or `0` is no cap.
+pub fn parse_token_cap(value: &str) -> Option<Option<u64>> {
+    let value = value.trim();
+    if value.is_empty() {
+        return Some(None);
+    }
+    let (digits, times) = match value.as_bytes()[value.len() - 1] {
+        b'k' | b'K' => (&value[..value.len() - 1], 1_000),
+        b'm' | b'M' => (&value[..value.len() - 1], 1_000_000),
+        _ => (value, 1),
+    };
+    if digits.is_empty() || !digits.bytes().all(|byte| byte.is_ascii_digit()) {
+        return None;
+    }
+    let cap = digits.parse::<u64>().ok()?.checked_mul(times)?;
+    Some((cap > 0).then_some(cap))
 }
 
 /// An absolute folder path.
@@ -193,6 +214,7 @@ pub fn parse(text: &str) -> (Settings, Vec<Warning>) {
                 settings.openai_model = (!value.is_empty()).then(|| value.to_owned());
                 Some(())
             }
+            "token_cap" => parse_token_cap(value).map(|cap| settings.token_cap = cap),
             "openai_accepted" => {
                 settings.openai_accepted = (!value.is_empty()).then(|| value.to_ascii_lowercase());
                 Some(())
@@ -410,6 +432,31 @@ mod tests {
         assert_eq!(lines, [1, 2, 3, 4]);
         assert_eq!(settings.mode, None);
         assert_eq!(settings.claude_model, crate::model::claude::DEFAULT_MODEL);
+    }
+
+    #[test]
+    fn the_token_cap_takes_counts_with_k_or_m() {
+        assert_eq!(parse_token_cap(""), Some(None));
+        assert_eq!(parse_token_cap("0"), Some(None));
+        assert_eq!(parse_token_cap("250000"), Some(Some(250_000)));
+        assert_eq!(parse_token_cap("500k"), Some(Some(500_000)));
+        assert_eq!(parse_token_cap("2M"), Some(Some(2_000_000)));
+        assert_eq!(parse_token_cap("2.5M"), None);
+        assert_eq!(parse_token_cap("-5"), None);
+        assert_eq!(parse_token_cap("M"), None);
+        assert_eq!(parse_token_cap("99999999999999999999k"), None);
+        let (settings, warnings) = parse(
+            "token_cap=2M
+",
+        );
+        assert!(warnings.is_empty());
+        assert_eq!(settings.token_cap, Some(2_000_000));
+        let (settings, warnings) = parse(
+            "token_cap=lots
+",
+        );
+        assert_eq!(warnings.len(), 1);
+        assert_eq!(settings.token_cap, None, "a bad value means none");
     }
 
     #[test]
