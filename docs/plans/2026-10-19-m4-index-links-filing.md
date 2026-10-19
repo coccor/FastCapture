@@ -97,7 +97,17 @@ src/
 
 - [x] `runner/end_to_end.rs`: a notebook with notes; a capture whose text matches one of them goes through the worker; the request carries the candidates; the scripted reply links one candidate, invents another and suggests a topic note as home; the written note keeps the real link and the home; filing it appends the line to the topic note and moves the note.
 - [x] `examples/bench.rs`: the index of 10,000 generated notes built cold under 5 s and from the cache under 500 ms; a query under 20 ms (§14). Measured: cold 4.0 s, from the cache 396 ms, a query of 2,000 characters 3 ms. The first runs were over (cold 5.6 s, cached 622 ms), so notes are now read and parsed on up to 8 threads, the word maps use FNV hashing, and the cache (version 2) lists each word once and counts words by number. Both cold and cached times vary by a few hundred ms with the virus scanner, which reads the files the bench just wrote.
-- [ ] Measure with `examples/live_note.rs` (with your approval) on a scratch copy of a notebook you choose (`--notebook` reads it into an index kept in memory, writing nothing there): whether the model links sensibly and suggests a sensible home.
+- [x] Measure with `examples/live_note.rs` (with your approval) on a scratch copy of a notebook you choose (`--notebook` reads it into an index kept in memory, writing nothing there): whether the model links sensibly and suggests a sensible home.
+
+  **Measured 2026-10-19** on Haiku 5.5 (effort low). The capture notebook in the settings holds three test notes and no homes, so a scratch notebook of 13 notes was used instead: two topic notes (Payments incidents, Kafka), a moc (Learning), and notes in `Payments/`, `Payments/Incidents/`, `Engineering/`, `Learning/Rust/`, `Home/` and `Work/`.
+
+  | Capture | Candidates | Links kept | Home | Tokens in / out |
+  | --- | --- | --- | --- | --- |
+  | lag spikes during ledger batch… ledger-events consumer group | 7 | Ledger batch, Consumer lag, Kafka | [[Payments incidents]] | 900 (0 cached) / 391 |
+  | tokio select! drops the losing branch… cleanup in Drop | 1 | Rust async cancellation | Learning/Rust/ | 252 (1,605 cached) / 301 |
+  | Dana asked about refund idempotency… runbook | 3 | Duplicate refunds on retry, Payments incidents | [[Payments incidents]] | 475 (1,605 cached) / 277 |
+
+  Every link named a related candidate and none was invented; the unrelated candidates (Partition rebalancing, the TLS incident) were left out. The homes are the ones a person would pick. The third note didn't link [[1-1 with Dana]], which a person might have. The first request wrote the cache, as the rules changed in Part 4. The three cost about $0.001 together, 2–4 s each.
 
 ### Part 8: Polish and docs
 
