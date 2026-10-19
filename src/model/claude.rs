@@ -206,6 +206,8 @@ mod tests {
                 kinds: vec!["text".into()],
                 attachments: Vec::new(),
                 fallback_title: "lag".into(),
+                links: Vec::new(),
+                truncated: Vec::new(),
             },
         }
     }

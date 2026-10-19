@@ -106,18 +106,18 @@ fn tidy(text: &str) -> String {
     out
 }
 
-/// The pages numbered `pages` (from 0) of the PDF in `bytes`, rendered `width` pixels wide as
-/// PNGs.
-pub fn render(bytes: &[u8], pages: &[u32], width: u32) -> Result<Vec<Vec<u8>>, String> {
+/// The pages numbered `pages` (from 0) of the PDF in `bytes`, rendered as PNGs with their long
+/// side `long_edge` pixels.
+pub fn render(bytes: &[u8], pages: &[u32], long_edge: u32) -> Result<Vec<Vec<u8>>, String> {
     let _com = ComScope::enter();
-    render_with_windows(bytes, pages, width)
+    render_with_windows(bytes, pages, long_edge)
         .map_err(|error| format!("Windows couldn't render it: {error}"))
 }
 
 fn render_with_windows(
     bytes: &[u8],
     pages: &[u32],
-    width: u32,
+    long_edge: u32,
 ) -> windows::core::Result<Vec<Vec<u8>>> {
     let input = InMemoryRandomAccessStream::new()?;
     let writer = DataWriter::CreateDataWriter(&input)?;
@@ -127,11 +127,16 @@ fn render_with_windows(
     writer.DetachStream()?;
     input.Seek(0)?;
     let document = PdfDocument::LoadFromStreamAsync(&input)?.join()?;
-    let options = PdfPageRenderOptions::new()?;
-    options.SetDestinationWidth(width)?;
     let mut rendered = Vec::new();
     for &index in pages {
         let page = document.GetPage(index)?;
+        let size = page.Size()?;
+        let options = PdfPageRenderOptions::new()?;
+        if size.Height > size.Width {
+            options.SetDestinationHeight(long_edge)?;
+        } else {
+            options.SetDestinationWidth(long_edge)?;
+        }
         let output = InMemoryRandomAccessStream::new()?;
         page.RenderWithOptionsToStreamAsync(&output, &options)?
             .join()?;
@@ -325,10 +330,10 @@ mod tests {
         assert_eq!(rendered.len(), 1);
         let png = &rendered[0];
         assert!(png.starts_with(b"\x89PNG"));
-        // Width and height from the IHDR chunk: US Letter at 1,568 px wide.
+        // Width and height from the IHDR chunk: US Letter, its long side 1,568 px.
         let width = u32::from_be_bytes(png[16..20].try_into().unwrap());
         let height = u32::from_be_bytes(png[20..24].try_into().unwrap());
-        assert_eq!(width, 1568);
-        assert_eq!(height, 2029);
+        assert_eq!(width, 1212);
+        assert_eq!(height, 1568);
     }
 }

@@ -95,6 +95,8 @@ fn main() {
                 kinds: &facts.kinds,
                 model: &backend.label(),
                 attachments: &facts.attachments,
+                links: &facts.links,
+                truncated: &facts.truncated,
                 path: Path::new(r"inbox\note.md"),
             });
             println!("{text}");

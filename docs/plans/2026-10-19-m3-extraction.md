@@ -95,9 +95,9 @@ src/
 
 ### Part 7: The request and the note
 
-- [ ] `model/request.rs`: sources are built through `extract/` in capture order within the budget: each link's sidecar page, then each file attachment by type (text, PDF, `.docx`, else name, type and size), then images (attachments, then scanned PDF pages, 8 at most). A file that can't be read is listed with why.
-- [ ] `model/prompt.rs`: `<source kind="link" url="…" title="…" site="…" published="…">page Markdown</source>`, `<source kind="link" url="…" fetched="no" reason="…"/>`, `<attachment name="…" kind="pdf" pages="12">text</attachment>`, and "Cut to fit: …" for what the budget cut. The rules gain one line: for a link capture, the note is about the page, in light of what you wrote.
-- [ ] `note/render.rs`: for a capture with one link, `url` and `site` in the front matter and a `## Source` section linking the page with its title; with several, `## Source` lists them. `truncated: [<name>, …]` when the budget cut anything.
+- [x] `model/request.rs`: sources are built through `extract/` in capture order within the budget: each link's sidecar page, then each file attachment by type (text, PDF, `.docx`, else name, type and size), then images (attachments, then scanned PDF pages, 8 at most). A file that can't be read is listed with why. The title of the first page read is the fallback title when you typed nothing.
+- [x] `model/prompt.rs`: `<source kind="link" url="…" title="…" site="…" published="…">page Markdown</source>`, `<source kind="link" url="…" fetched="no" reason="…"/>`, `<attachment name="…" kind="pdf" pages="12">text</attachment>`, and "Cut to fit: …" for what the budget cut. The rules gain one line: for a link capture, the note is about the page, in light of what you wrote. Also: the page pasted text was copied from (`source_url`, from Part 3) is told to the model.
+- [x] `note/render.rs`: for a capture with one link, `url` and `site` in the front matter and a `## Source` section linking the page with its title; with several, `## Source` lists them. `truncated: [<name>, …]` when the budget cut anything. Scanned PDF pages are rendered with their long side at 1,568 px, so they need no second scaling.
 - **Tests:** golden user turns for a link with a page, a failed fetch, a PDF with a scanned page, a `.docx`, a log and a cut capture; closing tags inside page text escaped; the note's front matter and `## Source` for one and for two links; `truncated:` written.
 
 ### Part 8: End to end

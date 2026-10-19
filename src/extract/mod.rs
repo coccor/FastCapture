@@ -90,6 +90,11 @@ impl Budget {
     pub fn truncated(&self) -> &[String] {
         &self.truncated
     }
+
+    /// PDF pages that may still be read.
+    pub fn pages_left(&self) -> usize {
+        self.pages
+    }
 }
 
 #[cfg(test)]

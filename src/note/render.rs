@@ -1,11 +1,19 @@
 //! A written note's Markdown: front matter, then the title, the summary as a quote, the body,
-//! key points, tasks, related notes and the capture's attachments. Empty sections are left
-//! out. Pure: the caller writes the text.
+//! key points, tasks, related notes, the links captured and the capture's attachments. Empty
+//! sections are left out. Pure: the caller writes the text.
 
 use super::reply::NoteJson;
 use crate::capture::detect;
 use crate::notebook::{links, title};
 use std::path::Path;
+
+/// A link the capture holds, with what its page said about itself.
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct SourceLink {
+    pub url: String,
+    pub title: Option<String>,
+    pub site: Option<String>,
+}
 
 /// Everything a note's text is made from besides the model's reply.
 pub struct NoteFile<'a> {
@@ -20,6 +28,10 @@ pub struct NoteFile<'a> {
     pub model: &'a str,
     /// The raw source's attachments, relative to the notebook.
     pub attachments: &'a [std::path::PathBuf],
+    /// The capture's links.
+    pub links: &'a [SourceLink],
+    /// Sources cut to fit the request, by name.
+    pub truncated: &'a [String],
     /// Where the note goes, relative to the notebook.
     pub path: &'a Path,
 }
@@ -57,6 +69,13 @@ pub fn render(file: &NoteFile<'_>) -> String {
     if !file.kinds.is_empty() {
         text.push_str(&format!("kind: [{}]\n", file.kinds.join(", ")));
     }
+    // A capture of one link is about its page.
+    if let [link] = file.links {
+        text.push_str(&format!("url: {}\n", quoted(&link.url)));
+        if let Some(site) = &link.site {
+            text.push_str(&format!("site: {}\n", quoted(site)));
+        }
+    }
     if !note.tags.is_empty() {
         text.push_str(&format!("tags: [{}]\n", note.tags.join(", ")));
     }
@@ -68,6 +87,10 @@ pub fn render(file: &NoteFile<'_>) -> String {
             "suggested_home: {}\n",
             quoted(&format!("[[{}]]", home.note))
         ));
+    }
+    if !file.truncated.is_empty() {
+        let names: Vec<String> = file.truncated.iter().map(|name| quoted(name)).collect();
+        text.push_str(&format!("truncated: [{}]\n", names.join(", ")));
     }
     text.push_str("status: inbox\n");
     text.push_str(&format!("model: {}\n", quoted(file.model)));
@@ -112,6 +135,23 @@ pub fn render(file: &NoteFile<'_>) -> String {
         note.links
             .iter()
             .map(|link| format!("- [[{}]]", link.note))
+            .collect(),
+    );
+    section(
+        &mut text,
+        "Source",
+        file.links
+            .iter()
+            .map(|link| {
+                let url = link.url.replace(' ', "%20").replace(')', "%29");
+                match &link.title {
+                    Some(title) => format!(
+                        "- [{}]({url})",
+                        title.replace('[', "\\[").replace(']', "\\]")
+                    ),
+                    None => format!("- <{url}>"),
+                }
+            })
             .collect(),
     );
     section(
@@ -171,6 +211,8 @@ mod tests {
             kinds: &["text".into(), "screenshot".into()],
             model: "cloud/claude-sonnet-5-5",
             attachments: &[PathBuf::from(r"attachments\2026-10-19 1030 lag spikes.png")],
+            links: &[],
+            truncated: &[],
             path: Path::new(r"inbox\Consumer lag spikes during ledger batch.md"),
         });
         assert_eq!(
@@ -224,6 +266,8 @@ mod tests {
             kinds: &[],
             model: "local/llama",
             attachments: &[PathBuf::from(r"attachments\report [v2].pdf")],
+            links: &[],
+            truncated: &[],
             path: Path::new("inbox.md"),
         });
         assert!(
@@ -253,6 +297,8 @@ mod tests {
             kinds: &[],
             model: "local/llama",
             attachments: &[],
+            links: &[],
+            truncated: &[],
             path: Path::new(r"inbox\x.md"),
         });
         assert!(linked.contains("suggested_home: \"[[Payments incidents]]\"\n"));
@@ -264,5 +310,60 @@ mod tests {
         assert_eq!(file_stem("Plan: phase 1?"), "Plan phase 1");
         assert_eq!(file_stem(&"x".repeat(200)).chars().count(), 80);
         assert_eq!(file_stem("..."), "Untitled");
+    }
+
+    fn with_links(links: &[SourceLink], truncated: &[String]) -> String {
+        let note = NoteJson {
+            title: "Lag, explained".into(),
+            ..NoteJson::default()
+        };
+        render(&NoteFile {
+            note: &note,
+            captured: "2026-10-19T08:00",
+            capture_id: "ID",
+            raw: Path::new(r"raw\x.md"),
+            kinds: &["link".into()],
+            model: "local/llama",
+            attachments: &[],
+            links,
+            truncated,
+            path: Path::new(r"inbox\x.md"),
+        })
+    }
+
+    #[test]
+    fn a_link_capture_names_its_page() {
+        let page = SourceLink {
+            url: "https://example.com/a b".into(),
+            title: Some("Lag [explained]".into()),
+            site: Some("Example".into()),
+        };
+        let one = with_links(std::slice::from_ref(&page), &["review.pdf".into()]);
+        assert!(
+            one.contains(
+                "kind: [link]\nurl: \"https://example.com/a b\"\nsite: \"Example\"\n\
+                 truncated: [\"review.pdf\"]\nstatus: inbox\n"
+            ),
+            "{one}"
+        );
+        assert!(one.ends_with("## Source\n\n- [Lag \\[explained\\]](https://example.com/a%20b)\n"));
+        let front = crate::notebook::frontmatter::parse(&one).unwrap();
+        assert_eq!(
+            front.get("truncated"),
+            Some(&crate::notebook::frontmatter::Value::List(vec![
+                "review.pdf".into()
+            ]))
+        );
+
+        // Two links: no single url in front matter, both under Source.
+        let other = SourceLink {
+            url: "https://other.example/".into(),
+            ..SourceLink::default()
+        };
+        let two = with_links(&[page, other], &[]);
+        assert!(!two.contains("url:") && !two.contains("site:") && !two.contains("truncated:"));
+        assert!(two.ends_with(
+            "## Source\n\n- [Lag \\[explained\\]](https://example.com/a%20b)\n- <https://other.example/>\n"
+        ));
     }
 }

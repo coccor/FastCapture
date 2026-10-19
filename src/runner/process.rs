@@ -110,6 +110,8 @@ fn run(job: &Job, backend: &dyn Backend, today: &str) -> Result<write::Written, 
         kinds: &facts.kinds,
         model: &backend.label(),
         attachments: &facts.attachments,
+        links: &facts.links,
+        truncated: &facts.truncated,
         path: &path,
     });
     match (&job.note, job.regenerate) {

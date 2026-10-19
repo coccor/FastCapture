@@ -713,11 +713,7 @@ fn test_request() -> NoteRequest {
         today: "2026-01-01",
         notebook: "Settings test",
         your_note: "Testing FastCapture's settings: can notes be written?",
-        links: &[],
-        files: &[],
-        images: 0,
-        left_out: &[],
-        source_window: None,
+        ..prompt::Turn::default()
     });
     NoteRequest {
         system: prompt::RULES,
@@ -731,6 +727,8 @@ fn test_request() -> NoteRequest {
             kinds: Vec::new(),
             attachments: Vec::new(),
             fallback_title: "Settings test".to_owned(),
+            links: Vec::new(),
+            truncated: Vec::new(),
         },
     }
 }
