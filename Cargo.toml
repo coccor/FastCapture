@@ -9,8 +9,13 @@ build = "build.rs"
 [dependencies]
 encoding_rs = "=0.8.42"
 html5ever = "=0.40.1"
+pdf-extract = "=0.12.1"
 serde_json = "=1.0.151"
 windows = { version = "=0.62.2", default-features = false, features = [
+    "Data_Pdf",
+    "Foundation",
+    "Storage",
+    "Storage_Streams",
     "Win32_Foundation",
     "Win32_Graphics_Imaging",
     "Win32_System_Com",

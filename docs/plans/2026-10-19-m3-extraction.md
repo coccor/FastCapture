@@ -83,9 +83,9 @@ src/
 
 ### Part 5: PDF
 
-- [ ] `Cargo.toml`: `pdf-extract = "=0.12.1"`; `windows` features `Data_Pdf`, `Foundation`, `Storage`, `Storage_Streams`.
-- [ ] `extract/pdf.rs`: text page by page from the copied attachment (`pdf_extract::extract_text_from_mem_by_pages`), whitespace tidied, each page headed `Page n`. A page with under 40 characters of text is scanned: it is rendered with `Windows.Data.Pdf` (`PdfDocument::LoadFromFileAsync`, `PdfPage::RenderToStreamAsync` at a width of 1,568 px) to PNG and goes to the model as an image, within the 8-image limit. Pages past the budget's 20 are cut and named. An encrypted PDF that needs a password, or one that fails to parse, is listed as unreadable. pdf-extract runs inside `catch_unwind`, since a malformed file can make it panic.
-- **Tests:** fixtures made for the tests (a two-page text PDF, a scanned page, a 25-page PDF, a password-protected PDF, a corrupt file): text per page, the scanned page as a 1,568 px PNG, pages 21–25 cut, the protected and corrupt ones listed.
+- [x] `Cargo.toml`: `pdf-extract = "=0.12.1"`; `windows` features `Data_Pdf`, `Foundation`, `Storage`, `Storage_Streams`.
+- [x] `extract/pdf.rs`: `read` gives the text of the first pages asked for (the budget decides how many in Part 7), one `output_doc_page` call per page so a long PDF isn't read whole, whitespace tidied; `Pdf::text` heads each page `## Page n`. A page with under 40 letters and digits is scanned; `render` draws the pages asked for with `Windows.Data.Pdf` (`PdfDocument::LoadFromStreamAsync`, `RenderWithOptionsToStreamAsync` at a width of 1,568 px) as PNGs, for the model as images within the 8-image limit. An encrypted PDF that needs a password, or one that fails to parse, says so. pdf-extract runs inside `catch_unwind`, since a malformed file can make it panic.
+- **Tests:** **Changed:** the PDFs are written by a small builder in the tests (`extract::pdf::build`) rather than checked in: text per page, a picture-only page told apart and rendered at 1,568 × 2,029, 20 of 25 pages read, a password-protected PDF, junk and a cut-off file.
 
 ### Part 6: Word
 
