@@ -112,9 +112,9 @@ src/
 
 ### Part 9: Polish and docs
 
-- [ ] README: what is read from each kind of capture, the limits, rich text paste and Ctrl+Alt+V, page fetches in Local mode (the only traffic, no cookies), the sidecar file.
-- [ ] Spec: §19 notes for M3.
-- [ ] A new `LICENSES.md` listing the third-party crates and their licenses, which must be MIT, Apache-2.0 or similarly permissive (checked with `cargo tree` before each crate is added).
+- [x] README: what is read from each kind of capture, the limits, rich text paste and Ctrl+Alt+V, page fetches in Local mode (the only traffic, no cookies), the sidecar file.
+- [x] Spec: §19 notes for M3.
+- [x] A new `LICENSES.md` listing the third-party crates and their licenses, made with `cargo metadata`: all 108 are permissive (MIT, Apache-2.0, BSD-3-Clause, Zlib, Unicode-3.0 or Unlicense).
 
 ## Testing approach
 
