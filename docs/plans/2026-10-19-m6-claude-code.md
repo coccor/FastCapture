@@ -113,8 +113,8 @@ These run the installed `claude` against your Claude plan: a few short requests,
 
 ### Part 6: Polish and docs
 
-- [ ] README: the Claude Code provider, what it needs (an installed, signed-in Claude Code), what is sent and to whom, limits, experimental.
-- [ ] Spec: §8.4 brought in line with what was found; §18.3 answered; §19 notes for M6.
+- [x] README: the Claude Code provider, what it needs (an installed, signed-in Claude Code), what is sent and to whom, limits, experimental.
+- [x] Spec: §8.4 brought in line with what was found; §18.3 answered; §19 notes for M6.
 
 ## Testing approach
 
