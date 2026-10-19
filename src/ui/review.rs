@@ -1,16 +1,19 @@
-//! The review window: queued captures on the left, newest first, with
-//! the selected raw source read-only on the right. In M1 there are no written notes yet, so the
-//! keys are: **E** (or a double-click) opens the raw source in FastPad or the default editor,
-//! **Del** sends it and the attachments only it links to to the Recycle Bin, **Enter** opens
-//! the notebook's raw folder, **F5** refreshes, **Esc** closes. A standard ListView and a
-//! read-only edit give keyboard and screen-reader support from Windows.
+//! The review window: captures and the notes written for them on the left, newest first; the
+//! selected note above its raw source, read-only, on the right. **E** (or a double-click) opens
+//! the note, or the raw source when there is none, in FastPad or the default editor; **R**
+//! writes the note again with the current settings; **Del** sends the note to the Recycle Bin
+//! and keeps the raw source; **Shift+Del** sends the note, the raw source and the attachments
+//! only it links to; **Enter** opens the folder; **F5** refreshes; **Esc** closes. Filing comes
+//! later. A standard ListView and a read-only edit give keyboard and screen-reader support from
+//! Windows.
 
 use super::review_list::{self, Row};
 use super::theme::{self, Palette, scale};
 use crate::capture::read::{self, RawInfo};
 use crate::config::settings::SettingsFile;
-use crate::queue::Store;
+use crate::platform::window::SendHwnd;
 use crate::queue::store::raw_sources;
+use crate::queue::{State, Store};
 use std::path::{Path, PathBuf};
 use windows_sys::Win32::Foundation::{
     ERROR_CLASS_ALREADY_EXISTS, GetLastError, HWND, LPARAM, LRESULT, RECT, WPARAM,
@@ -53,19 +56,20 @@ const DEFAULT_WIDTH: i32 = 900;
 const DEFAULT_HEIGHT: i32 = 560;
 /// Each column's share of the list's width, in percent: Capture, Kind, Time, State.
 const COLUMN_SHARES: [i32; 4] = [41, 22, 17, 20];
-const HINT: &str =
-    "E open \u{00B7} Del recycle \u{00B7} Enter open folder \u{00B7} F5 refresh \u{00B7} Esc close";
-const EMPTY: &str = "Nothing waiting. Captures appear here until they are turned into notes.";
+const HINT: &str = "E open \u{00B7} R regenerate \u{00B7} Del discard note \u{00B7} Shift+Del delete capture \u{00B7} Enter folder \u{00B7} F5 refresh \u{00B7} Esc close";
+const EMPTY: &str = "Nothing here yet. Captures and the notes written for them appear here.";
 
 /// What the window does to the world, so tests can watch instead.
 pub trait Actions {
     /// Sends files to the Recycle Bin.
     fn recycle(&mut self, paths: &[PathBuf]) -> Result<(), String>;
-    /// Opens a raw source in an editor.
+    /// Opens a note or raw source in an editor.
     fn open_raw(&mut self, path: &Path);
     /// Opens a folder in Explorer.
     fn open_folder(&mut self, folder: &Path);
-    /// The queue changed here (a capture was recycled).
+    /// Asks a yes-or-no question.
+    fn confirm(&mut self, owner: SendHwnd, question: &str) -> bool;
+    /// The queue changed here (a capture was recycled or queued again).
     fn changed(&mut self) {}
 }
 
@@ -88,6 +92,20 @@ impl Actions for ShellActions {
     fn open_folder(&mut self, folder: &Path) {
         if let Err(error) = crate::platform::shell::open(folder) {
             crate::log::line(&format!("review: open folder: {error}"));
+        }
+    }
+
+    fn confirm(&mut self, owner: SendHwnd, question: &str) -> bool {
+        use windows_sys::Win32::UI::WindowsAndMessaging::{
+            IDYES, MB_DEFBUTTON2, MB_ICONQUESTION, MB_YESNO, MessageBoxW,
+        };
+        unsafe {
+            MessageBoxW(
+                owner.get(),
+                wide(question).as_ptr(),
+                wide("FastCapture").as_ptr(),
+                MB_YESNO | MB_ICONQUESTION | MB_DEFBUTTON2,
+            ) == IDYES
         }
     }
 
@@ -435,7 +453,7 @@ fn reload(hwnd: HWND) {
         for (column, text) in [
             (1, row.kinds.as_str()),
             (2, time.as_str()),
-            (3, review_list::state_label(row.state)),
+            (3, row.status()),
         ] {
             let text = wide(text);
             let sub = LVITEMW {
@@ -511,8 +529,90 @@ fn show_preview(review: &Review) {
     unsafe { SetWindowTextW(review.preview, wide(&text).as_ptr()) };
 }
 
-/// Del: the selected capture's raw source and the attachments no other raw source links to go
-/// to the Recycle Bin, and its job is removed.
+fn show_problem(review: &Review, problem: &str) {
+    unsafe { SetWindowTextW(review.preview, wide(problem).as_ptr()) };
+}
+
+/// Del: a written note goes to the Recycle Bin and its capture is marked discarded, so it isn't
+/// written again (R brings it back). For a capture without a note, Del is Shift+Del.
+fn discard_selected(hwnd: HWND) {
+    let Some(review) = state(hwnd) else {
+        return;
+    };
+    let Some(row) = selected_row(review).cloned() else {
+        return;
+    };
+    let Some(note) = row.note_path().filter(|_| row.state == State::Done) else {
+        recycle_selected(hwnd);
+        return;
+    };
+    if let Err(error) = review.actions.recycle(&[note]) {
+        show_problem(review, &format!("Couldn't recycle this note: {error}"));
+        return;
+    }
+    let store = Store::new(review.queue.clone());
+    if let Some(mut job) = store.get(&row.capture_id) {
+        job.state = State::Discarded;
+        job.note = None;
+        job.regenerate = false;
+        if let Err(error) = store.put(&job) {
+            crate::log::line(&format!("review: {error}"));
+        }
+    }
+    review.actions.changed();
+    reload(hwnd);
+}
+
+/// R: the capture is queued again with the current settings; its note, when there is one, is
+/// replaced. A note you edited is replaced only after you say so.
+fn regenerate_selected(hwnd: HWND) {
+    let Some(review) = state(hwnd) else {
+        return;
+    };
+    let Some(row) = selected_row(review).cloned() else {
+        return;
+    };
+    let store = Store::new(review.queue.clone());
+    let Some(mut job) = store.get(&row.capture_id) else {
+        return;
+    };
+    if job.state == State::Working {
+        return;
+    }
+    if let Some(note) = &mut job.note {
+        let now = crate::note::write::Stamp::of(&row.notebook.join(&note.path));
+        if let Some(now) = now
+            && now != note.stamp
+        {
+            let question = "You edited this note since FastCapture wrote it. Write it again anyway? Your edits will be replaced.";
+            if !review.actions.confirm(SendHwnd::new(hwnd), question) {
+                return;
+            }
+            // You agreed: the note as it is now is what gets replaced.
+            note.stamp = now;
+        }
+    }
+    let Some(review) = state(hwnd) else {
+        return;
+    };
+    job.regenerate = job.note.is_some();
+    job.state = State::Queued;
+    job.attempts = 0;
+    job.retry_at = None;
+    job.last_error = None;
+    if let Err(error) = store.put(&job) {
+        show_problem(
+            review,
+            &format!("Couldn't queue this capture again: {error}"),
+        );
+        return;
+    }
+    review.actions.changed();
+    reload(hwnd);
+}
+
+/// Shift+Del: the capture's note, its raw source and the attachments no other raw source links
+/// to go to the Recycle Bin, and its job is removed.
 fn recycle_selected(hwnd: HWND) {
     let Some(review) = state(hwnd) else {
         return;
@@ -529,7 +629,12 @@ fn recycle_selected(hwnd: HWND) {
             Some(read::read(&found.path, &text))
         })
         .collect();
-    let mut paths = vec![row.raw_path()];
+    let mut paths: Vec<PathBuf> = row
+        .note_path()
+        .filter(|path| path.exists())
+        .into_iter()
+        .collect();
+    paths.push(row.raw_path());
     paths.extend(
         read::own_attachments(&row.info, &others)
             .into_iter()
@@ -552,10 +657,15 @@ fn recycle_selected(hwnd: HWND) {
     }
 }
 
+/// E: the note, or the raw source when there is no note.
 fn open_selected(hwnd: HWND) {
     if let Some(review) = state(hwnd)
-        && let Some(path) = selected_row(review).map(Row::raw_path)
+        && let Some(row) = selected_row(review)
     {
+        let path = match (&row.note_text, row.note_path()) {
+            (Some(_), Some(note)) => note,
+            _ => row.raw_path(),
+        };
         review.actions.open_raw(&path);
     }
 }
@@ -590,9 +700,16 @@ fn notify(hwnd: HWND, header: &NMHDR, lparam: LPARAM) -> LRESULT {
         }
         LVN_KEYDOWN => {
             let key = unsafe { &*(lparam as *const NMLVKEYDOWN) }.wVKey;
+            let shift = unsafe {
+                windows_sys::Win32::UI::Input::KeyboardAndMouse::GetKeyState(i32::from(
+                    windows_sys::Win32::UI::Input::KeyboardAndMouse::VK_SHIFT,
+                ))
+            } < 0;
             match key {
                 k if k == u16::from(b'E') => open_selected(hwnd),
-                VK_DELETE => recycle_selected(hwnd),
+                k if k == u16::from(b'R') => regenerate_selected(hwnd),
+                VK_DELETE if shift => recycle_selected(hwnd),
+                VK_DELETE => discard_selected(hwnd),
                 VK_F5 => reload(hwnd),
                 _ => {}
             }
@@ -745,6 +862,9 @@ mod tests {
         opened: Vec<PathBuf>,
         folders: Vec<PathBuf>,
         changes: usize,
+        /// Questions asked, and the answer to give.
+        asked: Vec<String>,
+        answer: bool,
     }
 
     /// Deletes instead of recycling, and records what was opened.
@@ -764,9 +884,98 @@ mod tests {
         fn open_folder(&mut self, folder: &Path) {
             self.0.borrow_mut().folders.push(folder.to_path_buf());
         }
+        fn confirm(&mut self, _owner: SendHwnd, question: &str) -> bool {
+            let mut seen = self.0.borrow_mut();
+            seen.asked.push(question.to_owned());
+            seen.answer
+        }
         fn changed(&mut self) {
             self.0.borrow_mut().changes += 1;
         }
+    }
+
+    #[test]
+    fn notes_are_shown_regenerated_and_discarded() {
+        use crate::runner::process::tests::{Scripted, Temp, note};
+        use crate::runner::process::{Outcome, process};
+        let temp = Temp::new("review-notes");
+        let job = temp.capture("lag spikes during ledger batch");
+        let store = temp.store();
+        let backend = Scripted::new(vec![Ok(note("Consumer lag spikes"))]);
+        let Outcome::Written(written) = process(&store, job.clone(), &backend, 0, "2026-10-19")
+        else {
+            panic!()
+        };
+        let note_path = temp.notebook().join(&written.path);
+
+        let seen = Rc::new(RefCell::new(Seen::default()));
+        let hwnd = open(Open {
+            queue: temp.0.join("queue"),
+            settings: None,
+            notebook: Some(temp.notebook()),
+            actions: Box::new(Watch(seen.clone())),
+        })
+        .unwrap();
+        let review = state(hwnd).unwrap();
+        assert_eq!(review.rows[0].title, "Consumer lag spikes");
+        assert_eq!(review.rows[0].status(), "Note");
+        open_selected(hwnd);
+        assert_eq!(
+            seen.borrow().opened,
+            std::slice::from_ref(&note_path),
+            "E opens the note"
+        );
+
+        // R on an unedited note: queued again to replace it, no question.
+        regenerate_selected(hwnd);
+        let queued = store.get(&job.capture_id).unwrap();
+        assert_eq!((queued.state, queued.regenerate), (State::Queued, true));
+        assert!(seen.borrow().asked.is_empty());
+
+        // R on an edited note asks; no keeps it as it was.
+        let mut done = queued.clone();
+        done.state = State::Done;
+        done.regenerate = false;
+        store.put(&done).unwrap();
+        reload(hwnd);
+        std::fs::write(
+            &note_path,
+            "# Consumer lag spikes\n\nmy own words, longer than before\n",
+        )
+        .unwrap();
+        regenerate_selected(hwnd);
+        assert_eq!(seen.borrow().asked.len(), 1);
+        assert_eq!(
+            store.get(&job.capture_id).unwrap().state,
+            State::Done,
+            "declined"
+        );
+        seen.borrow_mut().answer = true;
+        regenerate_selected(hwnd);
+        let accepted = store.get(&job.capture_id).unwrap();
+        assert_eq!(accepted.state, State::Queued);
+        assert_eq!(
+            accepted.note.unwrap().stamp,
+            crate::note::write::Stamp::of(&note_path).unwrap(),
+            "the edited note is what gets replaced"
+        );
+
+        // Del recycles the note and keeps the raw source; Shift+Del takes the rest.
+        store.put(&done).unwrap();
+        reload(hwnd);
+        discard_selected(hwnd);
+        assert_eq!(seen.borrow().recycled, std::slice::from_ref(&note_path));
+        assert_eq!(store.get(&job.capture_id).unwrap().state, State::Discarded);
+        assert_eq!(state(hwnd).unwrap().rows[0].status(), "Discarded");
+        assert!(temp.notebook().join(&job.raw).exists());
+        discard_selected(hwnd);
+        assert!(
+            !temp.notebook().join(&job.raw).exists(),
+            "without a note, Del deletes the capture"
+        );
+        assert!(store.get(&job.capture_id).is_none());
+
+        unsafe { DestroyWindow(hwnd) };
     }
 
     #[test]

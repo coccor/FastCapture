@@ -503,8 +503,10 @@ fn open_review(window: HWND) {
         settings,
         notebook,
         actions: Box::new(review::ShellActions {
-            on_change: Box::new(move || unsafe {
-                PostMessageW(window.get(), WM_APP_QUEUE, 0, 0);
+            // A capture queued again (R) needs the worker.
+            on_change: Box::new(move || {
+                wake_worker();
+                unsafe { PostMessageW(window.get(), WM_APP_QUEUE, 0, 0) };
             }),
         }),
     });

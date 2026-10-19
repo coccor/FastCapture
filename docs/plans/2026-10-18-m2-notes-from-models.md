@@ -145,9 +145,9 @@ src/
 
 ### Part 7: Review window with notes
 
-- [ ] Rows for done jobs show the note's title, kinds, time and "Note"; the preview shows the note's Markdown text with the raw source below a divider. Queued, working and failed rows stay as in M1, with the error for failed ones.
-- [ ] Keys: **E** opens the note (or the raw source when there's no note) in FastPad or the default editor; **R** regenerates with the current settings (asks first when the note was edited); **Del** recycles the note and keeps the raw source, whose job is marked "Discarded" so it isn't processed again (R brings it back); **Shift+Del** also recycles the raw source and its own attachments; **Enter** opens the folder; **F5**; **Esc**. Filing keys (Enter to file, H, I) come with M4.
-- **Tests:** list model with notes; the preview text; R on an unedited and an edited note; Del and Shift+Del.
+- [x] Rows for done jobs show the note's title (its first `# ` heading), kinds, time and "Note" ("Note gone" when the file was deleted); the preview shows the note's Markdown text with the raw source below a divider. Queued, writing, failed and discarded rows show the raw source, with the last error for failed and retrying ones. Jobs gain a `Discarded` state.
+- [x] Keys: **E** opens the note (or the raw source when there's no note) in FastPad or the default editor; **R** queues the capture again with the current settings and wakes the worker (asks first when the note was edited, and then replaces the note as it is now); **Del** recycles the note and keeps the raw source, whose job is marked "Discarded" so it isn't processed again (R brings it back); Del on a capture without a note, and **Shift+Del** always, recycle the note, the raw source and its own attachments and remove the job; **Enter** opens the folder; **F5**; **Esc**. Filing keys (Enter to file, H, I) come with M4.
+- **Tests:** list model with notes (title from the note, "Note gone", "Discarded", the preview with its divider and no stale error); in the window: E opens the note, R on an unedited note queues it to be replaced, R on an edited note asks and declining changes nothing, Del discards the note and keeps the raw source, Del without a note deletes the capture. **Checked by hand:** a capture with a note in the review window (screenshots).
 
 ### Part 8: End to end
 

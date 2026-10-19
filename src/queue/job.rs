@@ -14,6 +14,9 @@ pub enum State {
     Working,
     Done,
     Failed,
+    /// You discarded its note: the raw source stays, and it isn't processed again until
+    /// you regenerate it.
+    Discarded,
 }
 
 impl State {
@@ -23,13 +26,20 @@ impl State {
             Self::Working => "working",
             Self::Done => "done",
             Self::Failed => "failed",
+            Self::Discarded => "discarded",
         }
     }
 
     fn from_key(key: &str) -> Option<Self> {
-        [Self::Queued, Self::Working, Self::Done, Self::Failed]
-            .into_iter()
-            .find(|state| state.key() == key)
+        [
+            Self::Queued,
+            Self::Working,
+            Self::Done,
+            Self::Failed,
+            Self::Discarded,
+        ]
+        .into_iter()
+        .find(|state| state.key() == key)
     }
 }
 

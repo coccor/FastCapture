@@ -1,7 +1,8 @@
-//! What the review window lists: one row per queued capture, newest
-//! first, from the queue and the raw sources. Pure: the caller reads the files.
+//! What the review window lists: one row per capture, newest first, from the queue, the raw
+//! sources and the notes written for them. Pure: the caller reads the files.
 
 use crate::capture::read::{self, RawInfo};
+use crate::note::write::Written;
 use crate::notebook::dates::{self, Date};
 use crate::queue::{Job, State};
 use std::path::{Path, PathBuf};
@@ -20,12 +21,39 @@ pub struct Row {
     /// The raw source's text, for the preview.
     pub text: String,
     pub info: RawInfo,
+    /// The note written for it, as FastCapture last wrote it.
+    pub note: Option<Written>,
+    /// The note's text now, when it is still there.
+    pub note_text: Option<String>,
 }
 
 impl Row {
     pub fn raw_path(&self) -> PathBuf {
         self.notebook.join(&self.raw)
     }
+
+    pub fn note_path(&self) -> Option<PathBuf> {
+        self.note
+            .as_ref()
+            .map(|note| self.notebook.join(&note.path))
+    }
+
+    /// What the State column says.
+    pub fn status(&self) -> &'static str {
+        match (self.state, &self.note, &self.note_text) {
+            (State::Done, Some(_), Some(_)) => "Note",
+            (State::Done, Some(_), None) => "Note gone",
+            (state, _, _) => state_label(state),
+        }
+    }
+}
+
+/// The note's title: its first `# ` heading.
+fn note_title(text: &str) -> Option<String> {
+    text.lines()
+        .find_map(|line| line.strip_prefix("# "))
+        .map(|title| title.trim().to_owned())
+        .filter(|title| !title.is_empty())
 }
 
 /// The rows for `jobs`, newest first, reading each raw source with `read_file` (absolute path).
@@ -39,13 +67,21 @@ pub fn rows(jobs: Vec<Job>, read_file: impl Fn(&Path) -> Option<String>) -> (Vec
             continue;
         };
         let info = read::read(&job.raw, &text);
-        let title = info.title.clone().unwrap_or_else(|| {
-            job.raw
-                .file_stem()
-                .unwrap_or_default()
-                .to_string_lossy()
-                .into_owned()
-        });
+        let note_text = job
+            .note
+            .as_ref()
+            .and_then(|note| read_file(&job.notebook.join(&note.path)));
+        let title = note_text
+            .as_deref()
+            .and_then(note_title)
+            .or_else(|| info.title.clone())
+            .unwrap_or_else(|| {
+                job.raw
+                    .file_stem()
+                    .unwrap_or_default()
+                    .to_string_lossy()
+                    .into_owned()
+            });
         rows.push(Row {
             kinds: kind_label(&info.kinds),
             capture_id: job.capture_id,
@@ -57,6 +93,8 @@ pub fn rows(jobs: Vec<Job>, read_file: impl Fn(&Path) -> Option<String>) -> (Vec
             error: job.last_error,
             text,
             info,
+            note: job.note,
+            note_text,
         });
     }
     rows.sort_by(|a, b| {
@@ -92,18 +130,25 @@ pub fn time_label(created: &str, today: Date) -> String {
 pub fn state_label(state: State) -> &'static str {
     match state {
         State::Queued => "Queued",
-        State::Working => "Working",
+        State::Working => "Writing",
         State::Done => "Done",
         State::Failed => "Failed",
+        State::Discarded => "Discarded",
     }
 }
 
-/// The preview pane's text: a failed job's error first, then the raw source, with CRLF line
-/// ends for the edit control.
+/// The preview pane's text: an error first (for a failed job, or one waiting to retry), then
+/// the note when there is one, then the raw source, with CRLF line ends for the edit control.
 pub fn preview_text(row: &Row) -> String {
     let mut text = String::new();
-    if let Some(error) = &row.error {
+    if let Some(error) = &row.error
+        && matches!(row.state, State::Failed | State::Queued)
+    {
         text.push_str(&format!("Last error: {error}\n\n"));
+    }
+    if let Some(note) = &row.note_text {
+        text.push_str(note.trim_end());
+        text.push_str("\n\n──────── Raw source ────────\n\n");
     }
     text.push_str(&row.text);
     text.replace("\r\n", "\n").replace('\n', "\r\n")
@@ -157,6 +202,64 @@ mod tests {
         assert_eq!(rows[1].kinds, "Text + link");
         assert_eq!(rows[0].raw_path(), PathBuf::from(r"D:\Notes\raw\b.md"));
         assert!(preview_text(&rows[0]).starts_with("Last error: timeout\r\n\r\n---\r\ntype: raw"));
+    }
+
+    #[test]
+    fn a_written_note_names_the_row_and_leads_the_preview() {
+        use crate::note::write::Stamp;
+        let files: HashMap<PathBuf, String> = [
+            (
+                PathBuf::from(r"D:\Notes\raw\a.md"),
+                "---\ntype: raw\nkind: [text]\n---\n\nlag\n".to_owned(),
+            ),
+            (
+                PathBuf::from(r"D:\Notes\inbox\Lag.md"),
+                "---\ntype: capture\n---\n\n# Consumer lag spikes\n\n> Summary.\n".to_owned(),
+            ),
+        ]
+        .into();
+        let note = Written {
+            path: PathBuf::from(r"inbox\Lag.md"),
+            stamp: Stamp {
+                len: 1,
+                modified_ms: 1,
+            },
+        };
+        let mut done = job("A", "2026-10-19T09:00", r"raw\a.md");
+        done.state = State::Done;
+        done.note = Some(note.clone());
+        done.last_error = Some("an old retry".to_owned());
+        let mut gone = job("B", "2026-10-19T08:00", r"raw\a.md");
+        gone.state = State::Done;
+        gone.note = Some(Written {
+            path: PathBuf::from(r"inbox\Missing.md"),
+            ..note
+        });
+        let mut discarded = job("C", "2026-10-19T07:00", r"raw\a.md");
+        discarded.state = State::Discarded;
+        let (rows, _) = rows(vec![done, gone, discarded], |path| files.get(path).cloned());
+
+        assert_eq!(rows[0].title, "Consumer lag spikes");
+        assert_eq!(rows[0].status(), "Note");
+        assert_eq!(
+            rows[0].note_path(),
+            Some(PathBuf::from(r"D:\Notes\inbox\Lag.md"))
+        );
+        let preview = preview_text(&rows[0]);
+        assert!(
+            preview.starts_with("---\r\ntype: capture"),
+            "no error for a done job: {preview}"
+        );
+        assert!(
+            preview
+                .contains("> Summary.\r\n\r\n──────── Raw source ────────\r\n\r\n---\r\ntype: raw")
+        );
+        assert_eq!(
+            (rows[1].title.as_str(), rows[1].status()),
+            ("lag", "Note gone")
+        );
+        assert_eq!(rows[2].status(), "Discarded");
+        assert!(!preview_text(&rows[2]).contains("Raw source"));
     }
 
     #[test]
