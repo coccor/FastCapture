@@ -45,6 +45,11 @@ pub struct Settings {
     pub openai_accepted: Option<String>,
     /// The most tokens cloud requests may use in a month; `None` for no cap.
     pub token_cap: Option<u64>,
+    /// Claude Code: the model (an alias such as `sonnet`, or a full name), where `claude` is
+    /// when it isn't found by itself, and whether its first-use screen was accepted.
+    pub claude_code_model: String,
+    pub claude_code_path: Option<PathBuf>,
+    pub claude_code_accepted: bool,
 }
 
 /// One model provider at a time: on this PC, or in the cloud.
@@ -61,6 +66,8 @@ pub enum CloudBackend {
     Claude,
     /// Any OpenAI-compatible API: OpenAI, OpenRouter, Azure OpenAI…
     OpenAi,
+    /// The user's own installed Claude Code, signed in with their Claude plan.
+    ClaudeCode,
 }
 
 impl CloudBackend {
@@ -69,6 +76,7 @@ impl CloudBackend {
         match self {
             Self::Claude => "claude",
             Self::OpenAi => "openai",
+            Self::ClaudeCode => "claude_code",
         }
     }
 }
@@ -92,6 +100,9 @@ impl Default for Settings {
             openai_model: None,
             openai_accepted: None,
             token_cap: None,
+            claude_code_model: crate::model::claude_code::DEFAULT_MODEL.to_owned(),
+            claude_code_path: None,
+            claude_code_accepted: false,
         }
     }
 }
@@ -132,7 +143,7 @@ pub fn parse_token_cap(value: &str) -> Option<Option<u64>> {
     Some((cap > 0).then_some(cap))
 }
 
-/// An absolute folder path.
+/// An absolute path.
 fn parse_folder(value: &str) -> Option<PathBuf> {
     let path = PathBuf::from(value);
     path.is_absolute().then_some(path)
@@ -184,10 +195,14 @@ pub fn parse(text: &str) -> (Settings, Vec<Warning>) {
                 _ => None,
             }
             .map(|mode| settings.mode = mode),
-            "backend" => [CloudBackend::Claude, CloudBackend::OpenAi]
-                .into_iter()
-                .find(|backend| value.eq_ignore_ascii_case(backend.key()))
-                .map(|backend| settings.backend = backend),
+            "backend" => [
+                CloudBackend::Claude,
+                CloudBackend::OpenAi,
+                CloudBackend::ClaudeCode,
+            ]
+            .into_iter()
+            .find(|backend| value.eq_ignore_ascii_case(backend.key()))
+            .map(|backend| settings.backend = backend),
             "local_endpoint" if value.is_empty() => {
                 settings.local_endpoint = None;
                 Some(())
@@ -215,6 +230,18 @@ pub fn parse(text: &str) -> (Settings, Vec<Warning>) {
                 Some(())
             }
             "token_cap" => parse_token_cap(value).map(|cap| settings.token_cap = cap),
+            "claude_code_model" => (!value.is_empty() && !value.contains(char::is_whitespace))
+                .then(|| settings.claude_code_model = value.to_owned()),
+            "claude_code_path" if value.is_empty() => {
+                settings.claude_code_path = None;
+                Some(())
+            }
+            "claude_code_path" => {
+                parse_folder(value).map(|path| settings.claude_code_path = Some(path))
+            }
+            "claude_code_accepted" => {
+                parse_bool(value).map(|on| settings.claude_code_accepted = on)
+            }
             "openai_accepted" => {
                 settings.openai_accepted = (!value.is_empty()).then(|| value.to_ascii_lowercase());
                 Some(())
@@ -236,7 +263,7 @@ pub fn parse(text: &str) -> (Settings, Vec<Warning>) {
 /// Keys FastCapture writes itself that `parse` doesn't read: window placement and later
 /// milestones' keys.
 fn is_reserved(key: &str) -> bool {
-    key.starts_with("review_") || key.starts_with("claude_code")
+    key.starts_with("review_")
 }
 
 /// The file's text, kept line by line so FastCapture can change one setting and leave the rest.
@@ -432,6 +459,26 @@ mod tests {
         assert_eq!(lines, [1, 2, 3, 4]);
         assert_eq!(settings.mode, None);
         assert_eq!(settings.claude_model, crate::model::claude::DEFAULT_MODEL);
+    }
+
+    #[test]
+    fn the_claude_code_settings_are_read() {
+        let (settings, warnings) = parse(
+            "mode=cloud\nbackend=claude_code\nclaude_code_model=haiku\n\
+             claude_code_path=C:\\Tools\\claude.exe\nclaude_code_accepted=true\n",
+        );
+        assert!(warnings.is_empty(), "{warnings:?}");
+        assert_eq!(settings.backend, CloudBackend::ClaudeCode);
+        assert_eq!(settings.claude_code_model, "haiku");
+        assert_eq!(
+            settings.claude_code_path,
+            Some(PathBuf::from(r"C:\Tools\claude.exe"))
+        );
+        assert!(settings.claude_code_accepted);
+        let (settings, warnings) = parse("claude_code_path=claude.exe\nclaude_code_model=\n");
+        assert_eq!(warnings.len(), 2, "a relative path, an empty model");
+        assert_eq!(settings.claude_code_path, None);
+        assert_eq!(settings.claude_code_model, "sonnet");
     }
 
     #[test]

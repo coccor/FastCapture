@@ -87,9 +87,9 @@ These run the installed `claude` against your Claude plan: a few short requests,
 
 ### Part 4: Settings and choosing the backend
 
-- [ ] `config/settings.rs`: `backend=claude_code`, `claude_code_model` (default `sonnet`), `claude_code_path`, `claude_code_accepted`.
-- [ ] `runner/from_settings.rs`: builds it when chosen and accepted, saying what's missing (no CLI found, not confirmed).
-- [ ] `ui/settings.rs`, `ui/settings_form.rs`: **Claude Code (your Claude plan, experimental)** as the third provider. Its rows: **Model** (sonnet, opus, haiku, or typed), and a status line from `claude --version` and `claude auth status`: "Claude Code 2.1.303 at C:\…\claude.exe, signed in with your Claude account (Max)." or "…, not signed in: run claude, then /login." or "Claude Code isn't installed or isn't on PATH." No key. **Test** runs one test note through it. The first-use screen says captures go to Anthropic through Claude Code, use the plan's limits, and that the backend is experimental and for personal use.
+- [x] `config/settings.rs`: `backend=claude_code`, `claude_code_model` (default `sonnet`), `claude_code_path`, `claude_code_accepted`.
+- [x] `runner/from_settings.rs`: builds it when chosen and accepted, saying what's missing (no CLI found, not confirmed).
+- [x] `ui/settings.rs`, `ui/settings_form.rs`: **Claude Code (your Claude plan, experimental)** as the third provider. Its rows: **Model** (sonnet, opus, haiku, or typed), and a status line from `claude --version` and `claude auth status`: "Claude Code 2.1.303 at C:\…\claude.exe, signed in with your Claude account (Max)." or "…, not signed in: run claude, then /login." or "Claude Code isn't installed or isn't on PATH." No key. **Test** runs one test note through it. The first-use screen says captures go to Anthropic through Claude Code, use the plan's limits, and that the backend is experimental and for personal use. The status line is found off the UI thread when Claude Code is shown; the address and key rows are hidden for it. `claude_code_path` is only in the file, kept as it is when Settings saves. Checked by a screenshot against the real CLI (2.1.303, signed in, Max), which runs only `--version`, `--help` and `auth status`.
 - **Tests:** settings round trip; the form's checks; consent asked once for Claude Code; `build` with a fake CLI path.
 
 ### Part 5: End to end and live

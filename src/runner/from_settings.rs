@@ -1,6 +1,6 @@
 //! The backend `fastcapture.ini` chooses: a local server when the mode is Local; the Claude API
-//! or an OpenAI-compatible API, with its key from Credential Manager, when it is Cloud. Never
-//! both, and never one standing in for the other.
+//! or an OpenAI-compatible API, with its key from Credential Manager, or the user's own Claude
+//! Code, when it is Cloud. Never both, and never one standing in for the other.
 
 use super::worker::Factory;
 use crate::config::settings::{CloudBackend, Mode, Settings, SettingsFile};
@@ -64,6 +64,17 @@ pub fn build(
                 OpenAi::cloud(endpoint, model, key)
                     .map(|backend| Box::new(backend) as Box<dyn Backend>)
                     .map_err(|error| error.to_string())
+            }
+            CloudBackend::ClaudeCode => {
+                if !settings.claude_code_accepted {
+                    return Err("Confirm Cloud mode for Claude Code in Settings first.".to_owned());
+                }
+                crate::model::claude_code::ClaudeCode::new(
+                    settings.claude_code_path.as_deref(),
+                    &settings.claude_code_model,
+                )
+                .map(|backend| Box::new(backend) as Box<dyn Backend>)
+                .map_err(|error| error.to_string())
             }
         },
     }
@@ -134,6 +145,37 @@ mod tests {
         )
         .unwrap();
         assert_eq!(cloud.label(), "cloud/claude-haiku-5-5");
+    }
+
+    #[test]
+    fn claude_code_needs_consent_and_an_installed_cli() {
+        use crate::model::claude_code::cli::tests::Temp;
+        let temp = Temp::new("from-settings");
+        let fake = temp.script(
+            "claude.cmd",
+            &[r#"if "%~1"=="--version" (echo 2.1.303 ^(Claude Code^)& exit /b 0)"#],
+        );
+        let none = |_: &str| None;
+        let text = |accepted: bool, path: &std::path::Path| {
+            format!(
+                "mode=cloud\nbackend=claude_code\nclaude_code_model=haiku\n\
+                 claude_code_accepted={accepted}\nclaude_code_path={}\n",
+                path.display()
+            )
+        };
+        assert_eq!(
+            build(&settings(&text(false, &fake)), none).err().unwrap(),
+            "Confirm Cloud mode for Claude Code in Settings first."
+        );
+        let missing = temp.0.join("missing.exe");
+        assert!(
+            build(&settings(&text(true, &missing)), none)
+                .err()
+                .unwrap()
+                .contains("isn't at")
+        );
+        let built = build(&settings(&text(true, &fake)), none).unwrap();
+        assert_eq!(built.label(), "cloud/claude-code/haiku");
     }
 
     #[test]

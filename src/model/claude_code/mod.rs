@@ -98,6 +98,59 @@ pub fn message(request: &NoteRequest) -> String {
     line
 }
 
+/// Whether `claude auth status` says it is signed in, and with which plan (`Max`).
+pub fn signed_in_from(text: &str) -> Option<(bool, Option<String>)> {
+    let value: Value = serde_json::from_str(text.trim()).ok()?;
+    let signed_in = value["loggedIn"].as_bool()?;
+    let plan = value["subscriptionType"].as_str().map(|plan| {
+        let mut letters = plan.chars();
+        letters
+            .next()
+            .map(|first| first.to_uppercase().chain(letters).collect())
+            .unwrap_or_default()
+    });
+    Some((signed_in, plan))
+}
+
+/// A line for Settings: which Claude Code is used, and whether it is signed in. Runs it two or
+/// three times, so call it off the UI thread.
+pub fn status(path: Option<&Path>) -> String {
+    let Some(found) = cli::find(path) else {
+        return match path {
+            Some(path) => format!("Claude Code isn't at {}.", path.display()),
+            None => "Claude Code isn't installed, or isn't on PATH. Install it, then sign in."
+                .to_owned(),
+        };
+    };
+    let cli = match cli::probe(&found) {
+        Ok(cli) => cli,
+        Err(error) => return format!("{error}."),
+    };
+    let dir = cli::scratch_dir();
+    let _ = std::fs::create_dir_all(&dir);
+    let signed_in = run::run(
+        &found,
+        &["auth".to_owned(), "status".to_owned()],
+        &[],
+        &dir,
+        &cli::variables_to_remove(),
+        Duration::from_secs(10),
+    )
+    .ok()
+    .and_then(|output| signed_in_from(&String::from_utf8_lossy(&output.stdout)));
+    let account = match signed_in {
+        Some((true, Some(plan))) => format!(", signed in with your Claude account ({plan})"),
+        Some((true, None)) => ", signed in".to_owned(),
+        Some((false, _)) => ", not signed in: run claude in a terminal, then /login".to_owned(),
+        None => String::new(),
+    };
+    format!(
+        "Claude Code {} at {}{account}.",
+        cli.version,
+        found.display()
+    )
+}
+
 /// Whether `path` runs through `cmd.exe` (an npm install's `claude.cmd`).
 fn is_batch(path: &Path) -> bool {
     path.extension().is_some_and(|extension| {
@@ -396,6 +449,41 @@ mod tests {
 
     fn stream(lines: &[String]) -> Stream {
         read_stream(lines.join("\n").as_bytes())
+    }
+
+    #[test]
+    fn the_sign_in_state_is_read_from_auth_status() {
+        assert_eq!(
+            signed_in_from(
+                r#"{"loggedIn": true, "authMethod": "claude.ai", "subscriptionType": "max"}"#
+            ),
+            Some((true, Some("Max".to_owned())))
+        );
+        assert_eq!(
+            signed_in_from(r#"{"loggedIn": false}"#),
+            Some((false, None))
+        );
+        assert_eq!(signed_in_from("error: unknown command 'auth'"), None);
+    }
+
+    #[test]
+    fn the_status_line_says_what_was_found() {
+        let temp = Temp::new("status");
+        let fake = temp.script(
+            "claude.cmd",
+            &[
+                r#"if "%~1"=="--version" (echo 2.1.303 ^(Claude Code^)& exit /b 0)"#,
+                r#"if "%~1"=="auth" (echo {"loggedIn": true, "subscriptionType": "pro"}& exit /b 0)"#,
+            ],
+        );
+        assert_eq!(
+            status(Some(&fake)),
+            format!(
+                "Claude Code 2.1.303 at {}, signed in with your Claude account (Pro).",
+                fake.display()
+            )
+        );
+        assert!(status(Some(&temp.0.join("nope.exe"))).starts_with("Claude Code isn't at"));
     }
 
     #[test]

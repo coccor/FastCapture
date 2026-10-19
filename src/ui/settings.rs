@@ -1,6 +1,6 @@
 //! The Settings window: the notebook, Local or Cloud, the local server and model, the cloud
-//! provider (the Claude API or an OpenAI-compatible API) with its model and API key, the tokens
-//! used and the monthly cap, and two switches. Built from standard controls, so the keyboard and
+//! provider (the Claude API, an OpenAI-compatible API, or the user's own Claude Code) with its
+//! model and API key, the tokens used and the monthly cap, and two switches. Built from standard controls, so the keyboard and
 //! screen readers work through Windows; Tab, Enter (Save) and Esc (Cancel) come from
 //! `IsDialogMessageW` in the app's message loop. Finding servers, listing models, the vision
 //! check and Test run on threads of their own and report back with `WM_SETTINGS_RESULT`. The
@@ -11,6 +11,7 @@ use super::settings_form::Form;
 use super::theme::{self, scale};
 use crate::config::settings::{CloudBackend, Mode, Settings, SettingsFile};
 use crate::model::claude::{self, Claude};
+use crate::model::claude_code::{self, ClaudeCode};
 use crate::model::local::{self, Found};
 use crate::model::openai::{self, OpenAi};
 use crate::model::request::{CaptureFacts, NoteRequest};
@@ -67,14 +68,20 @@ const ID_OPENAI_MODEL: i32 = 121;
 const ID_LIST_MODELS: i32 = 122;
 const ID_USAGE: i32 = 123;
 const ID_CAP: i32 = 124;
+const ID_CLAUDE_CODE_MODEL: i32 = 125;
+const ID_CLAUDE_CODE_STATUS: i32 = 126;
 
 const WIDTH: i32 = 560;
 const HEIGHT: i32 = 636;
 
 /// The provider combo's items, in `CloudBackend` order.
-const PROVIDERS: [(CloudBackend, &str); 2] = [
+const PROVIDERS: [(CloudBackend, &str); 3] = [
     (CloudBackend::Claude, "Claude API (Anthropic)"),
     (CloudBackend::OpenAi, "OpenAI-compatible API"),
+    (
+        CloudBackend::ClaudeCode,
+        "Claude Code (your Claude plan, experimental)",
+    ),
 ];
 
 /// What a background job found.
@@ -85,6 +92,8 @@ enum Event {
     CloudModels(String, Result<Vec<String>, String>),
     Vision(String, String, Option<bool>),
     Tested(Result<String, String>),
+    /// Which Claude Code is used, and whether it is signed in.
+    ClaudeCode(String),
 }
 
 /// What the window opens with.
@@ -113,6 +122,8 @@ struct Controls {
     openai_address: HWND,
     claude_address: HWND,
     openai_model: HWND,
+    claude_code_model: HWND,
+    claude_code_status: HWND,
     key: HWND,
     key_status: HWND,
     test_status: HWND,
@@ -127,6 +138,9 @@ struct Controls {
     /// Shown only for one provider.
     claude_only: Vec<HWND>,
     openai_only: Vec<HWND>,
+    claude_code_only: Vec<HWND>,
+    /// The address and key rows, which Claude Code has no use for.
+    api_only: Vec<HWND>,
 }
 
 struct SettingsWindow {
@@ -141,10 +155,12 @@ struct SettingsWindow {
 }
 
 impl SettingsWindow {
-    fn key_target(&self, backend: CloudBackend) -> &str {
+    /// Where the provider's key is saved; Claude Code has none.
+    fn key_target(&self, backend: CloudBackend) -> Option<&str> {
         match backend {
-            CloudBackend::Claude => &self.open.claude_key,
-            CloudBackend::OpenAi => &self.open.openai_key,
+            CloudBackend::Claude => Some(&self.open.claude_key),
+            CloudBackend::OpenAi => Some(&self.open.openai_key),
+            CloudBackend::ClaudeCode => None,
         }
     }
 
@@ -152,6 +168,7 @@ impl SettingsWindow {
         match backend {
             CloudBackend::Claude => self.claude_key_saved,
             CloudBackend::OpenAi => self.openai_key_saved,
+            CloudBackend::ClaudeCode => false,
         }
     }
 
@@ -555,6 +572,29 @@ fn create_controls(hwnd: HWND, dpi: u32, font: HFONT) -> Controls {
         26,
         ID_LIST_MODELS,
     );
+    let claude_code_label = label("Claude Code", 236);
+    let claude_code_status = make(
+        "STATIC",
+        "",
+        0,
+        0,
+        field_x,
+        232,
+        field_w + button_w,
+        34,
+        ID_CLAUDE_CODE_STATUS,
+    );
+    let claude_code_model = make(
+        "COMBOBOX",
+        "",
+        WS_TABSTOP | WS_VSCROLL | CBS_DROPDOWN as u32,
+        0,
+        field_x,
+        272,
+        field_w,
+        200,
+        ID_CLAUDE_CODE_MODEL,
+    );
     let key_label = label("API key", 308);
     let key = make(
         "EDIT",
@@ -707,6 +747,8 @@ fn create_controls(hwnd: HWND, dpi: u32, font: HFONT) -> Controls {
         openai_address,
         claude_address,
         openai_model,
+        claude_code_model,
+        claude_code_status,
         key,
         key_status,
         test_status,
@@ -732,12 +774,17 @@ fn create_controls(hwnd: HWND, dpi: u32, font: HFONT) -> Controls {
             cloud_model,
             openai_model,
             list_models,
+            claude_code_label,
+            claude_code_status,
+            claude_code_model,
             key_label,
             key,
             key_status,
         ],
         claude_only: vec![claude_address, cloud_model],
         openai_only: vec![openai_address, openai_model, list_models],
+        claude_code_only: vec![claude_code_label, claude_code_status, claude_code_model],
+        api_only: vec![address_label, key_label, key, key_status],
     }
 }
 
@@ -782,6 +829,12 @@ fn load(hwnd: HWND) {
     unsafe { SendMessageW(controls.provider, CB_SETCURSEL, provider, 0) };
     set_text(controls.openai_address, &form.openai_endpoint);
     set_text(controls.openai_model, &form.openai_model);
+    let aliases: Vec<String> = claude_code::MODELS
+        .iter()
+        .map(|(alias, _)| (*alias).to_owned())
+        .collect();
+    combo_fill(controls.claude_code_model, &aliases);
+    set_text(controls.claude_code_model, &form.claude_code_model);
     set_text(controls.cap, &form.token_cap);
     set_text(
         controls.usage,
@@ -819,6 +872,7 @@ fn read_form(window: &SettingsWindow) -> Form {
         claude_model,
         openai_endpoint: text_of(controls.openai_address).trim().to_owned(),
         openai_model: combo_text(controls.openai_model).trim().to_owned(),
+        claude_code_model: combo_text(controls.claude_code_model).trim().to_owned(),
         new_key: text_of(controls.key).trim().to_owned(),
         key_saved: window.key_saved(window.provider()),
         token_cap: text_of(controls.cap).trim().to_owned(),
@@ -855,6 +909,19 @@ fn enable_for_mode(hwnd: HWND) {
         &window.controls.openai_only,
         provider == CloudBackend::OpenAi,
     );
+    show(
+        &window.controls.claude_code_only,
+        provider == CloudBackend::ClaudeCode,
+    );
+    show(
+        &window.controls.api_only,
+        provider != CloudBackend::ClaudeCode,
+    );
+    if provider == CloudBackend::ClaudeCode
+        && text_of(window.controls.claude_code_status).is_empty()
+    {
+        check_claude_code(hwnd);
+    }
     set_text(
         window.controls.key_status,
         if window.key_saved(provider) {
@@ -863,6 +930,21 @@ fn enable_for_mode(hwnd: HWND) {
             "Saved in Windows Credential Manager, never in a file."
         },
     );
+}
+
+/// Finds Claude Code and asks whether it is signed in, off the UI thread.
+fn check_claude_code(hwnd: HWND) {
+    let Some(window) = state(hwnd) else {
+        return;
+    };
+    set_text(
+        window.controls.claude_code_status,
+        "Looking for Claude Code…",
+    );
+    let path = window.settings.claude_code_path.clone();
+    in_background(hwnd, move || {
+        Event::ClaudeCode(claude_code::status(path.as_deref()))
+    });
 }
 
 /// "Tokens used: 12,400 today, 210,000 this month…", from the ledger at `ledger`.
@@ -1005,8 +1087,13 @@ fn test(hwnd: HWND) {
     }
     let saved_key = window
         .key_saved(form.backend)
-        .then(|| crate::secrets::load(window.key_target(form.backend)))
+        .then(|| {
+            window
+                .key_target(form.backend)
+                .and_then(crate::secrets::load)
+        })
         .flatten();
+    let claude_code_path = window.settings.claude_code_path.clone();
     set_text(
         window.controls.test_status,
         "Asking the model for a test note…",
@@ -1027,6 +1114,10 @@ fn test(hwnd: HWND) {
                         .map(|backend| Box::new(backend) as Box<dyn Backend>),
                     CloudBackend::OpenAi => {
                         OpenAi::cloud(&form.openai_endpoint, &form.openai_model, key)
+                            .map(|backend| Box::new(backend) as Box<dyn Backend>)
+                    }
+                    CloudBackend::ClaudeCode => {
+                        ClaudeCode::new(claude_code_path.as_deref(), &form.claude_code_model)
                             .map(|backend| Box::new(backend) as Box<dyn Backend>)
                     }
                 }
@@ -1094,7 +1185,8 @@ fn save(hwnd: HWND) {
         return;
     };
     if !form.new_key.is_empty()
-        && let Err(error) = crate::secrets::save(window.key_target(form.backend), &form.new_key)
+        && let Some(target) = window.key_target(form.backend)
+        && let Err(error) = crate::secrets::save(target, &form.new_key)
     {
         set_text(
             window.controls.problem,
@@ -1224,6 +1316,7 @@ fn on_event(hwnd: HWND, event: Event) {
                 },
             );
         }
+        Event::ClaudeCode(status) => set_text(controls.claude_code_status, &status),
         Event::Tested(result) => set_text(
             controls.test_status,
             &match result {
@@ -1382,6 +1475,83 @@ mod tests {
 
     fn visible(control: HWND) -> bool {
         unsafe { windows_sys::Win32::UI::WindowsAndMessaging::IsWindowVisible(control) != 0 }
+    }
+
+    /// Handles the window's messages until `done`, for up to ten seconds.
+    fn pump_until(done: impl Fn() -> bool) -> bool {
+        use windows_sys::Win32::UI::WindowsAndMessaging::{
+            DispatchMessageW, PM_REMOVE, PeekMessageW,
+        };
+        let until = std::time::Instant::now() + Duration::from_secs(10);
+        let mut message: MSG = unsafe { std::mem::zeroed() };
+        while std::time::Instant::now() < until {
+            while unsafe { PeekMessageW(&mut message, std::ptr::null_mut(), 0, 0, PM_REMOVE) } != 0
+            {
+                unsafe { DispatchMessageW(&message) };
+            }
+            if done() {
+                return true;
+            }
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        done()
+    }
+
+    #[test]
+    fn claude_code_shows_what_was_found_and_is_saved_without_a_key() {
+        let temp = Temp::new("claude-code");
+        let fakes = crate::model::claude_code::cli::tests::Temp::new("settings-window");
+        let fake = fakes.script(
+            "claude.cmd",
+            &[
+                r#"if "%~1"=="--version" (echo 2.1.303 ^(Claude Code^)& exit /b 0)"#,
+                r#"if "%~1"=="auth" (echo {"loggedIn": false}& exit /b 1)"#,
+            ],
+        );
+        std::fs::write(
+            temp.0.join("fastcapture.ini"),
+            format!(
+                "notebook={}\r\nmode=cloud\r\nclaude_code_path={}\r\n",
+                temp.0.display(),
+                fake.display()
+            ),
+        )
+        .unwrap();
+        let saved = Rc::new(Cell::new(false));
+        let hwnd = temp.open(saved.clone());
+        let window = state(hwnd).unwrap();
+        unsafe { SendMessageW(window.controls.provider, CB_SETCURSEL, 2, 0) };
+        notify(hwnd, ID_PROVIDER, CBN_SELCHANGE);
+        let window = state(hwnd).unwrap();
+        assert!(visible(window.controls.claude_code_model));
+        assert!(!visible(window.controls.key) && !visible(window.controls.cloud_model));
+        let status = window.controls.claude_code_status;
+        assert!(pump_until(
+            || text_of(status).starts_with("Claude Code 2.1.303")
+        ));
+        assert_eq!(
+            text_of(status),
+            format!(
+                "Claude Code 2.1.303 at {}, not signed in: run claude in a terminal, then /login.",
+                fake.display()
+            )
+        );
+
+        set_text(window.controls.claude_code_model, "haiku");
+        command(hwnd, IDOK);
+        assert!(saved.get());
+        let text = std::fs::read_to_string(temp.0.join("fastcapture.ini")).unwrap();
+        let (settings, _) = crate::config::settings::parse(&text);
+        assert_eq!(settings.backend, CloudBackend::ClaudeCode);
+        assert_eq!(settings.claude_code_model, "haiku");
+        assert!(settings.claude_code_accepted && !settings.cloud_accepted);
+        assert_eq!(
+            settings.claude_code_path,
+            Some(fake.clone()),
+            "kept as it was"
+        );
+        assert_eq!(crate::secrets::load(&temp.1), None);
+        assert_eq!(crate::secrets::load(&temp.2), None);
     }
 
     #[test]

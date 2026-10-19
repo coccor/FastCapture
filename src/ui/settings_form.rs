@@ -18,6 +18,8 @@ pub struct Form {
     /// The OpenAI-compatible API's base URL and model.
     pub openai_endpoint: String,
     pub openai_model: String,
+    /// Claude Code's model: an alias such as `sonnet`, or a full name.
+    pub claude_code_model: String,
     /// A key typed into the form for the chosen provider; empty keeps the saved one.
     pub new_key: String,
     /// A key for the chosen provider is already saved in Credential Manager.
@@ -54,6 +56,7 @@ impl Form {
             claude_model: settings.claude_model.clone(),
             openai_endpoint: settings.openai_endpoint.clone().unwrap_or_default(),
             openai_model: settings.openai_model.clone().unwrap_or_default(),
+            claude_code_model: settings.claude_code_model.clone(),
             new_key: String::new(),
             key_saved,
             token_cap: cap_text(settings.token_cap),
@@ -129,6 +132,13 @@ impl Form {
                     }
                     None
                 }
+                CloudBackend::ClaudeCode => {
+                    let model = self.claude_code_model.trim();
+                    if model.is_empty() || model.contains(char::is_whitespace) {
+                        return Some("Choose or type a Claude Code model, like sonnet.".to_owned());
+                    }
+                    None
+                }
             },
         }
     }
@@ -144,6 +154,7 @@ impl Form {
             CloudBackend::OpenAi => {
                 settings.openai_accepted.as_deref() != Some(self.openai_host().as_str())
             }
+            CloudBackend::ClaudeCode => !settings.claude_code_accepted,
         }
     }
 
@@ -168,10 +179,14 @@ impl Form {
         file.set("claude_model", self.claude_model.trim());
         file.set("openai_endpoint", self.openai_endpoint.trim());
         file.set("openai_model", self.openai_model.trim());
+        if !self.claude_code_model.trim().is_empty() {
+            file.set("claude_code_model", self.claude_code_model.trim());
+        }
         if cloud_accepted_now {
             match self.backend {
                 CloudBackend::Claude => file.set("cloud_accepted", "true"),
                 CloudBackend::OpenAi => file.set("openai_accepted", &self.openai_host()),
+                CloudBackend::ClaudeCode => file.set("claude_code_accepted", "true"),
             }
         }
         file.set(
@@ -204,6 +219,16 @@ impl Form {
                     ),
                 )
             }
+            CloudBackend::ClaudeCode => (
+                "Send captures to Anthropic through Claude Code?".to_owned(),
+                format!(
+                    "In Cloud mode with Claude Code, FastCapture runs your own installed Claude                      Code for each capture, which sends it to Anthropic with your Claude plan's                      login ({}): what you typed, the text of links and files you capture, your                      screenshots and images, and short descriptions of related notes in your                      notebook. Claude Code runs with no tools, so it can't read or change                      anything else.\n\n\
+                     Nothing is sent before you save a capture. Notes count against your plan's                      usage limits; there is no API bill.\n\n\
+                     This is experimental and for your own use: Anthropic lets you use Claude                      Code with your own plan, but its terms don't say whether another app may                      start it for you, so this may have to change.\n\n\
+                     Send your captures to Anthropic through Claude Code?",
+                    self.claude_code_model.trim()
+                ),
+            ),
         }
     }
 }
@@ -238,6 +263,7 @@ mod tests {
             local_endpoint: "http://localhost:11434".into(),
             local_model: "gemma3".into(),
             claude_model: "claude-sonnet-5-5".into(),
+            claude_code_model: "sonnet".into(),
             ..Form::default()
         }
     }
@@ -381,6 +407,38 @@ mod tests {
         assert_eq!(settings.openai_accepted.as_deref(), Some("openrouter.ai"));
         assert!(!settings.cloud_accepted, "accepted for that host only");
         assert_eq!(Form::from_settings(&settings, true), cloud);
+    }
+
+    #[test]
+    fn claude_code_needs_a_model_and_its_own_consent_but_no_key() {
+        let code = Form {
+            mode: Some(Mode::Cloud),
+            backend: CloudBackend::ClaudeCode,
+            claude_code_model: "haiku".into(),
+            ..form()
+        };
+        assert_eq!(code.problem(), None, "no key");
+        let mut nameless = code.clone();
+        nameless.claude_code_model = " ".into();
+        assert!(
+            nameless
+                .problem()
+                .unwrap()
+                .starts_with("Choose or type a Claude Code model")
+        );
+        assert!(code.needs_cloud_consent(&parse("cloud_accepted=true").0));
+        assert!(!code.needs_cloud_consent(&parse("claude_code_accepted=true").0));
+        let (title, text) = code.consent();
+        assert_eq!(title, "Send captures to Anthropic through Claude Code?");
+        assert!(text.contains("(haiku)") && text.contains("experimental"));
+
+        let mut file = SettingsFile::from_text("");
+        code.apply(&mut file, true);
+        let (settings, warnings) = parse(&file.text());
+        assert!(warnings.is_empty(), "{warnings:?}");
+        assert_eq!(settings.backend, CloudBackend::ClaudeCode);
+        assert_eq!(settings.claude_code_model, "haiku");
+        assert!(settings.claude_code_accepted && !settings.cloud_accepted);
     }
 
     #[test]
