@@ -1,10 +1,12 @@
 //! Times the capture path against its budgets: the box from "open" to visible, a 4K screenshot
-//! from clipboard pixels to PNG, Ctrl+Enter's filing of a capture holding it, and the worker
-//! building a model request from that capture. Run it as a release build:
-//! `cargo run --release --example bench`.
+//! from clipboard pixels to PNG, Ctrl+Enter's filing of a capture holding it, the worker
+//! building a model request from that capture, and reading an article page and a 20-page PDF.
+//! Run it as a release build: `cargo run --release --example bench`.
 
 use fastcapture::capture::submit::submit;
 use fastcapture::capture::{Attachment, Capture};
+use fastcapture::extract::pdf::build::{self as pdf_build, Page};
+use fastcapture::extract::{page, pdf};
 use fastcapture::model::request;
 use fastcapture::platform::png::{Pixels, encode_png};
 use fastcapture::queue::Store;
@@ -139,5 +141,78 @@ fn main() {
         );
     }
 
+    // A long article page, from HTML to its main content as Markdown (after download).
+    let html = article();
+    let mut page_times = Vec::new();
+    let mut markdown = String::new();
+    for _ in 0..10 {
+        let started = Instant::now();
+        markdown = page::extract(&html, "https://news.example/2026/10/lag").markdown;
+        page_times.push(started.elapsed());
+    }
+    report("article page to Markdown", 300, page_times);
+    println!(
+        "    {:.0} KB of HTML, {:.0} KB of Markdown",
+        html.len() as f64 / 1024.0,
+        markdown.len() as f64 / 1024.0
+    );
+
+    // A 20-page text PDF read page by page.
+    let lines: Vec<String> = (1..=45)
+        .map(|n| {
+            format!("Line {n} of the ledger batch review, with the numbers, names and decisions.")
+        })
+        .collect();
+    let lines: Vec<&str> = lines.iter().map(String::as_str).collect();
+    let pages: Vec<Page> = (0..20).map(|_| Page::Text(&lines)).collect();
+    let bytes = pdf_build::pdf(&pages, false);
+    let mut pdf_times = Vec::new();
+    for _ in 0..5 {
+        let started = Instant::now();
+        let read = pdf::read(&bytes, 20).expect("reads");
+        assert_eq!(read.pages.len(), 20);
+        pdf_times.push(started.elapsed());
+    }
+    report("20-page text PDF", 1000, pdf_times);
+
     let _ = std::fs::remove_dir_all(&temp);
+}
+
+/// A news page as sites serve them: navigation, a sidebar of links, 150 paragraphs of
+/// article, comments and a footer.
+fn article() -> String {
+    let mut html = String::from(
+        "<!doctype html><html><head><title>Lag</title>\
+         <meta property=\"og:title\" content=\"Payments lag\"></head><body><header><nav><ul>",
+    );
+    for n in 0..100 {
+        html.push_str(&format!(
+            "<li><a href=\"/section/{n}\">Section {n}</a></li>"
+        ));
+    }
+    html.push_str("</ul></nav></header><div class=\"layout\"><aside class=\"sidebar\"><ul>");
+    for n in 0..60 {
+        html.push_str(&format!(
+            "<li><a href=\"/story/{n}\">Another story, number {n}</a></li>"
+        ));
+    }
+    html.push_str("</ul></aside><main><article><h1>Payments lag</h1>");
+    for n in 0..150 {
+        html.push_str(&format!(
+            "<p>Paragraph {n}: the nightly ledger batch wrote millions of records, and the \
+             consumer group fell behind, so lag peaked, then recovered once the batch was done. \
+             <a href=\"/ref/{n}\">A reference</a> and <em>some emphasis</em> keep it realistic.</p>"
+        ));
+        if n % 30 == 0 {
+            html.push_str("<h2>A section</h2><ul><li>One point</li><li>Another point</li></ul>");
+        }
+    }
+    html.push_str("</article></main></div><section class=\"comments\">");
+    for n in 0..40 {
+        html.push_str(&format!(
+            "<div class=\"comment\"><p>Comment {n}, with an opinion or two.</p></div>"
+        ));
+    }
+    html.push_str("</section><footer>© News</footer></body></html>");
+    html
 }

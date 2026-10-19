@@ -3,10 +3,14 @@
 //! Anthropic account; it never runs in `cargo test` or CI.
 //!
 //! ```text
-//! cargo run --release --example live_note -- [--effort low|medium|high] [--image PATH] ["text"]
+//! cargo run --release --example live_note -- [--dry-run] [--effort low|medium|high] [--attach PATH]… ["text"]
 //! ```
 //!
-//! The capture goes to a scratch notebook in the temp folder; your notebook isn't touched.
+//! `--dry-run` fetches pages and prints the request's text without asking the model: free.
+//!
+//! `--attach` takes any file (an image, a PDF, a Word file, a log) and can be given more than
+//! once; links in the text are fetched as the worker fetches them. The capture goes to a scratch
+//! notebook in the temp folder; your notebook isn't touched.
 
 use fastcapture::capture::submit::submit;
 use fastcapture::capture::{Attachment, Capture};
@@ -25,11 +29,13 @@ only the ledger-events consumer group. need to check the batch size";
 
 fn main() {
     let mut effort: Option<&'static str> = None;
-    let mut image: Option<PathBuf> = None;
+    let mut dry_run = false;
+    let mut attach: Vec<PathBuf> = Vec::new();
     let mut text = SAMPLE.to_owned();
     let mut args = std::env::args().skip(1);
     while let Some(arg) = args.next() {
         match arg.as_str() {
+            "--dry-run" => dry_run = true,
             "--effort" => {
                 effort = match args.next().as_deref() {
                     Some("low") => Some("low"),
@@ -38,7 +44,7 @@ fn main() {
                     other => panic!("unknown effort {other:?}"),
                 }
             }
-            "--image" => image = args.next().map(PathBuf::from),
+            "--attach" | "--image" => attach.extend(args.next().map(PathBuf::from)),
             other => text = other.to_owned(),
         }
     }
@@ -62,9 +68,7 @@ fn main() {
     let scratch = std::env::temp_dir().join(format!("fastcapture-live-{}", std::process::id()));
     let notebook = scratch.join("Live test");
     std::fs::create_dir_all(&notebook).unwrap();
-    let attachments = image
-        .map(|path| vec![Attachment::File(path)])
-        .unwrap_or_default();
+    let attachments = attach.into_iter().map(Attachment::File).collect();
     submit(
         &notebook,
         &Capture {
@@ -77,8 +81,38 @@ fn main() {
         true,
     )
     .unwrap();
-    let job = Store::new(scratch.join("queue")).list().remove(0);
+    let mut job = Store::new(scratch.join("queue")).list().remove(0);
+    // As on the worker's last try: a page that can't be reached is recorded, not waited for.
+    job.attempts = fastcapture::runner::pages::FETCH_TRIES;
+    let fetching = Instant::now();
+    fastcapture::runner::pages::fetch_pages(&job, "2026-10-19T12:00").unwrap();
+    let fetched = fetching.elapsed();
+    for (path, sidecar) in
+        fastcapture::capture::sidecar::find(&job.notebook, &job.raw, &job.capture_id)
+    {
+        let outcome = match &sidecar.page {
+            Ok(page) => format!("{} characters of main text", page.markdown.chars().count()),
+            Err(reason) => reason.clone(),
+        };
+        println!("--- page {}: {outcome} ({})", sidecar.url, path.display());
+    }
+    if fetched.as_millis() > 0 {
+        println!("--- pages fetched in {:.1} s", fetched.as_secs_f64());
+    }
+    let building = Instant::now();
     let request = request::build(&job, "2026-10-19").unwrap();
+    println!(
+        "--- request built in {:.0} ms: {} characters of text, {} images",
+        building.elapsed().as_secs_f64() * 1000.0,
+        request.user_text.chars().count(),
+        request.images.len()
+    );
+
+    if dry_run {
+        println!("{}", request.user_text);
+        let _ = std::fs::remove_dir_all(&scratch);
+        return;
+    }
 
     let started = Instant::now();
     let result = backend.complete(&request);

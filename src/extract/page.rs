@@ -31,11 +31,50 @@ pub fn extract(html: &str, url: &str) -> Page {
     let body = dom.find(dom.root(), "body").unwrap_or(dom.root());
     let skip = clutter(&dom, body);
     let content = main_content(&dom, body, &skip);
-    let markdown = markdown::to_markdown_without(&dom, &content, Some(url), &skip);
+    let markdown = without_empty_sections(&markdown::to_markdown_without(
+        &dom,
+        &content,
+        Some(url),
+        &skip,
+    ));
     if markdown.chars().filter(|c| c.is_alphanumeric()).count() >= MIN_TEXT * 3 / 4 {
         page.markdown = markdown;
     }
     page
+}
+
+/// The Markdown without headings whose sections were left out (a "See also" whose list was a
+/// link list): a heading followed by a heading of the same or a higher level, or by nothing.
+fn without_empty_sections(markdown: &str) -> String {
+    let level = |block: &str| {
+        let hashes = block.bytes().take_while(|&b| b == b'#').count();
+        (hashes > 0 && block[hashes..].starts_with(' ') && !block.contains('\n')).then_some(hashes)
+    };
+    let blocks: Vec<&str> = markdown.split("\n\n").collect();
+    // Whether each block starts inside a code fence, where `#` lines are code.
+    let mut in_fence = false;
+    let mut fenced = Vec::with_capacity(blocks.len());
+    for block in &blocks {
+        fenced.push(in_fence);
+        let fences = block
+            .lines()
+            .filter(|line| line.trim_start().starts_with("```"))
+            .count();
+        in_fence ^= fences % 2 == 1;
+    }
+    let heading = |index: usize| (!fenced[index]).then(|| level(blocks[index])).flatten();
+    let mut kept: Vec<&str> = Vec::new();
+    for (index, block) in blocks.iter().enumerate() {
+        if let Some(this) = heading(index) {
+            match (index + 1 < blocks.len()).then(|| heading(index + 1)) {
+                None => continue,
+                Some(Some(next)) if next <= this => continue,
+                _ => {}
+            }
+        }
+        kept.push(block);
+    }
+    kept.join("\n\n")
 }
 
 /// Words in class and id names that mean content…
@@ -50,28 +89,38 @@ const NEGATIVE: &[&str] = &[
     "ads",
     "advert",
     "advertisement",
+    "ambox",
     "banner",
     "breadcrumb",
     "breadcrumbs",
+    "catlinks",
     "comment",
     "comments",
     "cookie",
     "cookies",
+    "editsection",
     "footer",
     "footnote",
+    "hatnote",
     "masthead",
     "menu",
+    "metadata",
     "modal",
     "nav",
     "navbar",
+    "navbox",
     "navigation",
     "newsletter",
+    "noprint",
     "outbrain",
     "pager",
     "pagination",
     "popup",
+    "printfooter",
     "promo",
     "recommended",
+    "references",
+    "reflist",
     "related",
     "share",
     "sharing",
@@ -87,26 +136,36 @@ const NEGATIVE: &[&str] = &[
     "widget",
 ];
 
-/// The words of an element's class and id, lowercase.
-fn words(dom: &Dom, id: NodeId) -> Vec<String> {
-    [dom.attr(id, "class"), dom.attr(id, "id")]
+/// What an element's class names and id say it is: clutter when one of them has a clutter word,
+/// content when one of them has a content word and no clutter word (so `ambox-content` is a
+/// banner, not content).
+fn naming(dom: &Dom, id: NodeId) -> (bool, bool) {
+    let mut content = false;
+    let mut clutter = false;
+    let names = [dom.attr(id, "class"), dom.attr(id, "id")]
         .into_iter()
         .flatten()
-        .flat_map(|value| {
-            value
-                .split(|c: char| !c.is_ascii_alphanumeric())
-                .filter(|word| !word.is_empty())
-                .map(str::to_ascii_lowercase)
-                .collect::<Vec<_>>()
-        })
-        .collect()
+        .flat_map(str::split_whitespace);
+    for name in names {
+        let words: Vec<String> = name
+            .split(|c: char| !c.is_ascii_alphanumeric())
+            .filter(|word| !word.is_empty())
+            .map(str::to_ascii_lowercase)
+            .collect();
+        let has = |list: &[&str]| words.iter().any(|word| list.contains(&word.as_str()));
+        if has(NEGATIVE) {
+            clutter = true;
+        } else if has(POSITIVE) {
+            content = true;
+        }
+    }
+    (content, clutter)
 }
 
-/// +25 for a content word, −25 for a clutter word.
+/// +25 for a content name, −25 for a clutter name.
 fn class_weight(dom: &Dom, id: NodeId) -> f64 {
-    let words = words(dom, id);
-    let has = |list: &[&str]| words.iter().any(|word| list.contains(&word.as_str()));
-    (if has(POSITIVE) { 25.0 } else { 0.0 }) - (if has(NEGATIVE) { 25.0 } else { 0.0 })
+    let (content, clutter) = naming(dom, id);
+    (if content { 25.0 } else { 0.0 }) - (if clutter { 25.0 } else { 0.0 })
 }
 
 fn text_length(dom: &Dom, id: NodeId) -> usize {
@@ -155,10 +214,9 @@ fn clutter(dom: &Dom, body: NodeId) -> HashSet<NodeId> {
         let Some(name) = dom.name(id) else {
             continue;
         };
-        let words = words(dom, id);
-        let has = |list: &[&str]| words.iter().any(|word| list.contains(&word.as_str()));
+        let (content, clutter) = naming(dom, id);
         let structural = matches!(name, "article" | "main");
-        let unlikely = !structural && has(NEGATIVE) && !has(POSITIVE);
+        let unlikely = !structural && clutter && !content;
         let around = matches!(name, "aside" | "footer" | "nav")
             || (name == "header" && !under_any(dom, id, &["article", "main"]));
         let link_list = matches!(name, "ul" | "ol" | "div" | "section" | "table" | "p")
@@ -411,5 +469,53 @@ mod tests {
         );
         assert_eq!(host("http://user@[::1]:80/"), Some("[::1]".to_owned()));
         assert_eq!(host("nonsense"), None);
+    }
+
+    #[test]
+    fn headings_whose_sections_were_left_out_go_too() {
+        assert_eq!(
+            without_empty_sections(
+                "## Usage\n\nText.\n\n## See also\n\n## Notes\n\n### Sub\n\nKept.\n\n## External links"
+            ),
+            "## Usage\n\nText.\n\n## Notes\n\n### Sub\n\nKept."
+        );
+        // A `#` line inside code is code.
+        let code = "## Example\n\n```python\nx = 1\n\n# a comment\n\ny = 2\n```";
+        assert_eq!(without_empty_sections(code), code);
+    }
+
+    #[test]
+    fn a_banner_named_with_a_content_word_is_still_a_banner() {
+        let html = format!(
+            "<html><body><div id=\"content\"><div class=\"box-Issues metadata ambox ambox-content\">\
+             <p>This article has multiple issues, please help improve it or discuss them.</p></div>\
+             <p>{}</p></div></body></html>",
+            "Kafka is a distributed event store, built for high throughput, and used widely. "
+                .repeat(5)
+        );
+        let page = extract(&html, "https://en.example.org/wiki/Kafka");
+        assert!(
+            !page.markdown.contains("multiple issues"),
+            "{}",
+            page.markdown
+        );
+        assert!(
+            page.markdown
+                .starts_with("Kafka is a distributed event store")
+        );
+    }
+
+    #[test]
+    fn page_images_become_their_alt_text() {
+        let html = format!(
+            "<html><body><article><p>{} <img src=\"/chart.png\" alt=\"Lag chart\"></p></article></body></html>",
+            "Lag grows during batches, and recovers after them, as the chart shows. ".repeat(5)
+        );
+        let page = extract(&html, "https://example.com/");
+        assert!(
+            page.markdown.ends_with("chart shows. Lag chart"),
+            "{}",
+            page.markdown
+        );
     }
 }

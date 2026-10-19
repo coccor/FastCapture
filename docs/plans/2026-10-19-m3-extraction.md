@@ -102,8 +102,9 @@ src/
 
 ### Part 8: End to end
 
-- [ ] `runner/end_to_end.rs`: a link capture through the worker: the page from the test server becomes a sidecar, the request carries its Markdown, and the note is checked byte for byte. A PDF capture likewise.
-- [ ] `examples/bench.rs`: an article page from HTML to Markdown under 300 ms after download, a 20-page text PDF under 1 s (§14).
+- [x] `runner/end_to_end.rs`: a link capture through the worker: the page from the test server becomes a sidecar, the request carries its Markdown, and the note is checked byte for byte. A PDF capture sends its text pages in an attachment block and its scanned page as an image.
+- [x] `examples/bench.rs`: an article page from HTML to Markdown under 300 ms after download, a 20-page text PDF under 1 s (§14). Measured: a 47 KB article page in 4.6 ms, a 20-page PDF in 26 ms.
+- [x] `examples/live_note.rs`: `--attach PATH` (any file, more than once), pages fetched as the worker fetches them, and `--dry-run`, which prints the request without asking the model (free). Tried on real pages: the Rust book and Wikipedia. That led to dropping in-page anchor links, keeping page images as alt text, judging class names one by one (`ambox-content` is a banner), more clutter words (`noprint`, `navbox`, `reflist`, …) and dropping headings whose sections were left out.
 - [ ] Measure with `examples/live_note.rs` (with your approval): a real article link and a real PDF, comparing the notes and the token counts.
 
 ### Part 9: Polish and docs

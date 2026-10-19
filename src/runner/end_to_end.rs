@@ -1,6 +1,6 @@
-//! End to end, without the internet: a capture with text and a screenshot is filed and queued
-//! as the box files it, the worker takes it to the Claude backend (talking to a scripted server
-//! on loopback), and the note it writes is checked byte for byte.
+//! End to end, without the internet: a capture (a screenshot, a link, a PDF) is filed and queued
+//! as the box files it, the worker fetches what it links to and takes it to the Claude backend
+//! (both from scripted servers on loopback), and the note it writes is checked.
 
 use super::worker::{Factory, Worker};
 use crate::capture::submit::submit;
@@ -11,7 +11,7 @@ use crate::net::test_server::{Scripted, TestServer};
 use crate::platform::png::{Pixels, encode_png};
 use crate::queue::{State, Store};
 use serde_json::json;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 struct ClaudeAt(String);
@@ -47,6 +47,207 @@ fn reply() -> String {
     .to_string()
 }
 
+/// Runs the worker with Claude at `server` until the job is done.
+fn run_until_done(queue: &Path, capture_id: &str, server: &TestServer) -> Store {
+    let worker = Worker::start(
+        queue.to_path_buf(),
+        Box::new(ClaudeAt(server.url())),
+        Box::new(|| {}),
+    );
+    let store = Store::new(queue.to_path_buf());
+    let until = std::time::Instant::now() + Duration::from_secs(10);
+    while store
+        .get(capture_id)
+        .is_some_and(|job| job.state != State::Done)
+    {
+        assert!(
+            std::time::Instant::now() < until,
+            "{:?}",
+            store.get(capture_id)
+        );
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    worker.stop();
+    store
+}
+
+struct Temp(PathBuf);
+
+impl Temp {
+    fn new(name: &str) -> Self {
+        let dir =
+            std::env::temp_dir().join(format!("fastcapture-e2e-{name}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join("Work notes")).unwrap();
+        Self(dir)
+    }
+
+    fn submit(&self, capture: Capture) -> crate::queue::Job {
+        submit(
+            &self.0.join("Work notes"),
+            &capture,
+            Some(&self.0.join("queue")),
+            true,
+        )
+        .unwrap();
+        Store::new(self.0.join("queue")).list().remove(0)
+    }
+}
+
+impl Drop for Temp {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.0);
+    }
+}
+
+fn reply_with(title: &str, body: &str) -> String {
+    let note = json!({
+        "title": title,
+        "summary": "",
+        "body": body,
+        "key_points": [],
+        "tasks": [],
+        "tags": ["kafka"],
+        "links": [],
+        "home": null
+    });
+    json!({
+        "id": "msg_e2e",
+        "type": "message",
+        "role": "assistant",
+        "content": [{"type": "text", "text": note.to_string()}],
+        "stop_reason": "end_turn",
+        "usage": {"input_tokens": 900, "output_tokens": 80}
+    })
+    .to_string()
+}
+
+const ARTICLE: &str = "<html><head><title>Consumer lag, explained</title>\
+    <meta property=\"og:site_name\" content=\"Kafka notes\"></head><body>\
+    <nav><a href=\"/\">Home</a> <a href=\"/blog\">Blog</a></nav><article>\
+    <h1>Consumer lag, explained</h1>\
+    <p>Consumer lag grows when a group falls behind its topic, which happens during large batches, \
+    and it recovers once the batch is done, usually within half an hour of the start.</p>\
+    <p>Capping the batch size keeps the lag down, at the cost of a longer run overall, \
+    which is usually the better trade for payments systems.</p></article>\
+    <footer>All rights reserved.</footer></body></html>";
+
+#[test]
+fn a_link_capture_becomes_a_note_about_its_page() {
+    let temp = Temp::new("link");
+    let pages = TestServer::start(vec![Scripted {
+        status: 200,
+        headers: vec![(
+            "content-type".to_owned(),
+            "text/html; charset=utf-8".to_owned(),
+        )],
+        body: ARTICLE.as_bytes().to_vec(),
+        delay: Duration::ZERO,
+    }]);
+    let url = format!("{}/lag", pages.url());
+    let job = temp.submit(Capture {
+        text: format!("worth reading before the review\n{url}"),
+        ..Capture::default()
+    });
+    let model = TestServer::start(vec![Scripted::json(
+        200,
+        &reply_with("Consumer lag explained", "Why lag grows during batches."),
+    )]);
+    let store = run_until_done(&temp.0.join("queue"), &job.capture_id, &model);
+
+    // The page was fetched once, kept beside the raw source, and sent as material.
+    assert_eq!(pages.requests().len(), 1);
+    let kept = crate::capture::sidecar::find(&job.notebook, &job.raw, &job.capture_id);
+    assert_eq!(kept.len(), 1);
+    let request = model.requests().remove(0).json();
+    let user_text = request["messages"][0]["content"][0]["text"]
+        .as_str()
+        .unwrap();
+    assert!(user_text.contains(&format!(
+        "<source kind=\"link\" url=\"{url}\" title=\"Consumer lag, explained\" site=\"Kafka notes\">\n\
+         # Consumer lag, explained\n\nConsumer lag grows when"
+    )));
+    assert!(!user_text.contains("All rights reserved"));
+    assert!(!user_text.contains("Blog"));
+
+    let written = store.get(&job.capture_id).unwrap().note.unwrap();
+    let raw_stem = job.raw.file_stem().unwrap().to_string_lossy().into_owned();
+    let expected = format!(
+        "---\n\
+         type: capture\n\
+         captured: {captured}\n\
+         capture_id: {id}\n\
+         source: \"[[raw/{raw_stem}]]\"\n\
+         kind: [text, link]\n\
+         url: \"{url}\"\n\
+         site: \"Kafka notes\"\n\
+         tags: [kafka]\n\
+         status: inbox\n\
+         model: \"cloud/{model}\"\n\
+         ---\n\
+         \n\
+         # Consumer lag explained\n\
+         \n\
+         Why lag grows during batches.\n\
+         \n\
+         ## Source\n\
+         \n\
+         - [Consumer lag, explained]({url})\n",
+        captured = job.created,
+        id = job.capture_id,
+        model = claude::DEFAULT_MODEL,
+    );
+    let note = std::fs::read_to_string(job.notebook.join(&written.path)).unwrap();
+    assert_eq!(note, expected);
+}
+
+#[test]
+fn a_pdf_capture_sends_its_text_and_its_scanned_page() {
+    use crate::extract::pdf::build::{Page, pdf};
+    let temp = Temp::new("pdf");
+    let file = temp.0.join("review.pdf");
+    std::fs::write(
+        &file,
+        pdf(
+            &[
+                Page::Text(&["Ledger batch review: lag peaked at forty thousand messages."]),
+                Page::Picture,
+            ],
+            false,
+        ),
+    )
+    .unwrap();
+    let job = temp.submit(Capture {
+        text: "the review".to_owned(),
+        attachments: vec![Attachment::File(file)],
+        ..Capture::default()
+    });
+    let model = TestServer::start(vec![Scripted::json(
+        200,
+        &reply_with("Ledger batch review", "The review of the night run."),
+    )]);
+    let store = run_until_done(&temp.0.join("queue"), &job.capture_id, &model);
+
+    let request = model.requests().remove(0).json();
+    let content = request["messages"][0]["content"].as_array().unwrap();
+    // The scanned page as an image, then the user turn with the text pages.
+    assert_eq!(content.len(), 2);
+    assert_eq!(content[0]["type"], "image");
+    let user_text = content[1]["text"].as_str().unwrap();
+    assert!(user_text.contains(
+        "<attachment name=\"review.pdf\" kind=\"pdf\" pages=\"2\">\n## Page 1\n\nLedger batch review"
+    ));
+    assert!(user_text.contains("1 image is attached above"));
+
+    let written = store.get(&job.capture_id).unwrap().note.unwrap();
+    let note = std::fs::read_to_string(job.notebook.join(&written.path)).unwrap();
+    assert!(note.contains("kind: [text, file]\n"), "{note}");
+    assert!(
+        note.ends_with("## Attachments\n\n[review.pdf](../attachments/review.pdf)\n"),
+        "{note}"
+    );
+}
+
 #[test]
 fn a_screenshot_capture_becomes_a_note() {
     let temp = std::env::temp_dir().join(format!("fastcapture-e2e-{}", std::process::id()));
@@ -75,25 +276,7 @@ fn a_screenshot_capture_becomes_a_note() {
     let job = Store::new(queue.clone()).list().remove(0);
 
     let server = TestServer::start(vec![Scripted::json(200, &reply())]);
-    let worker = Worker::start(
-        queue.clone(),
-        Box::new(ClaudeAt(server.url())),
-        Box::new(|| {}),
-    );
-    let store = Store::new(queue);
-    let until = std::time::Instant::now() + Duration::from_secs(10);
-    while store
-        .get(&job.capture_id)
-        .is_some_and(|job| job.state != State::Done)
-    {
-        assert!(
-            std::time::Instant::now() < until,
-            "{:?}",
-            store.get(&job.capture_id)
-        );
-        std::thread::sleep(Duration::from_millis(20));
-    }
-    worker.stop();
+    let store = run_until_done(&queue, &job.capture_id, &server);
 
     // What was sent: the screenshot as it was, then the user turn.
     let request = server.requests().remove(0).json();

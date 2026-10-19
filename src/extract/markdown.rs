@@ -12,8 +12,8 @@ pub fn to_markdown(dom: &Dom, node: NodeId, base: Option<&str>) -> String {
     Converter::new(dom, base, &none).run(node).join("\n\n")
 }
 
-/// The Markdown for `nodes`, in order, leaving out the nodes in `skip` and everything under
-/// them.
+/// A page's Markdown: `nodes`, in order, leaving out the nodes in `skip` and everything under
+/// them. Images become their alt text, since the model reading the page can't see them.
 pub fn to_markdown_without(
     dom: &Dom,
     nodes: &[NodeId],
@@ -22,7 +22,11 @@ pub fn to_markdown_without(
 ) -> String {
     nodes
         .iter()
-        .flat_map(|&node| Converter::new(dom, base, skip).run(node))
+        .flat_map(|&node| {
+            let mut converter = Converter::new(dom, base, skip);
+            converter.images = false;
+            converter.run(node)
+        })
         .collect::<Vec<_>>()
         .join("\n\n")
 }
@@ -169,6 +173,8 @@ struct Converter<'a> {
     inline: String,
     /// The last block is an item of a Word list, so the next item joins it.
     in_word_list: bool,
+    /// Images as `![alt](src)`; otherwise as their alt text.
+    images: bool,
 }
 
 impl<'a> Converter<'a> {
@@ -180,7 +186,15 @@ impl<'a> Converter<'a> {
             blocks: Vec::new(),
             inline: String::new(),
             in_word_list: false,
+            images: true,
         }
+    }
+
+    /// A converter for part of this one's content, with its settings.
+    fn child(&self) -> Converter<'a> {
+        let mut child = Converter::new(self.dom, self.base, self.skip);
+        child.images = self.images;
+        child
     }
 
     /// The blocks `node` holds.
@@ -195,7 +209,7 @@ impl<'a> Converter<'a> {
     }
 
     fn sub(&self, node: NodeId) -> Vec<String> {
-        let mut sub = Converter::new(self.dom, self.base, self.skip);
+        let mut sub = self.child();
         sub.children(node);
         sub.flush();
         sub.blocks
@@ -394,7 +408,7 @@ impl<'a> Converter<'a> {
     }
 
     fn sub_list(&self, id: NodeId) -> String {
-        let mut sub = Converter::new(self.dom, self.base, self.skip);
+        let mut sub = self.child();
         sub.list(id, self.dom.is(id, "ol"));
         sub.blocks.join("\n")
     }
@@ -506,8 +520,11 @@ impl<'a> Converter<'a> {
 
     fn link(&self, id: NodeId) -> String {
         let text = self.inline_children(id);
+        // Anchors within the page (a heading's own link, "back to top") lead nowhere in a note.
         let Some(href) = self.dom.attr(id, "href").map(str::trim).filter(|href| {
-            !href.is_empty() && !href.to_ascii_lowercase().starts_with("javascript:")
+            !href.is_empty()
+                && !href.starts_with('#')
+                && !href.to_ascii_lowercase().starts_with("javascript:")
         }) else {
             return text;
         };
@@ -527,7 +544,7 @@ impl<'a> Converter<'a> {
     fn image(&self, id: NodeId) -> String {
         let alt = squeeze(&collapse(self.dom.attr(id, "alt").unwrap_or("")));
         let src = self.dom.attr(id, "src").map(str::trim).unwrap_or("");
-        if src.is_empty() || src.starts_with("data:") {
+        if !self.images || src.is_empty() || src.starts_with("data:") {
             return escape(&alt);
         }
         format!(

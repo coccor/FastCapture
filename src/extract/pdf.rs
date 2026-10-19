@@ -150,9 +150,10 @@ fn render_with_windows(
     Ok(rendered)
 }
 
-/// Small PDFs written for the tests: text pages, picture-only pages, and an encrypted one.
-#[cfg(test)]
-pub(crate) mod build {
+/// Small PDFs written for the tests and the bench: text pages, picture-only pages, and an
+/// encrypted one.
+#[doc(hidden)]
+pub mod build {
     pub enum Page<'a> {
         /// Lines of text in Helvetica.
         Text(&'a [&'a str]),
