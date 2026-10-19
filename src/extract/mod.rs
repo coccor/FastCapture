@@ -4,6 +4,7 @@
 
 pub mod dom;
 pub mod markdown;
+pub mod page;
 pub mod text;
 
 /// Characters of extracted text one capture may send. Your own text doesn't count.

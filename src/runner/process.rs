@@ -1,5 +1,6 @@
-//! One job, start to finish: build the request, ask the backend (once more if the reply isn't
-//! a usable note), check the reply, write or replace the note, and record what happened.
+//! One job, start to finish: fetch its links' pages, build the request, ask the backend (once
+//! more if the reply isn't a usable note), check the reply, write or replace the note, and
+//! record what happened.
 
 use super::backoff;
 use crate::model::request;
@@ -80,6 +81,8 @@ fn save(store: &Store, job: &Job) {
 }
 
 fn run(job: &Job, backend: &dyn Backend, today: &str) -> Result<write::Written, BackendError> {
+    let (date, time) = crate::platform::clock::local_now();
+    super::pages::fetch_pages(job, &crate::capture::raw::captured_stamp(date, time))?;
     let request = request::build(job, today).map_err(BackendError::Fail)?;
     let note = match backend.complete(&request) {
         Err(BackendError::Invalid(problems)) => {

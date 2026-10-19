@@ -7,6 +7,7 @@ pub mod file;
 pub mod model;
 pub mod raw;
 pub mod read;
+pub mod sidecar;
 pub mod submit;
 pub mod ulid;
 

@@ -611,8 +611,8 @@ fn regenerate_selected(hwnd: HWND) {
     reload(hwnd);
 }
 
-/// Shift+Del: the capture's note, its raw source and the attachments no other raw source links
-/// to go to the Recycle Bin, and its job is removed.
+/// Shift+Del: the capture's note, its raw source with its pages, and the attachments no other
+/// raw source links to go to the Recycle Bin, and its job is removed.
 fn recycle_selected(hwnd: HWND) {
     let Some(review) = state(hwnd) else {
         return;
@@ -635,6 +635,11 @@ fn recycle_selected(hwnd: HWND) {
         .into_iter()
         .collect();
     paths.push(row.raw_path());
+    paths.extend(
+        crate::capture::sidecar::find(&row.notebook, &row.raw, &row.capture_id)
+            .into_iter()
+            .map(|(path, _)| row.notebook.join(path)),
+    );
     paths.extend(
         read::own_attachments(&row.info, &others)
             .into_iter()
@@ -1054,8 +1059,23 @@ mod tests {
         assert_eq!(seen.borrow().opened, std::slice::from_ref(&second));
         open_folder(hwnd);
         assert_eq!(seen.borrow().folders, [notebook.join("raw")]);
+        // Its link's page goes with it.
+        let row = state(hwnd).unwrap().rows[0].clone();
+        let page = crate::capture::sidecar::write(
+            &notebook,
+            &row.raw,
+            &crate::capture::sidecar::Sidecar {
+                capture_id: row.capture_id.clone(),
+                url: "https://example.com/".to_owned(),
+                fetched: "2026-10-19T10:31".to_owned(),
+                page: Err("failed (403)".to_owned()),
+            },
+            None,
+        )
+        .unwrap();
         recycle_selected(hwnd);
-        assert_eq!(seen.borrow().recycled.len(), 3);
+        assert_eq!(seen.borrow().recycled.len(), 4);
+        assert!(seen.borrow().recycled.contains(&notebook.join(page)));
         assert!(state(hwnd).unwrap().rows.is_empty());
         assert!(Store::new(queue).list().is_empty());
 

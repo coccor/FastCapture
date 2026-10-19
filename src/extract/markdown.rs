@@ -3,11 +3,28 @@
 //! whitespace collapses as a browser shows it.
 
 use super::dom::{Data, Dom, NodeId};
+use std::collections::HashSet;
 
 /// The Markdown for `node` and everything under it. Relative links and images are resolved
 /// against `base` when it is given.
 pub fn to_markdown(dom: &Dom, node: NodeId, base: Option<&str>) -> String {
-    Converter::new(dom, base).run(node).join("\n\n")
+    let none = HashSet::new();
+    Converter::new(dom, base, &none).run(node).join("\n\n")
+}
+
+/// The Markdown for `nodes`, in order, leaving out the nodes in `skip` and everything under
+/// them.
+pub fn to_markdown_without(
+    dom: &Dom,
+    nodes: &[NodeId],
+    base: Option<&str>,
+    skip: &HashSet<NodeId>,
+) -> String {
+    nodes
+        .iter()
+        .flat_map(|&node| Converter::new(dom, base, skip).run(node))
+        .collect::<Vec<_>>()
+        .join("\n\n")
 }
 
 /// Elements that start a block of their own.
@@ -146,6 +163,8 @@ fn contains_block(dom: &Dom, id: NodeId) -> bool {
 struct Converter<'a> {
     dom: &'a Dom,
     base: Option<&'a str>,
+    /// Nodes left out on top of the ones `skipped` drops.
+    skip: &'a HashSet<NodeId>,
     blocks: Vec<String>,
     inline: String,
     /// The last block is an item of a Word list, so the next item joins it.
@@ -153,10 +172,11 @@ struct Converter<'a> {
 }
 
 impl<'a> Converter<'a> {
-    fn new(dom: &'a Dom, base: Option<&'a str>) -> Self {
+    fn new(dom: &'a Dom, base: Option<&'a str>, skip: &'a HashSet<NodeId>) -> Self {
         Self {
             dom,
             base,
+            skip,
             blocks: Vec::new(),
             inline: String::new(),
             in_word_list: false,
@@ -170,8 +190,12 @@ impl<'a> Converter<'a> {
         self.blocks
     }
 
+    fn skips(&self, id: NodeId) -> bool {
+        self.skip.contains(&id) || skipped(self.dom, id)
+    }
+
     fn sub(&self, node: NodeId) -> Vec<String> {
-        let mut sub = Converter::new(self.dom, self.base);
+        let mut sub = Converter::new(self.dom, self.base, self.skip);
         sub.children(node);
         sub.flush();
         sub.blocks
@@ -188,7 +212,7 @@ impl<'a> Converter<'a> {
             Data::Document => self.children(id),
             Data::Text(text) => self.inline.push_str(&escape(&collapse(text))),
             Data::Element { name, .. } => {
-                if skipped(self.dom, id) {
+                if self.skips(id) {
                     return;
                 }
                 if is_block(name) {
@@ -334,7 +358,7 @@ impl<'a> Converter<'a> {
             .unwrap_or(1);
         let mut items: Vec<String> = Vec::new();
         for &child in self.dom.children(id) {
-            if skipped(self.dom, child) {
+            if self.skips(child) {
                 continue;
             }
             match self.dom.name(child) {
@@ -370,7 +394,7 @@ impl<'a> Converter<'a> {
     }
 
     fn sub_list(&self, id: NodeId) -> String {
-        let mut sub = Converter::new(self.dom, self.base);
+        let mut sub = Converter::new(self.dom, self.base, self.skip);
         sub.list(id, self.dom.is(id, "ol"));
         sub.blocks.join("\n")
     }
@@ -456,7 +480,7 @@ impl<'a> Converter<'a> {
             .iter()
             .map(|&child| match self.dom.data(child) {
                 Data::Text(text) => escape(&collapse(text)),
-                Data::Element { .. } if skipped(self.dom, child) => String::new(),
+                Data::Element { .. } if self.skips(child) => String::new(),
                 Data::Element { .. } => self.inline_of(child),
                 Data::Document => String::new(),
             })

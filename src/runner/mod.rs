@@ -4,6 +4,7 @@ pub mod backoff;
 #[cfg(test)]
 mod end_to_end;
 pub mod from_settings;
+pub mod pages;
 pub mod process;
 pub mod worker;
 

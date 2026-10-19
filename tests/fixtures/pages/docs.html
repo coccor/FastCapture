@@ -1,0 +1,25 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><title>Consumer lag — Example Docs</title>
+<meta property="og:site_name" content="Example Docs"></head>
+<body>
+<nav class="docs-nav"><ul><li><a href="intro.html">Introduction</a></li><li><a href="lag.html">Consumer lag</a></li><li><a href="config.html">Configuration</a></li><li><a href="faq.html">FAQ</a></li></ul></nav>
+<div class="breadcrumbs"><a href="/">Docs</a> › <a href="./">Consumer</a> › Lag</div>
+<main class="markdown-body">
+<h1>Consumer lag</h1>
+<p>Lag is the difference, in messages, between the newest offset in a partition and the offset a consumer group has committed.</p>
+<h2>Checking lag</h2>
+<p>Run the group command, then read the <code>LAG</code> column, which is reported per partition:</p>
+<pre><code class="language-bash">kafka-consumer-groups --describe --group ledger-events
+</code></pre>
+<h2>Settings that matter</h2>
+<table>
+<thead><tr><th>Setting</th><th>Default</th><th>Effect</th></tr></thead>
+<tbody>
+<tr><td><code>max.poll.records</code></td><td>500</td><td>Records returned by one poll</td></tr>
+<tr><td><code>fetch.max.bytes</code></td><td>52428800</td><td>Bytes returned by one fetch</td></tr>
+</tbody>
+</table>
+<p>See <a href="config.html#poll">configuration</a> for the rest, including the timeouts.</p>
+</main>
+<footer class="docs-footer"><a href="https://github.example/docs/edit/lag.md">Edit this page</a></footer>
+</body></html>

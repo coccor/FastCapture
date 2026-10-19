@@ -106,7 +106,7 @@ pub fn captured_stamp(date: Date, time: Time) -> String {
 }
 
 /// A YAML double-quoted string.
-fn quoted(value: &str) -> String {
+pub(crate) fn quoted(value: &str) -> String {
     let escaped = value
         .replace('\\', "\\\\")
         .replace('"', "\\\"")

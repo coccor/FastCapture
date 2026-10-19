@@ -1,0 +1,25 @@
+<html><head><title>Tuning batch sizes - Field notes</title></head>
+<body>
+<div id="wrapper">
+  <div id="top-menu"><a href="/">Home</a> | <a href="/about">About</a> | <a href="/archive">Archive</a></div>
+  <div class="layout">
+    <div id="sidebar">
+      <div class="widget"><b>Tags</b><br><a href="/t/kafka">kafka</a>, <a href="/t/ops">ops</a>, <a href="/t/rust">rust</a></div>
+      <div class="widget">I write about systems, mostly at night, mostly about queues and the people who run them.</div>
+    </div>
+    <div class="post-body entry">
+      <div class="post-title"><h2>Tuning batch sizes</h2></div>
+      <div>Batch size is the knob everyone reaches for first, and for good reason: it trades latency for throughput in one number.</div>
+      <div>Too small, and every record pays the fixed cost of a request. Too large, and a single batch can hold a partition for seconds, which is exactly when lag starts to climb.</div>
+      <div>My rule of thumb:</div>
+      <ol>
+        <li>Start from the default.</li>
+        <li>Measure p99 latency and lag together, never one alone.</li>
+        <li>Change one thing at a time.</li>
+      </ol>
+      <div>That is all there is to it, most of the time, though the exceptions are where the interesting stories live.</div>
+    </div>
+  </div>
+  <div id="footer">Powered by a static site generator. Theme by someone kind.</div>
+</div>
+</body></html>

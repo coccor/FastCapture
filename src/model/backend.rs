@@ -107,6 +107,7 @@ mod tests {
     fn response(status: u16, body: &str, headers: &[(&str, &str)]) -> Response {
         Response {
             status,
+            url: String::new(),
             headers: headers
                 .iter()
                 .map(|(name, value)| ((*name).to_owned(), (*value).to_owned()))
