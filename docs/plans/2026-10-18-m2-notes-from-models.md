@@ -162,9 +162,9 @@ src/
 
 ### Part 9: Polish and docs
 
-- [ ] README: Settings, modes, what is sent, costs (a typical capture with Sonnet 5.5: about 3,000 input tokens with the image, 600 output, about one US cent), the review keys.
-- [ ] Spec: §19 notes for M2.
-- [ ] Bench: request building with a 4K screenshot (scaling and encoding) on the worker, against a 500 ms budget.
+- [x] README: Settings, modes, what is sent, costs (a typical capture with Sonnet 5.5: about 3,000 input tokens with the image, 600 output, about one US cent), the review keys.
+- [x] Spec: §19 notes for M2.
+- [x] Bench: request building with a 4K screenshot (scaling and encoding) on the worker, against a 500 ms budget.
 
 ## Testing approach
 

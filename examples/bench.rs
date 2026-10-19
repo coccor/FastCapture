@@ -1,10 +1,13 @@
-//! Times the capture path against M1's budgets: the box from "open" to visible, a 4K screenshot
-//! from clipboard pixels to PNG, and Ctrl+Enter's filing of a capture holding it. Run it as a
-//! release build: `cargo run --release --example bench`.
+//! Times the capture path against its budgets: the box from "open" to visible, a 4K screenshot
+//! from clipboard pixels to PNG, Ctrl+Enter's filing of a capture holding it, and the worker
+//! building a model request from that capture. Run it as a release build:
+//! `cargo run --release --example bench`.
 
 use fastcapture::capture::submit::submit;
 use fastcapture::capture::{Attachment, Capture};
+use fastcapture::model::request;
 use fastcapture::platform::png::{Pixels, encode_png};
+use fastcapture::queue::Store;
 use fastcapture::ui::capture_box::{self, Open, Sink};
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
@@ -112,6 +115,28 @@ fn main() {
         submit_times.push(started.elapsed());
     }
     report("Ctrl+Enter with a 4K screenshot", 150, submit_times);
+
+    // The worker building a model request for that capture: reading the raw source, scaling the
+    // screenshot to the model's size and encoding it.
+    let job = Store::new(queue).list().remove(0);
+    let mut build_times = Vec::new();
+    let mut image = None;
+    for _ in 0..5 {
+        let started = Instant::now();
+        let request = request::build(&job, "2026-10-19").expect("builds");
+        build_times.push(started.elapsed());
+        image = request.images.into_iter().next();
+    }
+    report("request with a 4K screenshot (worker)", 500, build_times);
+    if let Some(image) = image {
+        println!(
+            "    sent as {}×{} {}, {:.1} MB",
+            image.width,
+            image.height,
+            image.media_type,
+            image.data.len() as f64 / 1_048_576.0
+        );
+    }
 
     let _ = std::fs::remove_dir_all(&temp);
 }

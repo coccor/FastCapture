@@ -476,7 +476,11 @@ Six milestones. Each is usable on its own.
 
 ## 19. Implementation notes
 
-Decisions made while building M1 (plan `docs/plans/2026-10-18-m1-capture-and-raw-sources.md`), not anticipated by the sections above.
+Decisions made while building, not anticipated by the sections above.
+
+### M1: capture and raw sources
+
+Plan: `docs/plans/2026-10-18-m1-capture-and-raw-sources.md`.
 
 - **The default capture hotkey is Ctrl+Alt+C** (§5.1, §18.1), after Ctrl+Alt+Space and Win+Shift+C were held by other apps on the development PC.
 - **The raw source keeps URL lines in its body** as you typed them, and lists them again under `urls:` in front matter, each quoted. `captured` has no seconds, as in FastPad's captures.
@@ -491,3 +495,19 @@ Decisions made while building M1 (plan `docs/plans/2026-10-18-m1-capture-and-raw
 - **A pasted bitmap is encoded to PNG on a worker thread.** Encoding a 4K screenshot can take over a second, so a "Preparing image…" chip stands in for it, and Ctrl+Enter files once it is ready. Images on the clipboard as `PNG` (browsers, Snipping Tool) need no encoding.
 - **The review window recycles with `SHFileOperationW`** (`FOF_ALLOWUNDO`), which needs no COM. **Del** recycles the raw source and the attachments no other raw source links to; in M1 there is no note to discard first. FastPad is found through its `App Paths` entry only. The list's column header stays light in dark mode.
 - **Measured on the development PC** (release build, `examples/bench.rs`): hotkey to box visible 61 ms (§14: 100 ms); Ctrl+Enter with a 4K screenshot 34 ms (150 ms); a 4K bitmap to PNG 1.2 s on the worker, with noise added so it compresses worse than a real screenshot; the idle tray app 11.6 MB working set, 1.8 MB private, no CPU over 10 s (30 MB).
+
+### M2: notes from models
+
+Plan: `docs/plans/2026-10-18-m2-notes-from-models.md`. M2 has Local mode and the Claude API; candidate notes, links, homes and filing (§9, §10.3) are M4, extraction (§6.2) M3, the OpenAI-compatible cloud backend and token counts in Settings (§8.3) M5, and the Claude Code backend (§8.4) M6.
+
+- **Claude requests run at effort `low`.** Measured on 2026-10-19 with `examples/live_note.rs` on Claude Haiku 5.5: `low` and `medium` used the same tokens within a few percent, took 2.4–3.4 s, and wrote equally good notes for a text capture and a chart screenshot. The writing rules (about 1,460 tokens) are cached and were read from the cache on every request after the first.
+- **Claude requests ask for the API's server-side fallback** (`fallbacks: "default"`, beta `server-side-fallback-2026-07-01`), so a safety decline can be rerun on another model inside the same call. Haiku 5.5 has no fallback model and accepts the field. A decline that stands fails the job with "Claude declined to write a note for this capture."
+- **Settings offers Sonnet 5.5 (the default), Opus 5.5 and Haiku 5.5.** `claude_model` in the file accepts any model id.
+- **A rate limit is retried after the API's `retry-after`**, not paused (§15); with no `retry-after` it follows the usual backoff. A refused key (401/403) and a billing problem (402) pause the queue with a notice.
+- **There is one worker for all notebooks**, taking the oldest job first, rather than one per notebook (§6.3).
+- **Images are scaled to 1,568 pixels on the long side and re-encoded as PNG** when they are larger, otherwise sent as they are; at most 8 per capture, and the rest are listed to the model as left out. Local models get the same images as `image_url` data URLs. Whether a local model reads images is found by sending it a one-pixel image once per session.
+- **Local servers get 5 minutes per request**; finding servers on this PC allows 1 s per port.
+- **Queue jobs are version 2**, adding the written note's path and stamp, whether the job regenerates a note, and the time of the next retry. Version 1 files still read.
+- **The Settings window is a plain dialog** (no tabs) with Local or Cloud, the server or key and model, **Test**, the notebook, start at sign-in and `capture_source`; **Open settings file** is still there for the rest. The first-time Cloud screen (§8.1) is a Yes/No message box listing what will be sent to Anthropic.
+- **The review window in M2** shows every job with its note's preview above the raw source. Enter opens the folder (filing is M4), **R** also retries a failed job, and Del on a capture with no note recycles the capture as Shift+Del does. H, I and Ctrl+Z come with filing.
+- **Measured on the development PC** (release build, `examples/bench.rs`): building a request for a capture with a 4K screenshot, which reads, scales and re-encodes it on the worker, took 384–505 ms over four runs against a 500 ms budget, with the same noisy test image as M1, so a real screenshot is faster. It is sent as a 1568×882 PNG.
