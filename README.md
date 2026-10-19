@@ -4,7 +4,7 @@ A Windows tray app that captures what you come across (a thought, a screenshot, 
 
 FastCapture writes plain Markdown files with YAML front matter and attachments into a notebook folder. [FastPad](https://github.com/coccor/FastPad), Obsidian, any other editor or an AI agent reads them. Neither app needs the other.
 
-**Status:** milestone M4, index, links and filing. Everything you capture is saved, the pages it links to and the documents attached to it are read, and the model you choose writes it up as a note that links the notes it relates to and suggests where it belongs; one key files it there. See the [design](docs/specs/2026-10-18-fastcapture-design.md) and the plans for [M1](docs/plans/2026-10-18-m1-capture-and-raw-sources.md), [M2](docs/plans/2026-10-18-m2-notes-from-models.md), [M3](docs/plans/2026-10-19-m3-extraction.md) and [M4](docs/plans/2026-10-19-m4-index-links-filing.md).
+**Status:** milestone M5, the OpenAI-compatible cloud backend and token usage. Everything you capture is saved, the pages it links to and the documents attached to it are read, and the model you choose (on this PC, the Claude API, or any OpenAI-compatible API) writes it up as a note that links the notes it relates to and suggests where it belongs; one key files it there. Settings shows the tokens cloud notes used, and a monthly cap stops them. See the [design](docs/specs/2026-10-18-fastcapture-design.md) and the plans for [M1](docs/plans/2026-10-18-m1-capture-and-raw-sources.md), [M2](docs/plans/2026-10-18-m2-notes-from-models.md), [M3](docs/plans/2026-10-19-m3-extraction.md), [M4](docs/plans/2026-10-19-m4-index-links-filing.md) and [M5](docs/plans/2026-10-19-m5-cloud-openai-usage.md).
 
 ## Capturing
 
@@ -116,6 +116,7 @@ On this PC:
 - `%LocalAppData%\FastCapture\queue\`: one file per capture waiting to be processed.
 - `%LocalAppData%\FastCapture\draft\`: the capture box's draft.
 - `%LocalAppData%\FastCapture\index\<folder key>.cache`: the notebook's index, so it doesn't read every note at each start. It can be deleted at any time.
+- `%LocalAppData%\FastCapture\usage.txt`: the tokens cloud notes used, one line per day and model, as the APIs reported them. The last 13 months are kept.
 - `%LocalAppData%\FastCapture\log\fastcapture.log`: diagnostics. It never holds what you captured.
 
 ## Settings
@@ -127,7 +128,11 @@ Tray menu › **Settings…** chooses how notes are written and the everyday opt
 Notes are written by one model, never both:
 
 - **A model on this PC (Local):** an OpenAI-compatible server running here, such as Ollama, LM Studio or Foundry Local. **Find servers** looks for them; choose a model it lists. Only addresses on this PC are accepted, so nothing leaves it. If the model doesn't read images, screenshots are attached to notes unread.
-- **Claude (Cloud):** the Claude API with your own API key, from [console.anthropic.com](https://console.anthropic.com) › API Keys. The key is saved in Windows Credential Manager (`FastCapture/claude`), never in a file or the log. Choosing Cloud asks you to confirm once that captures will be sent to Anthropic.
+- **A cloud API (Cloud)**, with your own API key, from one of two providers:
+  - **Claude API:** from [console.anthropic.com](https://console.anthropic.com) › API Keys; choose Sonnet, Opus or Haiku.
+  - **OpenAI-compatible API:** any service that answers OpenAI's chat completions: give its base address, a model and your key. **List models** asks the service for its models; you can also type one. For example, `https://api.openai.com/v1` (OpenAI), `https://openrouter.ai/api/v1` (OpenRouter, with models such as `openai/gpt-5-mini`), or `https://<resource>.openai.azure.com/openai/v1` (Azure OpenAI, whose model is your deployment's name). The address must be `https://`. The model must support structured output; a model that can't read images fails captures with screenshots and says so.
+
+  Each key is saved in Windows Credential Manager (`FastCapture/claude`, `FastCapture/openai`), never in a file or the log. Choosing Cloud asks you to confirm what will be sent, and to whom: once for Anthropic, and again whenever the OpenAI-compatible address moves to another host.
 
 **Test** writes a note from a sample capture with what you chose. Until you choose, captures wait in the queue; nothing is lost. **Pause processing** in the tray menu holds them too. A rejected key or a billing problem pauses processing with a notification; a network error or an overloaded API is retried after 30 seconds, 2 minutes, 10 minutes, then every 30 minutes.
 
@@ -137,7 +142,7 @@ For each capture: the writing rules, what you typed, what was read from its link
 
 ### What Cloud costs
 
-You pay Anthropic per token. A capture is the rules (about 1,500 tokens, read from the cache after the first capture at a tenth of the price), a few hundred tokens of your text, and about 1,600 more for a full-screen screenshot. The note itself is 200–400 tokens. Roughly, per capture:
+You pay the provider per token. With the Claude API you pay Anthropic. A capture is the rules (about 1,500 tokens, read from the cache after the first capture at a tenth of the price), a few hundred tokens of your text, and about 1,600 more for a full-screen screenshot. The note itself is 200–400 tokens. Roughly, per capture:
 
 | Model | Text only | With a screenshot |
 |---|---|---|
@@ -148,6 +153,14 @@ You pay Anthropic per token. A capture is the rules (about 1,500 tokens, read fr
 A link or a document adds its text: about one token per four characters, so a typical article (6,000 characters) adds about 1,500 tokens and the 60,000-character limit about 15,000. Candidate notes add about 100 tokens each, so 30 of them about 3,000.
 
 Measured on Haiku 5.5, besides the cached rules: a short text capture used 103 input and 225 output tokens; the same with a 1200×600 chart, 1,037 and 345; a Wikipedia article, 2,475 and 504; a 2-page PDF guide, 1,504 and 648; a short capture with 7 candidate notes, 900 and 391. Prices change; see Anthropic's pricing page.
+
+An OpenAI-compatible model reads the same request, so it takes a similar number of tokens, give or take how its tokenizer counts; the price is the provider's. Whether the rules are read from a cache, and how cheaply, is up to the provider too.
+
+### Tokens used and the cap
+
+Settings shows the tokens cloud notes used today and this month, added up from what each API reported: input (cached included) and output, for both providers together. A capture asked twice (when the first reply wasn't a usable note) counts both requests. Local models are free and aren't counted.
+
+**Token cap** (empty for none) is the most tokens cloud notes may use in a month, like `2M` or `500k`. Cached tokens count in full, so it stops early rather than late. Once the month reaches it, processing pauses with a notification and captures wait in the queue; raising the cap, or the next month, lets them run. A note already being written is finished, so a month can go over by one capture.
 
 ### The settings file
 
@@ -161,14 +174,18 @@ Measured on Haiku 5.5, besides the cached rules: a short text capture used 103 i
 | `recent_notebook` | | One line per notebook offered by Ctrl+N |
 | `mode` | (none) | `local` or `cloud`, set by Settings |
 | `local_endpoint`, `local_model` | | The local server's address and model |
+| `backend` | `claude` | Cloud's provider: `claude` or `openai` (any OpenAI-compatible API) |
 | `claude_model` | `claude-sonnet-5-5` | `claude-opus-5-5` and `claude-haiku-5-5` work too |
-| `cloud_accepted` | `false` | Set when you confirm Cloud |
+| `cloud_accepted` | `false` | Set when you confirm Cloud for Anthropic |
+| `openai_endpoint`, `openai_model` | | The OpenAI-compatible API's `https://` base address and model |
+| `openai_accepted` | | The host you confirmed Cloud for |
+| `token_cap` | (none) | The most tokens cloud notes may use in a month: a number, or with `k` or `M` |
 
 If a hotkey is already taken by another app, a notification says so; pick another key here.
 
 ## Privacy
 
-In both modes, FastCapture fetches the pages of links you capture: one GET each, with no cookies, so it sees what anyone signed out sees. In Local mode those fetches are its only connections beyond this PC. In Cloud mode it also sends what is listed under [What is sent](#what-is-sent) to Anthropic's API over HTTPS, one request per capture, and nothing else; the notebook's index stays on this PC, and only the candidates' short descriptions go with a capture. Page content, file text and candidate notes are given to the model as material, never as instructions. The log records token counts, fetch failures and errors, never what you captured or your key.
+In both modes, FastCapture fetches the pages of links you capture: one GET each, with no cookies, so it sees what anyone signed out sees. In Local mode those fetches are its only connections beyond this PC. In Cloud mode it also sends what is listed under [What is sent](#what-is-sent) to the API you chose (Anthropic's, or the OpenAI-compatible one) over HTTPS, one request per capture, and nothing else; the notebook's index stays on this PC, and only the candidates' short descriptions go with a capture. Page content, file text and candidate notes are given to the model as material, never as instructions. The log records token counts, fetch failures and errors, never what you captured or your key.
 
 ## Building
 
@@ -182,7 +199,7 @@ cargo run --release --example bench
 
 `examples/bench.rs` times the box opening, a 4K screenshot's encoding, Ctrl+Enter, building a model request, an article page, a 20-page PDF, and the index of 10,000 notes (built, rebuilt from its cache, searched) against their budgets. `examples/review_window.rs <queue folder> [<notebook>]` and `examples/settings_window.rs` open those windows on their own.
 
-`cargo run --release --example live_note -- [--dry-run] [--effort low|medium|high] [--notebook PATH] [--attach PATH]… ["text"]` writes one real note with your settings into a scratch notebook and prints it with the time and the tokens used; links in the text are fetched, and `--notebook` offers that notebook's notes as candidates (it is only read). **In Cloud mode it costs money**, except with `--dry-run`, which prints what would be sent and stops. The tests never reach the internet.
+`cargo run --release --example live_note -- [--dry-run] [--effort low|medium|high] [--notebook PATH] [--attach PATH]… ["text"]` writes one real note with your settings (either cloud provider; `--effort` is for the Claude API only) into a scratch notebook and prints it with the time and the tokens used; links in the text are fetched, and `--notebook` offers that notebook's notes as candidates (it is only read). **In Cloud mode it costs money**, except with `--dry-run`, which prints what would be sent and stops. The tests never reach the internet.
 
 Third-party crates and their licenses are listed in [LICENSES.md](LICENSES.md).
 

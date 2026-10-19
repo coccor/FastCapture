@@ -82,10 +82,12 @@ src/
 - [x] `examples/live_note.rs` uses whichever cloud backend the settings choose, and prints its tokens the same way for both. `--effort` applies to the Claude API only.
 - [ ] Measure with `examples/live_note.rs` (with your approval, with a key you add in Settings yourself) on a provider you choose: one text capture, one screenshot, one link; tokens and time against the Claude numbers from M2–M4.
 
+  **Skipped for now** (2026-10-19), at your choice: no OpenAI-compatible key is set up yet. The backend is tested against scripted servers only.
+
 ### Part 7: Polish and docs
 
-- [ ] README: the OpenAI-compatible backend (OpenAI, OpenRouter, Azure base URLs), what is sent and to whom, tokens used, the cap.
-- [ ] Spec: §19 notes for M5.
+- [x] README: the OpenAI-compatible backend (OpenAI, OpenRouter, Azure base URLs), what is sent and to whom, tokens used, the cap.
+- [x] Spec: §19 notes for M5.
 
 ## Testing approach
 
