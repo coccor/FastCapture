@@ -52,9 +52,9 @@ src/
 
 ### Part 2: The OpenAI-compatible cloud backend
 
-- [ ] `config/settings.rs`: `backend=openai`, `openai_endpoint` (an `https://` URL), `openai_model`, `openai_accepted` (the host the first-use screen was accepted for). `openai_` keys are no longer just reserved.
-- [ ] `model/openai.rs`: `OpenAi::cloud(endpoint, model, key)`: refuses a base URL that isn't `https://`; 120 s per request; the key as `Authorization: Bearer`, or `api-key` for Azure hosts; errors name the host ("api.openai.com refused the API key…"). A message with `refusal` fails the job ("The model declined to write a note for this capture."). A 400 whose message names images fails it with the advice above. `list_models(endpoint, key, timeout)` sends the key the same way.
-- [ ] `runner/from_settings.rs`: Cloud mode with `backend=openai` needs the endpoint, the model, `openai_accepted` matching the endpoint's host, and the key in `FastCapture/openai`, and says which is missing. Labels are `cloud/<model>`.
+- [x] `config/settings.rs`: `backend=openai`, `openai_endpoint` (an `https://` URL), `openai_model`, `openai_accepted` (the host the first-use screen was accepted for). `openai_` keys are no longer just reserved. The Settings form keeps the file's `backend` until Part 5 lets you choose it.
+- [x] `model/openai.rs`: `OpenAi::cloud(endpoint, model, key)`: refuses a base URL that isn't `https://`; 120 s per request; the key as `Authorization: Bearer`, or `api-key` for Azure hosts; errors name the host ("api.openai.com refused the API key…"). A message with `refusal` fails the job ("The model declined to write a note for this capture."). A 400 whose message names images fails it with the advice above. `list_models(endpoint, key, timeout)` sends the key the same way.
+- [x] `runner/from_settings.rs`: Cloud mode with `backend=openai` needs the endpoint, the model, `openai_accepted` matching the endpoint's host, and the key in `FastCapture/openai`, and says which is missing. Labels are `cloud/<model>`.
 - **Tests:** a scripted server as the cloud endpoint: the Bearer key and the Azure `api-key`; the base URL with and without `/v1`; `http://` refused; refusal, the images message and the status mapping (401 pauses, 429 retries after `retry-after`); the model list with a key; settings round trip; `build` naming what is missing.
 
 ### Part 3: The usage ledger

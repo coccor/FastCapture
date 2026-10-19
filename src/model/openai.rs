@@ -1,10 +1,11 @@
 //! The OpenAI-compatible backend: `POST /v1/chat/completions`, as Ollama, LM Studio and Foundry
-//! Local serve it on this PC (and cloud endpoints, later). The note schema goes as
-//! `response_format`; a server that rejects that gets the schema in the system prompt instead.
+//! Local serve it on this PC, and OpenAI, OpenRouter, Azure OpenAI and others in the cloud. The
+//! note schema goes as `response_format`; a server that rejects that gets the schema in the
+//! system prompt instead.
 
 use super::backend::{self, Backend, BackendError, Meter, Usage};
 use super::request::NoteRequest;
-use crate::net::http::{Client, Request};
+use crate::net::http::{Client, Request, parse_url};
 use crate::note::{NoteJson, reply, schema};
 use serde_json::{Value, json};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -18,6 +19,10 @@ pub struct OpenAi {
     key: Option<String>,
     /// `local` or `cloud`, for the note's `model:` line.
     mode: &'static str,
+    /// How errors name the server: "The local model server", or the cloud API's host.
+    service: String,
+    /// Azure OpenAI takes the key as `api-key` rather than a bearer token.
+    azure: bool,
     timeout: Duration,
     /// The server rejected `response_format` once: ask with the schema in the prompt.
     schema_in_prompt: AtomicBool,
@@ -30,10 +35,52 @@ pub fn normalize(endpoint: &str) -> String {
     endpoint.strip_suffix("/v1").unwrap_or(endpoint).to_owned()
 }
 
+/// `endpoint`'s host, lowercase: what the first-use screen names and errors call the server.
+pub fn host(endpoint: &str) -> Option<String> {
+    parse_url(&normalize(endpoint))
+        .ok()
+        .map(|target| target.host.to_ascii_lowercase())
+}
+
+/// Whether `host` is Azure OpenAI's, which wants the key as `api-key`.
+fn is_azure(host: &str) -> bool {
+    host.ends_with(".openai.azure.com") || host.ends_with(".services.ai.azure.com")
+}
+
+/// The header that carries `key` to `endpoint`.
+fn key_header(endpoint: &str, key: &str) -> (&'static str, String) {
+    if host(endpoint).is_some_and(|host| is_azure(&host)) {
+        ("api-key", key.to_owned())
+    } else {
+        ("authorization", format!("Bearer {key}"))
+    }
+}
+
 impl OpenAi {
     /// A local server: 5 minutes per request, no key.
     pub fn local(endpoint: &str, model: &str) -> Result<Self, BackendError> {
         Self::new(endpoint, model, None, "local", Duration::from_secs(300))
+    }
+
+    /// A cloud API: `https://` only, since the key goes with every request; 2 minutes per
+    /// request.
+    pub fn cloud(endpoint: &str, model: &str, key: String) -> Result<Self, BackendError> {
+        match parse_url(&normalize(endpoint)) {
+            Ok(target) if target.secure => {}
+            _ => {
+                return Err(BackendError::Fail(format!(
+                    "{} isn't an https:// address. A cloud API's key is only sent over https.",
+                    endpoint.trim()
+                )));
+            }
+        }
+        Self::new(
+            endpoint,
+            model,
+            Some(key),
+            "cloud",
+            Duration::from_secs(120),
+        )
     }
 
     pub fn new(
@@ -45,8 +92,16 @@ impl OpenAi {
     ) -> Result<Self, BackendError> {
         let client = Client::new(&format!("FastCapture/{}", env!("CARGO_PKG_VERSION")))
             .map_err(|error| backend::from_http(error, "the model server"))?;
+        let host = host(endpoint);
+        let service = match (mode, &host) {
+            ("local", _) => "The local model server".to_owned(),
+            (_, Some(host)) => host.clone(),
+            (_, None) => "The model server".to_owned(),
+        };
         Ok(Self {
             client,
+            azure: host.as_deref().is_some_and(is_azure),
+            service,
             endpoint: normalize(endpoint),
             model: model.to_owned(),
             key,
@@ -55,14 +110,6 @@ impl OpenAi {
             schema_in_prompt: AtomicBool::new(false),
             usage: Meter::default(),
         })
-    }
-
-    fn service(&self) -> &'static str {
-        if self.mode == "local" {
-            "The local model server"
-        } else {
-            "The model server"
-        }
     }
 
     /// The request body for `request`.
@@ -108,7 +155,11 @@ impl OpenAi {
         let body = body.to_string();
         let mut headers = vec![("content-type", "application/json".to_owned())];
         if let Some(key) = &self.key {
-            headers.push(("authorization", format!("Bearer {key}")));
+            headers.push(if self.azure {
+                ("api-key", key.clone())
+            } else {
+                ("authorization", format!("Bearer {key}"))
+            });
         }
         self.client
             .send(&Request {
@@ -118,7 +169,7 @@ impl OpenAi {
                 body: body.as_bytes(),
                 timeout: self.timeout,
             })
-            .map_err(|error| backend::from_http(error, self.service()))
+            .map_err(|error| backend::from_http(error, self.service.as_str()))
     }
 }
 
@@ -138,13 +189,25 @@ impl Backend for OpenAi {
                 response = self.send(&self.body(request, true))?;
             }
         }
+        if response.status == 400 && !request.images.is_empty() {
+            let message = backend::error_message(&response).to_lowercase();
+            if message.contains("image") || message.contains("vision") {
+                return Err(BackendError::Fail(format!(
+                    "{} doesn't read images. Choose a model that does in Settings.",
+                    self.model
+                )));
+            }
+        }
         if response.status != 200 {
-            return Err(backend::from_status(&response, self.service()));
+            return Err(backend::from_status(&response, self.service.as_str()));
         }
         let reply: Value =
             serde_json::from_slice(&response.body).map_err(|error| BackendError::Retry {
                 after: None,
-                reason: format!("{} sent a reply that isn't JSON: {error}", self.service()),
+                reason: format!(
+                    "{} sent a reply that isn't JSON: {error}",
+                    self.service.as_str()
+                ),
             })?;
         if let Some(usage) = usage_of(&reply) {
             crate::log::line(&format!(
@@ -157,8 +220,16 @@ impl Backend for OpenAi {
         if choice["finish_reason"].as_str() == Some("length") {
             return Err(BackendError::Fail(format!(
                 "{}'s note was cut off at the length limit.",
-                self.service()
+                self.service.as_str()
             )));
+        }
+        if choice["message"]["refusal"]
+            .as_str()
+            .is_some_and(|refusal| !refusal.trim().is_empty())
+        {
+            return Err(BackendError::Fail(
+                "The model declined to write a note for this capture.".to_owned(),
+            ));
         }
         let text = choice["message"]["content"].as_str().ok_or_else(|| {
             BackendError::Invalid(reply::ReplyError(vec!["the reply has no text".to_owned()]))
@@ -185,15 +256,23 @@ fn usage_of(reply: &Value) -> Option<Usage> {
     })
 }
 
-/// The model ids the server at `endpoint` lists (`GET /v1/models`).
-pub fn list_models(endpoint: &str, timeout: Duration) -> Result<Vec<String>, BackendError> {
+/// The model ids the server at `endpoint` lists (`GET /v1/models`), sending `key` when
+/// there is one.
+pub fn list_models(
+    endpoint: &str,
+    key: Option<&str>,
+    timeout: Duration,
+) -> Result<Vec<String>, BackendError> {
     let client = Client::new("FastCapture")
         .map_err(|error| backend::from_http(error, "the model server"))?;
     let response = client
         .send(&Request {
             method: "GET",
             url: &format!("{}/v1/models", normalize(endpoint)),
-            headers: Vec::new(),
+            headers: key
+                .map(|key| key_header(endpoint, key))
+                .into_iter()
+                .collect(),
             body: &[],
             timeout,
         })
@@ -412,15 +491,116 @@ mod tests {
     }
 
     #[test]
+    fn a_cloud_api_must_be_https_and_is_named_by_its_host() {
+        assert!(
+            matches!(OpenAi::cloud("http://api.openai.com/v1", "m", "k".into()), Err(BackendError::Fail(m)) if m.contains("https://"))
+        );
+        assert!(OpenAi::cloud("api.openai.com", "m", "k".into()).is_err());
+        let cloud = OpenAi::cloud(
+            "https://OpenRouter.ai/api/v1/",
+            "openai/gpt-5-mini",
+            "k".into(),
+        )
+        .unwrap();
+        assert_eq!(cloud.endpoint, "https://OpenRouter.ai/api");
+        assert_eq!(cloud.service, "openrouter.ai");
+        assert!(!cloud.azure);
+        assert_eq!(cloud.label(), "cloud/openai/gpt-5-mini");
+        let azure = OpenAi::cloud(
+            "https://notes.openai.azure.com/openai/v1",
+            "gpt-5-mini",
+            "k".into(),
+        )
+        .unwrap();
+        assert!(azure.azure);
+        assert_eq!(
+            key_header("https://notes.services.ai.azure.com/openai/v1", "k"),
+            ("api-key", "k".to_owned())
+        );
+        assert_eq!(
+            key_header("https://api.openai.com/v1", "k"),
+            ("authorization", "Bearer k".to_owned())
+        );
+        assert_eq!(
+            host("https://API.openai.com/v1"),
+            Some("api.openai.com".to_owned())
+        );
+    }
+
+    #[test]
+    fn errors_name_the_host_and_say_what_to_do() {
+        let server = TestServer::start(vec![
+            Scripted::json(401, r#"{"error":{"message":"Incorrect API key provided"}}"#),
+            Scripted::json(
+                400,
+                r#"{"error":{"message":"Invalid content type. image_url is only supported by certain models."}}"#,
+            ),
+            Scripted::json(
+                200,
+                &json!({"choices": [{"message": {"role": "assistant", "content": null,
+                    "refusal": "I can't help with that."}, "finish_reason": "stop"}]})
+                .to_string(),
+            ),
+            Scripted::json(429, r#"{"error":{"message":"Rate limit reached"}}"#)
+                .with_header("retry-after", "20"),
+        ]);
+        let cloud = OpenAi::new(
+            &server.url(),
+            "text-only",
+            Some("sk-test".into()),
+            "cloud",
+            Duration::from_secs(5),
+        )
+        .unwrap();
+        assert!(
+            matches!(cloud.complete(&request()), Err(BackendError::Pause(m)) if m.starts_with("127.0.0.1 refused the API key"))
+        );
+        assert!(
+            matches!(cloud.complete(&request()), Err(BackendError::Fail(m)) if m == "text-only doesn't read images. Choose a model that does in Settings.")
+        );
+        assert!(
+            matches!(cloud.complete(&request()), Err(BackendError::Fail(m)) if m.contains("declined"))
+        );
+        assert_eq!(
+            cloud.complete(&request()),
+            Err(BackendError::Retry {
+                after: Some(Duration::from_secs(20)),
+                reason: "127.0.0.1 is rate limiting requests: Rate limit reached".to_owned()
+            })
+        );
+    }
+
+    #[test]
     fn models_are_listed_sorted() {
         let server = TestServer::start(vec![Scripted::json(
             200,
             r#"{"object":"list","data":[{"id":"qwen2.5vl"},{"id":"gemma3"}]}"#,
         )]);
         assert_eq!(
-            list_models(&server.url(), Duration::from_secs(5)).unwrap(),
+            list_models(&server.url(), None, Duration::from_secs(5)).unwrap(),
             ["gemma3", "qwen2.5vl"]
         );
         assert_eq!(server.requests()[0].path, "/v1/models");
+        assert_eq!(server.requests()[0].header("authorization"), None);
+    }
+
+    #[test]
+    fn a_cloud_model_list_carries_the_key() {
+        let server = TestServer::start(vec![
+            Scripted::json(200, r#"{"data":[{"id":"gpt-5-mini"}]}"#),
+            Scripted::json(401, r#"{"error":{"message":"Incorrect API key"}}"#),
+        ]);
+        assert_eq!(
+            list_models(&server.url(), Some("sk-test"), Duration::from_secs(5)).unwrap(),
+            ["gpt-5-mini"]
+        );
+        assert_eq!(
+            server.requests()[0].header("authorization"),
+            Some("Bearer sk-test")
+        );
+        assert!(matches!(
+            list_models(&server.url(), Some("bad"), Duration::from_secs(5)),
+            Err(BackendError::Pause(_))
+        ));
     }
 }

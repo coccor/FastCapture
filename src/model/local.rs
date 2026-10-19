@@ -53,7 +53,7 @@ pub fn find_servers() -> Vec<Found> {
     candidates
         .into_iter()
         .filter_map(|(name, endpoint)| {
-            let models = openai::list_models(&endpoint, PROBE_TIMEOUT).ok()?;
+            let models = openai::list_models(&endpoint, None, PROBE_TIMEOUT).ok()?;
             Some(Found {
                 name,
                 endpoint,

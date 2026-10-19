@@ -635,6 +635,7 @@ fn read_form(window: &SettingsWindow) -> Form {
     Form {
         notebook: text_of(controls.notebook).trim().to_owned(),
         mode,
+        backend: window.settings.backend,
         local_endpoint: combo_text(controls.endpoint).trim().to_owned(),
         local_model: combo_text(controls.local_model).trim().to_owned(),
         claude_model,
@@ -682,7 +683,7 @@ fn find_servers(hwnd: HWND) {
 
 fn list_models(hwnd: HWND, endpoint: String) {
     in_background(hwnd, move || {
-        let models = openai::list_models(&endpoint, Duration::from_secs(5))
+        let models = openai::list_models(&endpoint, None, Duration::from_secs(5))
             .map_err(|error| error.to_string());
         Event::Models(endpoint, models)
     });

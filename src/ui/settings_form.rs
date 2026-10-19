@@ -9,6 +9,8 @@ use std::path::PathBuf;
 pub struct Form {
     pub notebook: String,
     pub mode: Option<Mode>,
+    /// Cloud mode's backend, kept as the file has it.
+    pub backend: CloudBackend,
     pub local_endpoint: String,
     pub local_model: String,
     pub claude_model: String,
@@ -30,6 +32,7 @@ impl Form {
                 .map(|path| path.display().to_string())
                 .unwrap_or_default(),
             mode: settings.mode,
+            backend: settings.backend,
             local_endpoint: settings.local_endpoint.clone().unwrap_or_default(),
             local_model: settings.local_model.clone().unwrap_or_default(),
             claude_model: settings.claude_model.clone(),
@@ -98,12 +101,7 @@ impl Form {
                 None => "",
             },
         );
-        file.set(
-            "backend",
-            match CloudBackend::Claude {
-                CloudBackend::Claude => "claude",
-            },
-        );
+        file.set("backend", self.backend.key());
         file.set("local_endpoint", self.local_endpoint.trim());
         file.set("local_model", self.local_model.trim());
         file.set("claude_model", self.claude_model.trim());
@@ -140,6 +138,7 @@ mod tests {
         Form {
             notebook: r"D:\Notes".into(),
             mode: Some(Mode::Local),
+            backend: CloudBackend::Claude,
             local_endpoint: "http://localhost:11434".into(),
             local_model: "gemma3".into(),
             claude_model: "claude-sonnet-5-5".into(),
