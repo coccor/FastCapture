@@ -53,15 +53,15 @@ src/
 
 ### Part 1: Text files and the budget
 
-- [x] `extract/text.rs`: decoding adapted from FastPad's `file/encoding.rs`, naming it on its first line. FastPad handles BOMs and UTF-8 only, and its `sniff.rs` matches image signatures, so the rest is new: UTF-16 without a BOM (by its zero bytes), Windows-1252 as the fallback, and binary detection (a NUL, or over 10% control characters, in the first 8 KB). Logs (`.log`, or a name containing `log`) longer than 400 lines keep their first and last 200 with a `… n lines cut …` line between. Code (by extension, the list FastPad uses) goes in a fenced block with its language.
+- [x] `extract/text.rs`: decoding adapted from FastPad's `file/encoding.rs`, naming it on its first line. FastPad handles BOMs and UTF-8 only, and its `sniff.rs` matches image signatures, so the rest is new: UTF-16 without a BOM (by its zero bytes), Windows-1252 as the fallback, and binary detection (a NUL, or over 10% control characters, in the first 8 KB). Logs (`.log`, `.out`, `.err`, or `log` as a word of the name) longer than 400 lines keep their first and last 200 with a `… n lines cut …` line between. Code (by extension, the list FastPad uses) goes in a fenced block with its language.
 - [x] `extract/mod.rs`: `Budget` hands out characters (60,000 per capture) and PDF pages (20) to sources in capture order. Anything cut is recorded by name for `truncated:`. Your own text is never cut by the budget.
 - **Tests:** each encoding; a binary file refused; a 1,000-line log cut to 401 lines; a code file fenced; the budget across three sources, with the third cut and named.
 
 ### Part 2: HTML to Markdown
 
-- [ ] `Cargo.toml`: `html5ever = "=0.40.1"`.
-- [ ] `extract/dom.rs`: an arena `Dom` filled through html5ever's `TreeSink` (elements, text, comments dropped, attributes kept), with `children`, `text_of`, `attr` and a walk.
-- [ ] `extract/markdown.rs`: block and inline conversion: `h1`–`h6`, `p`, `br`, `strong`/`b`, `em`/`i`, `code`, `pre` (fenced, language from `class="language-…"`), `ul`/`ol` (nested, numbered), `a` (relative links resolved against a base URL), `blockquote`, `table` (a Markdown table when every row has the same cell count, else rows as lines), `img` as `![alt](src)` link text only, `hr`. `script`, `style`, `nav`, `form`, `noscript` and hidden elements are dropped. Whitespace collapsed as browsers do; Markdown characters in text escaped.
+- [x] `Cargo.toml`: `html5ever = "=0.40.1"`.
+- [x] `extract/dom.rs`: an arena `Dom` filled through html5ever's `TreeSink` (elements, text, comments dropped, attributes kept), with `children`, `text_of`, `attr` and a walk.
+- [x] `extract/markdown.rs`: block and inline conversion: `h1`–`h6`, `p`, `br`, `strong`/`b`, `em`/`i`, `code`, `pre` (fenced, language from `class="language-…"`), `ul`/`ol` (nested, numbered), `a` (relative links resolved against a base URL), `blockquote`, `table` (a Markdown table when every row has the same cell count, else rows as lines), `img` as `![alt](src)` link text only, `hr`. `script`, `style`, `nav`, `noscript`, form controls and hidden elements are dropped. **Changed:** a `form` is kept, because some sites wrap whole pages in one; a table whose cells hold blocks is read as layout, its cells as blocks; a link whose text is its URL becomes `<url>`. Whitespace collapsed as browsers do; Markdown characters in text escaped.
 - **Tests:** golden Markdown for small fragments of each element; nested lists; a table with a colspan falls back to lines; entities and whitespace; malformed HTML (unclosed tags, stray `</div>`) converts like a browser would show it.
 
 ### Part 3: Rich text paste

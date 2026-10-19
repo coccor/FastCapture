@@ -196,7 +196,7 @@ fn fence_language(extension: &str) -> Option<&'static str> {
 }
 
 /// `text` in a fence longer than any run of backticks inside it.
-fn fence(text: &str, language: &str) -> String {
+pub(crate) fn fence(text: &str, language: &str) -> String {
     let longest = text.split(|c| c != '`').map(str::len).max().unwrap_or(0);
     let fence = "`".repeat(longest.max(2) + 1);
     let body = text.trim_end_matches('\n');

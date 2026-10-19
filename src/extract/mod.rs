@@ -2,6 +2,8 @@
 //! PDFs and Word files. A capture's sources share one budget, so a single capture can't cost
 //! much.
 
+pub mod dom;
+pub mod markdown;
 pub mod text;
 
 /// Characters of extracted text one capture may send. Your own text doesn't count.
