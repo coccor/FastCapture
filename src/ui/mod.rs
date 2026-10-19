@@ -6,4 +6,6 @@ pub mod capture_box;
 pub mod clipboard_capture;
 pub mod review;
 pub mod review_list;
+pub mod settings;
+pub mod settings_form;
 pub mod theme;

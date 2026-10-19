@@ -15,6 +15,7 @@ use crate::platform::{hotkey, instance, shell, startup};
 use crate::queue::{State, Store};
 use crate::runner::from_settings::FromSettings;
 use crate::runner::{Status, Waker, Worker};
+use crate::ui::settings as settings_window;
 use crate::ui::{capture_box, review};
 use std::cell::RefCell;
 use std::path::{Path, PathBuf};
@@ -44,6 +45,7 @@ const MENU_SETTINGS: u32 = 4;
 const MENU_FOLDER: u32 = 5;
 const MENU_QUIT: u32 = 6;
 const MENU_PAUSE: u32 = 7;
+const MENU_SETTINGS_FILE: u32 = 8;
 
 struct App {
     window: HWND,
@@ -119,6 +121,16 @@ pub fn run() -> i32 {
     APP.with(|slot| *slot.borrow_mut() = Some(app));
     with_app(App::apply_settings);
     start_worker(window);
+    // Until a model is chosen, captures are kept but no notes are written: say so once.
+    with_app(|app| {
+        if app.settings.mode.is_none() {
+            app.tray.notify(
+                "Choose how notes are written",
+                "Open Settings from the tray menu: a model on this PC, or Claude.",
+                false,
+            );
+        }
+    });
 
     let stop = Arc::new(AtomicBool::new(false));
     start_pipe(window, stop.clone());
@@ -127,8 +139,8 @@ pub fn run() -> i32 {
 
     let mut message: MSG = unsafe { std::mem::zeroed() };
     while unsafe { GetMessageW(&mut message, std::ptr::null_mut(), 0, 0) } > 0 {
-        // Tab, Enter and Esc in the review window.
-        if review::dialog_message(&message) {
+        // Tab, Enter and Esc in the review and Settings windows.
+        if review::dialog_message(&message) || settings_window::dialog_message(&message) {
             continue;
         }
         unsafe {
@@ -308,7 +320,7 @@ impl App {
             if !self.reported.contains(&text) {
                 self.tray.notify(
                     "Hotkey not available",
-                    &format!("{text} is in use by another app. Change {key} in fastcapture.ini (tray menu › Settings)."),
+                    &format!("{text} is in use by another app. Change {key} in the settings file (tray menu › Open settings file)."),
                     true,
                 );
                 self.reported.push(text);
@@ -434,15 +446,40 @@ impl App {
         }
     }
 
-    fn open_settings(&self) {
-        if let Some(path) = &self.context.settings {
-            if !path.exists() {
-                let _ = SettingsFile::load(path).save(path);
-            }
-            if let Err(error) = shell::open(path) {
-                crate::log::line(&format!("open settings: {error}"));
-            }
+    fn open_settings_file(&self) {
+        open_settings_file(self.context.settings.as_deref());
+    }
+}
+
+/// Opens `fastcapture.ini` in its editor, writing the starter file first.
+fn open_settings_file(path: Option<&Path>) {
+    if let Some(path) = path {
+        if !path.exists() {
+            let _ = SettingsFile::load(path).save(path);
         }
+        if let Err(error) = shell::open(path) {
+            crate::log::line(&format!("open settings: {error}"));
+        }
+    }
+}
+
+/// The Settings window; saving it applies the settings at once.
+fn open_settings_window(window: HWND) {
+    let Some(path) = with_app(|app| app.context.settings.clone()).flatten() else {
+        return;
+    };
+    let target = SendHwnd::new(window);
+    let file = path.clone();
+    let opened = settings_window::open(settings_window::Open {
+        settings: path,
+        key_target: crate::secrets::target("claude"),
+        saved: Box::new(move || unsafe {
+            PostMessageW(target.get(), WM_APP_SETTINGS, 0, 0);
+        }),
+        open_file: Box::new(move || open_settings_file(Some(&file))),
+    });
+    if opened.is_none() {
+        crate::log::line("settings: could not open the window");
     }
 }
 
@@ -518,7 +555,7 @@ fn open_capture_box(window: HWND, source_window: Option<String>) {
         with_app(|app| {
             app.tray.notify(
                 "No notebook is set",
-                "Choose one with notebook= in fastcapture.ini (tray menu › Settings).",
+                "Choose one in Settings (tray menu › Settings…).",
                 true,
             )
         });
@@ -594,7 +631,12 @@ fn show_menu(window: HWND, at: POINT) {
             MenuItem::Separator,
             MenuItem::Command {
                 id: MENU_SETTINGS,
-                text: "Settings",
+                text: "Settings…",
+                enabled: true,
+            },
+            MenuItem::Command {
+                id: MENU_SETTINGS_FILE,
+                text: "Open settings file",
                 enabled: true,
             },
             MenuItem::Command {
@@ -624,8 +666,9 @@ fn show_menu(window: HWND, at: POINT) {
         MENU_CLIPBOARD => {
             with_app(|app| app.capture_clipboard(None));
         }
-        MENU_SETTINGS => {
-            with_app(|app| app.open_settings());
+        MENU_SETTINGS => open_settings_window(window),
+        MENU_SETTINGS_FILE => {
+            with_app(|app| app.open_settings_file());
         }
         MENU_FOLDER => {
             with_app(|app| app.open_folder());

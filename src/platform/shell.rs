@@ -140,6 +140,40 @@ pub fn documents_folder() -> Option<PathBuf> {
     Some(PathBuf::from(path))
 }
 
+/// The folder the user picks in Windows' folder dialog, or `None` when cancelled.
+pub fn pick_folder(owner: windows_sys::Win32::Foundation::HWND, title: &str) -> Option<PathBuf> {
+    use windows::Win32::Foundation::HWND;
+    use windows::Win32::System::Com::{
+        CLSCTX_INPROC_SERVER, COINIT_APARTMENTTHREADED, CoCreateInstance, CoInitializeEx,
+        CoTaskMemFree as CoTaskMemFreeCom, CoUninitialize,
+    };
+    use windows::Win32::UI::Shell::{
+        FOS_FORCEFILESYSTEM, FOS_PICKFOLDERS, FileOpenDialog, IFileOpenDialog, SIGDN_FILESYSPATH,
+    };
+    use windows::core::HSTRING;
+    // The dialog needs a single-threaded apartment on this thread.
+    let initialized = unsafe { CoInitializeEx(None, COINIT_APARTMENTTHREADED) }.is_ok();
+    let picked = (|| unsafe {
+        let dialog: IFileOpenDialog =
+            CoCreateInstance(&FileOpenDialog, None, CLSCTX_INPROC_SERVER).ok()?;
+        let options = dialog.GetOptions().ok()?;
+        dialog
+            .SetOptions(options | FOS_PICKFOLDERS | FOS_FORCEFILESYSTEM)
+            .ok()?;
+        dialog.SetTitle(&HSTRING::from(title)).ok()?;
+        dialog.Show(Some(HWND(owner))).ok()?;
+        let item = dialog.GetResult().ok()?;
+        let name = item.GetDisplayName(SIGDN_FILESYSPATH).ok()?;
+        let path = name.to_string().ok();
+        CoTaskMemFreeCom(Some(name.0 as *const _));
+        path.map(PathBuf::from)
+    })();
+    if initialized {
+        unsafe { CoUninitialize() };
+    }
+    picked
+}
+
 #[cfg(test)]
 mod tests {
     #[test]
