@@ -484,12 +484,17 @@ fn unescape(value: &str) -> Option<String> {
 /// `%LocalAppData%\FastCapture\index\<folder key>.cache`, given `local` (the app's local data
 /// folder): the same file for every spelling of one notebook folder.
 pub fn cache_file(local: &Path, notebook: &Path) -> PathBuf {
-    let folder: PathBuf = std::path::absolute(notebook)
-        .unwrap_or_else(|_| notebook.to_path_buf())
+    let key = fnv1a(folder_key(notebook).as_bytes());
+    local.join("index").join(format!("{key:016x}.cache"))
+}
+
+/// The same text for every spelling of one folder (letter case, a trailing separator).
+pub fn folder_key(folder: &Path) -> String {
+    let folder: PathBuf = std::path::absolute(folder)
+        .unwrap_or_else(|_| folder.to_path_buf())
         .components()
         .collect();
-    let key = fnv1a(folder.to_string_lossy().to_lowercase().as_bytes());
-    local.join("index").join(format!("{key:016x}.cache"))
+    folder.to_string_lossy().to_lowercase()
 }
 
 fn fnv1a(bytes: &[u8]) -> u64 {

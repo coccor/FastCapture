@@ -4,5 +4,6 @@
 pub mod notes;
 pub mod scan;
 pub mod search;
+pub mod service;
 pub mod watch;
 pub mod words;

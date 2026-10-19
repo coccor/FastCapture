@@ -1,6 +1,7 @@
 //! The tray app: a hidden window that owns the tray icon and the hotkeys, a
 //! thread answering `fastcapture add` over the pipe, a watch on the settings folder, a
-//! start-up pass over the queue, and the worker that turns captures into notes. Everything
+//! start-up pass over the queue, the worker that turns captures into notes, and the indexes of
+//! the notebooks in use. Everything
 //! that touches windows runs on this thread.
 
 use crate::add::{self, Context};
@@ -8,6 +9,7 @@ use crate::capture::Capture;
 use crate::capture::file::FileError;
 use crate::capture::submit::submit;
 use crate::config::settings::{Settings, SettingsFile};
+use crate::index::service::Indexes;
 use crate::ipc::pipe;
 use crate::platform::tray::{self, MenuItem, Tray};
 use crate::platform::window::SendHwnd;
@@ -65,6 +67,17 @@ struct App {
 /// Wakes the worker from any thread of this process, after a capture is filed.
 static WAKER: OnceLock<Waker> = OnceLock::new();
 
+/// The notebooks' indexes, started with the app and stopped on quit.
+static INDEXES: OnceLock<Indexes> = OnceLock::new();
+
+/// Starts indexing `notebook` when it isn't yet: the capture notebook, and the others as
+/// captures go to them.
+fn index_notebook(notebook: &Path) {
+    if let Some(indexes) = INDEXES.get() {
+        indexes.open(notebook);
+    }
+}
+
 /// Tells the worker a job may be waiting.
 fn wake_worker() {
     if let Some(waker) = WAKER.get() {
@@ -118,6 +131,7 @@ pub fn run() -> i32 {
         reported_pause: None,
         context,
     };
+    let _ = INDEXES.set(Indexes::new(crate::paths::local()));
     APP.with(|slot| *slot.borrow_mut() = Some(app));
     with_app(App::apply_settings);
     start_worker(window);
@@ -296,6 +310,9 @@ impl App {
             .notebook
             .clone()
             .or_else(|| self.context.notebook());
+        if let Some(notebook) = &self.notebook {
+            index_notebook(notebook);
+        }
 
         for id in [HOTKEY_CAPTURE, HOTKEY_CLIPBOARD] {
             hotkey::unregister(self.window, id);
@@ -531,6 +548,7 @@ impl capture_box::Sink for BoxSink {
         // Large files were asked about when they were attached.
         let filed = submit(notebook, capture, self.queue.as_deref(), true);
         if filed.is_ok() {
+            index_notebook(notebook);
             wake_worker();
         }
         unsafe { PostMessageW(self.window.get(), WM_APP_QUEUE, 0, 0) };
@@ -739,6 +757,10 @@ extern "system" fn window_proc(
             0
         }
         WM_DESTROY => {
+            // Changed indexes are written to their caches.
+            if let Some(indexes) = INDEXES.get() {
+                indexes.stop();
+            }
             // The tray icon goes while its window still exists, so no ghost icon stays behind.
             APP.with(|slot| slot.try_borrow_mut().map(|mut app| app.take()).ok());
             unsafe { PostQuitMessage(0) };

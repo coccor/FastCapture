@@ -63,8 +63,8 @@ src/
 
 ### Part 3: The index service
 
-- [ ] `index/service.rs`: one index per notebook, built on its own thread after start-up (from the cache, then brought up to date), and kept current by the watcher. The worker asks it for candidates; while a notebook's index is still being built, the worker waits up to 10 s, then writes the note without candidates.
-- [ ] The tray app starts the service for the notebooks it knows (the default and the recent ones, as they are used) and stops it on quit.
+- [x] `index/service.rs`: one index per notebook, built on its own thread after start-up (from the cache, then brought up to date), and kept current by the watcher. The worker asks it for candidates; while a notebook's index is still being built, the worker waits up to 10 s, then writes the note without candidates. Each change rescans the notebook (the scan opens no files) and rebuilds incrementally; the snapshot also holds the folders, for homes. Raw sources, templates and a fixed attachments folder are left out. The cache is written at most once a minute, and on quit. Asking for the candidates is wired into the worker in Part 4.
+- [x] The tray app starts the service for the notebooks it knows (the default and the recent ones, as they are used) and stops it on quit. A notebook is indexed when it becomes the capture notebook or a capture is filed to it.
 - **Tests:** a note added to the notebook is found within a second; a query while the build runs waits, then answers; a notebook that disappears is dropped.
 
 ### Part 4: Candidates for the model
