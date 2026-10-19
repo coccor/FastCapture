@@ -151,8 +151,8 @@ src/
 
 ### Part 8: End to end
 
-- [ ] A test that runs the real tray pieces (submit, worker, Claude backend against the test server, note writer) for a text capture and a screenshot capture, and checks the note file byte for byte.
-- [ ] `examples/live_note.rs`: one real request with the current settings and a sample capture, printing the note and the usage. **It costs money in Cloud mode**: it runs only when asked, never in `cargo test` or CI.
+- [x] A test that runs the real pieces (submit, worker, Claude backend against the test server, note writer) for a capture with text and a screenshot, and checks the request (the image as it was, the user turn) and the note file byte for byte (`runner/end_to_end.rs`). Text-only captures are covered by the runner's tests.
+- [x] `examples/live_note.rs`: one real request with the current settings and a sample capture (or your own text and `--image`), in a scratch notebook, printing the note, the time and the token counts; `--effort` overrides Claude's effort. The Claude backend now keeps the last request's `Usage`. **It costs money in Cloud mode**: it runs only when asked, never in `cargo test` or CI.
 - [ ] Measure with `examples/live_note.rs` (with your approval): a short text capture and a screenshot capture at effort `low` and `medium`, comparing the notes and the token counts, before keeping `low`.
 
 ### Part 9: Polish and docs
