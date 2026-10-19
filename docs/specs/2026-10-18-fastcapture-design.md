@@ -32,7 +32,7 @@ Success looks like this: you press the hotkey over a Grafana dashboard, snip the
 | On disk | The **raw source** goes to `raw/` and is never changed afterwards. The **written note** goes to the notebook's capture (inbox) folder and links back to its source. Images and files go to the notebook's attachments folder. |
 | Note shape | A fixed structure (§7.2): front matter, title, summary, your text cleaned up in your own voice, key points, tasks, related links, attachments. |
 | Filing | Notes land in the inbox with a `suggested_home`. The review window accepts it with one key, changes it, or leaves the note in the inbox. |
-| Models | A single global **Mode** setting, Local or Cloud, never both. Local: an OpenAI-compatible server on this PC (Ollama, LM Studio, Foundry Local). Cloud: the Claude API, any OpenAI-compatible cloud endpoint, or (experimental) your own installed Claude Code CLI, which uses your Claude subscription. |
+| Models | A single global **Mode** setting, Local or Cloud, never both. Local: an OpenAI-compatible server on this PC (Ollama, LM Studio, Foundry Local). Cloud: the Claude API, any OpenAI-compatible cloud endpoint, or (experimental) your own installed Claude Code CLI, which uses your Claude subscription, or your own installed GitHub Copilot CLI, which uses your Copilot plan. |
 | Model output | The model returns JSON matching a schema. FastCapture checks it and writes the Markdown itself, so every note has the same shape, whatever the model. |
 | Linking | A local keyword index of the notebook finds about 30 candidate notes for each capture. The model may link only to those, or suggest new notes, which are shown as such. |
 | Web pages | FastCapture fetches the page itself (no cookies, no JavaScript), extracts the main text locally, and stores it in the raw source. |
@@ -287,7 +287,7 @@ Settings has one **Mode** choice for the whole app:
 | Mode | Backends | Data leaving the PC |
 |---|---|---|
 | **Local** | An OpenAI-compatible server on this PC | Only page fetches for captured links |
-| **Cloud** | Claude API · OpenAI-compatible cloud endpoint · Claude Code CLI (experimental) | Each capture's text, extracted content, images and candidate note snippets, sent to the chosen provider |
+| **Cloud** | Claude API · OpenAI-compatible cloud endpoint · Claude Code CLI (experimental) · GitHub Copilot (experimental) | Each capture's text, extracted content, images and candidate note snippets, sent to the chosen provider |
 
 - Every model call uses the chosen backend. There is no fallback to the other mode.
 - Changing the mode affects jobs that haven't started. Existing notes are left as they are; **Regenerate** (§10.2) uses the current mode.
@@ -317,6 +317,16 @@ For users with a Claude Pro or Max plan who don't want to manage an API key. Fas
 - Usage limits, auth failures and overload are read from the CLI's result and retry events. A usage limit pauses the queue until the reset time when the CLI reports one, and otherwise for 30 minutes.
 - Marked **experimental** and **for personal use** in Settings. Anthropic's docs allow a user to sign in to the unmodified Claude Code program with their own subscription. They don't cover another app starting it, so this backend may have to change if the rules do. Image input over stream-json and the usage-limit error text need checking before this ships (§18).
 - When FastCapture is distributed, each user uses their own Claude Code login. FastCapture never sends one user's requests through another user's account.
+
+### 8.5 Cloud mode: GitHub Copilot (experimental)
+
+For users with a GitHub Copilot plan (Free, Pro, Pro+, Business or Enterprise) who would rather use it than an API key. GitHub Models, the OpenAI-compatible inference API that came with a GitHub account, was retired on 2026-07-30, so the supported way is the **Copilot SDK** (generally available since 2026-06-02): every SDK drives the user's own installed Copilot CLI (`copilot`) over JSON-RPC, signed in with the CLI's own login (`copilot login`) or a `GH_TOKEN`. FastCapture never reads, copies or stores GitHub credentials.
+
+- **Each job is one session:** the model chosen in Settings (the CLI lists the models the user's plan allows), every tool turned off, the writing rules as the system prompt and the request as the prompt. Images go as attachments if the CLI takes them; the schema goes as structured output if the CLI supports it, otherwise in the prompt, and the reply is parsed and checked as any other (§7.3).
+- **How FastCapture talks to the CLI is decided at the start of the milestone:** the `github-copilot-sdk` crate, which likely brings an async runtime against §12's small dependencies; the same JSON-RPC protocol written by hand over the CLI's stdio; or `copilot -p` per job, as §8.4 runs Claude Code.
+- **Usage counts against the user's Copilot allowance** (premium requests or AI credits, by model), not an API bill. Settings shows what the CLI reports. If it reports tokens, they go in the usage ledger and count toward the token cap (§8.3); if it only counts requests, Settings shows requests and the cap doesn't apply.
+- **Limits and sign-in:** a used-up allowance or rate limit pauses the queue until the reset time when the CLI reports one, and otherwise for 30 minutes; a signed-out CLI or a model the plan doesn't allow pauses it with a notice that opens Settings, which shows whether `copilot` is installed and signed in. A Business or Enterprise policy can turn off the CLI or a model.
+- **The first-use screen names GitHub**, and says the capture goes on to the model's provider through GitHub. Marked **experimental** and **for personal use** in Settings: each user uses their own Copilot login, and FastCapture never sends one user's requests through another user's account.
 
 ## 9. The notebook index
 
@@ -402,7 +412,7 @@ One process, `fastcapture.exe`:
 | Extractors | Job worker | Rich text, web pages, PDF, docx, text (§6.2) |
 | Index | Index worker + watcher | Keyword index of the notebook (§9) |
 | Job runner | Job worker | Queue, prompt building, the backend call, validation, writing the note |
-| Backends | Job worker | `LocalOpenAi`, `ClaudeApi`, `CloudOpenAi`, `ClaudeCodeCli` behind one trait: `fn complete(&self, request: &NoteRequest) -> Result<NoteJson, BackendError>` |
+| Backends | Job worker | `LocalOpenAi`, `ClaudeApi`, `CloudOpenAi`, `ClaudeCodeCli`, `CopilotCli` behind one trait: `fn complete(&self, request: &NoteRequest) -> Result<NoteJson, BackendError>` |
 | Filing | UI | Moves, link rewrites, appends to topic notes |
 | CLI | Short-lived process | `fastcapture add`, forwarded over a named pipe |
 
@@ -412,7 +422,7 @@ Dependencies are kept small: `serde`/`serde_json`, `pulldown-cmark` (as in FastP
 
 - Local mode sends nothing to any model outside the PC. Page fetches for captured links are the only network traffic, and they carry no cookies.
 - Cloud mode sends only what §8.1 lists. Nothing is sent before a capture is saved, and nothing is sent for notes FastCapture didn't capture.
-- Web page content and file text are passed to the model as **material to summarise, never as instructions**. They go inside delimited blocks, the system prompt says to ignore any instructions in them, and the model has no tools (the Claude Code backend runs with tools turned off). The worst a hostile page can do is write a misleading note, and the raw source is beside it in review.
+- Web page content and file text are passed to the model as **material to summarise, never as instructions**. They go inside delimited blocks, the system prompt says to ignore any instructions in them, and the model has no tools (the Claude Code and Copilot backends run with tools turned off). The worst a hostile page can do is write a misleading note, and the raw source is beside it in review.
 - Window titles are recorded only when `capture_source=true`.
 - Diagnostic logs never contain capture text, page content, prompts or keys.
 - Links in notes are written only to notes in the index or as clearly new notes. FastCapture never writes outside the notebook, the attachments folder and its own app data.
@@ -433,7 +443,7 @@ Dependencies are kept small: `serde`/`serde_json`, `pulldown-cmark` (as in FastP
 | Page fetch fails or the page has no main text | The raw source records it; the note is written from your text and says the page couldn't be read |
 | Model unreachable (offline, server stopped) | Job stays queued, retried with backoff; tray tooltip says "Waiting for <backend>" |
 | Bad key, model missing, auth failed | Queue pauses; one tray notice opens Settings |
-| Rate limit or Claude Code usage limit | Queue pauses until the reset time, or for 30 minutes |
+| Rate limit, or a Claude Code or Copilot usage limit | Queue pauses until the reset time, or for 30 minutes |
 | Invalid JSON twice | Job `failed`, shown in review with Retry |
 | Local model without vision | Images attached unread, and the note says so |
 | Local endpoint isn't loopback | Refused in Settings with an explanation |
@@ -445,7 +455,7 @@ Dependencies are kept small: `serde`/`serde_json`, `pulldown-cmark` (as in FastP
 
 ## 16. Delivery
 
-Six milestones. Each is usable on its own.
+Seven milestones. Each is usable on its own.
 
 | # | Scope | Depends on |
 |---|---|---|
@@ -455,6 +465,7 @@ Six milestones. Each is usable on its own.
 | **M4** | Notebook index, candidate notes and links, homes, filing (move and topic append), undo. | M2 |
 | **M5** | OpenAI-compatible cloud backend, token usage display and cap. | M2 |
 | **M6** | Claude Code CLI backend (experimental), after checking image input and limit errors. | M2 |
+| **M7** | GitHub Copilot backend (experimental) through the user's own Copilot CLI and the Copilot SDK's protocol, after the checks in §18. | M2 |
 
 ## 17. Later
 
@@ -473,6 +484,7 @@ Six milestones. Each is usable on its own.
 4. **Topic note entry format.** M4 writes the dated link line with the summary (§10.3), in the topic note's list. Some users will want the summary under a heading, or the tasks copied over; a template per notebook could say.
 5. **Sharing the capture folder with FastPad.** M4 keeps FastCapture's notes in `capture_folder`, beside FastPad's one-file quick captures, and tells them apart by `type: capture`: the review window lists only those. A separate `notes_folder` key in `capture.ini` may still be clearer.
 6. **Picking candidate notes by keyword only** may miss related notes that use different words. M4's BM25 index found the related notes in a small live test, but that notebook used the capture's own words. If it misses them in real notebooks, a small local embedding model in both modes could be added, sending nothing extra in Cloud mode.
+7. **GitHub Copilot checks** (before M7): whether a session can run with every tool turned off; whether it takes images and a JSON schema for the reply; what usage the CLI reports per prompt (tokens, premium requests or credits); the errors when the allowance runs out or an organization's policy blocks the CLI; what the Rust crate brings in; and whether GitHub's terms cover an app that starts the CLI for a user's own plan.
 
 ## 19. Implementation notes
 
