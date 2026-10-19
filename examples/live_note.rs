@@ -4,8 +4,11 @@
 //! runs in `cargo test` or CI. `--effort` applies to the Claude API only.
 //!
 //! ```text
-//! cargo run --release --example live_note -- [--dry-run] [--effort low|medium|high] [--notebook PATH] [--attach PATH]… ["text"]
+//! cargo run --release --example live_note -- [--dry-run] [--effort low|medium|high] [--claude-code MODEL] [--notebook PATH] [--attach PATH]… ["text"]
 //! ```
+//!
+//! `--claude-code` uses your installed Claude Code with that model (`haiku`, `sonnet`…),
+//! whatever the settings say: the note counts against your Claude plan, with no API bill.
 //!
 //! `--dry-run` fetches pages and prints the request's text without asking the model: free.
 //!
@@ -37,6 +40,7 @@ fn main() {
     let mut dry_run = false;
     let mut attach: Vec<PathBuf> = Vec::new();
     let mut related: Option<PathBuf> = None;
+    let mut claude_code: Option<String> = None;
     let mut text = SAMPLE.to_owned();
     let mut args = std::env::args().skip(1);
     while let Some(arg) = args.next() {
@@ -52,6 +56,7 @@ fn main() {
             }
             "--attach" | "--image" => attach.extend(args.next().map(PathBuf::from)),
             "--notebook" => related = args.next().map(PathBuf::from),
+            "--claude-code" => claude_code = args.next(),
             other => text = other.to_owned(),
         }
     }
@@ -59,6 +64,13 @@ fn main() {
     let path = settings::settings_path().expect("APPDATA is set");
     let settings = SettingsFile::load(&path).settings().0;
     let backend: Box<dyn Backend> = match (settings.mode, settings.backend, effort) {
+        _ if claude_code.is_some() => Box::new(
+            fastcapture::model::claude_code::ClaudeCode::new(
+                settings.claude_code_path.as_deref(),
+                claude_code.as_deref().unwrap_or_default(),
+            )
+            .unwrap_or_else(|problem| panic!("{problem}")),
+        ),
         (Some(Mode::Cloud), CloudBackend::Claude, Some(effort)) => {
             let key = fastcapture::secrets::load(&fastcapture::secrets::target("claude"))
                 .expect("a Claude API key saved in Settings");

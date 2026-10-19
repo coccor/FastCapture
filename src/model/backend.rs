@@ -88,6 +88,11 @@ pub trait Backend: Send {
     fn take_usage(&self) -> Option<Usage> {
         None
     }
+    /// Whether its tokens are billed, so they go in the usage ledger and count toward the cap:
+    /// the cloud APIs, not a local server or a plan with its own limits.
+    fn metered(&self) -> bool {
+        self.label().starts_with("cloud/")
+    }
 }
 
 /// A transport failure as a backend error: offline and timeouts retry, the rest fail.

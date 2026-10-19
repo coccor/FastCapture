@@ -353,21 +353,21 @@ fn cap_reached(
     ledger: Option<&Path>,
     day: &str,
 ) -> Option<String> {
-    if !backend.label().starts_with("cloud/") {
+    if !backend.metered() {
         return None;
     }
     let cap = factory.token_cap()?;
     super::usage::cap_reached(&super::usage::Ledger::load(ledger?), day, cap)
 }
 
-/// Adds what a cloud backend's last job used to the ledger. Local servers aren't counted.
+/// Adds what a metered backend's last job used to the ledger.
 fn record_usage(backend: &dyn Backend, ledger: Option<&Path>, day: &str) {
     let Some(used) = backend.take_usage() else {
         return;
     };
     let label = backend.label();
     if let Some(ledger) = ledger
-        && label.starts_with("cloud/")
+        && backend.metered()
         && let Err(error) = super::usage::record(ledger, day, &label, used)
     {
         crate::log::line(&format!("usage: {error}"));

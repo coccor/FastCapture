@@ -339,6 +339,11 @@ impl Backend for ClaudeCode {
         format!("cloud/claude-code/{}", self.model)
     }
 
+    /// The plan has its own limits, which pause the queue when they are reached.
+    fn metered(&self) -> bool {
+        false
+    }
+
     fn complete(&self, request: &NoteRequest) -> Result<NoteJson, BackendError> {
         std::fs::create_dir_all(&self.dir)
             .map_err(|error| BackendError::Fail(format!("{}: {error}", self.dir.display())))?;

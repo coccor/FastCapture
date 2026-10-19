@@ -600,3 +600,144 @@ fn an_openai_compatible_api_writes_notes_counts_their_tokens_and_stops_at_the_ca
         2_400
     );
 }
+
+/// Claude Code as a fake `claude.cmd` that keeps the stdin it got and prints `reply`.
+struct ClaudeCodeAt(crate::model::claude_code::cli::Cli, PathBuf);
+
+impl Factory for ClaudeCodeAt {
+    fn backend(&self) -> Result<Box<dyn Backend>, String> {
+        Ok(Box::new(crate::model::claude_code::ClaudeCode::with_cli(
+            self.0.clone(),
+            "haiku",
+            self.1.clone(),
+        )))
+    }
+
+    fn token_cap(&self) -> Option<u64> {
+        // A cap that is reached already: Claude Code isn't held back by it.
+        Some(1)
+    }
+}
+
+#[test]
+fn a_screenshot_capture_becomes_a_note_through_claude_code() {
+    let temp = Temp::new("claude-code");
+    let queue = temp.0.join("queue");
+    let ledger = temp.0.join(super::usage::FILE);
+    super::usage::record(
+        &ledger,
+        &super::usage::today(),
+        "cloud/other",
+        crate::model::Usage {
+            input: 10,
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    let png = encode_png(&Pixels {
+        width: 40,
+        height: 30,
+        bgra: vec![90; 40 * 30 * 4],
+    })
+    .unwrap();
+    let job = temp.submit(Capture {
+        text: "lag spikes during ledger batch??".to_owned(),
+        attachments: vec![Attachment::Png(png.clone())],
+        source_window: None,
+        source_url: None,
+    });
+
+    let note = json!({
+        "title": "Consumer lag spikes during ledger batch",
+        "summary": "Lag jumps when the batch runs.",
+        "body": "Consumer lag spikes when the ledger batch runs.",
+        "key_points": [], "tasks": [], "tags": ["kafka"], "links": [], "home": null
+    });
+    let lines = [
+        json!({"type": "system", "subtype": "init", "tools": ["StructuredOutput"], "model": "claude-haiku-5-5"}),
+        json!({"type": "rate_limit_event", "rate_limit_info": {"status": "allowed", "resetsAt": 1792429200}}),
+        json!({"type": "result", "subtype": "success", "is_error": false, "num_turns": 2,
+            "result": note.to_string(), "structured_output": note,
+            "usage": {"input_tokens": 2, "cache_creation_input_tokens": 2137, "cache_read_input_tokens": 0, "output_tokens": 248}}),
+    ];
+    let reply = temp.0.join("reply.jsonl");
+    std::fs::write(
+        &reply,
+        lines
+            .iter()
+            .map(|line| line.to_string())
+            .collect::<Vec<_>>()
+            .join("\n"),
+    )
+    .unwrap();
+    let stdin = temp.0.join("stdin.txt");
+    let fake = temp.0.join("claude.cmd");
+    std::fs::write(
+        &fake,
+        format!(
+            "@echo off\r\nfindstr \"^\" > \"{}\"\r\ntype \"{}\"\r\n",
+            stdin.display(),
+            reply.display()
+        ),
+    )
+    .unwrap();
+    let cli = crate::model::claude_code::cli::Cli {
+        path: fake,
+        version: "2.1.303".into(),
+        options: crate::model::claude_code::cli::Options {
+            json_schema: true,
+            no_session_persistence: true,
+            setting_sources: true,
+            strict_mcp_config: true,
+            system_prompt_file: true,
+        },
+    };
+
+    let worker = Worker::start(
+        queue.clone(),
+        Box::new(ClaudeCodeAt(cli, temp.0.join("run"))),
+        None,
+        Some(ledger.clone()),
+        Box::new(|| {}),
+    );
+    let store = Store::new(queue);
+    wait_for("the note", || {
+        store
+            .get(&job.capture_id)
+            .is_some_and(|job| job.state == State::Done)
+    });
+    worker.stop();
+
+    // What Claude Code was given: the screenshot as it was, then the user turn.
+    let sent: serde_json::Value =
+        serde_json::from_str(std::fs::read_to_string(&stdin).unwrap().trim()).unwrap();
+    let content = sent["message"]["content"].as_array().unwrap();
+    assert_eq!(
+        content[0]["source"]["data"],
+        crate::model::images::base64(&png)
+    );
+    assert!(
+        content[1]["text"]
+            .as_str()
+            .unwrap()
+            .contains("<your_note>\nlag spikes during ledger batch??\n</your_note>")
+    );
+
+    let written = store.get(&job.capture_id).unwrap().note.unwrap();
+    let text = std::fs::read_to_string(temp.0.join("Work notes").join(&written.path)).unwrap();
+    assert!(
+        text.contains("model: \"cloud/claude-code/haiku\""),
+        "{text}"
+    );
+    assert!(
+        text.contains("# Consumer lag spikes during ledger batch"),
+        "{text}"
+    );
+    assert_eq!(
+        super::usage::Ledger::load(&ledger)
+            .month(&super::usage::today())
+            .total(),
+        10,
+        "nothing added for Claude Code"
+    );
+}

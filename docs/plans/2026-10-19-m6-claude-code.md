@@ -94,8 +94,8 @@ These run the installed `claude` against your Claude plan: a few short requests,
 
 ### Part 5: End to end and live
 
-- [ ] `runner/end_to_end.rs`: a capture with a screenshot written through the fake CLI: the stream-json it was given, the note written, nothing in the ledger.
-- [ ] `examples/live_note.rs` works with it.
+- [x] `runner/end_to_end.rs`: a capture with a screenshot written through the fake CLI: the stream-json it was given, the note written, nothing in the ledger. It found that the token cap held Claude Code back too, since it took every `cloud/` label as billed: `Backend::metered` (true for the cloud APIs, false for Claude Code) now decides both the ledger and the cap.
+- [x] `examples/live_note.rs` works with it: when Settings chooses it, or with `--claude-code <model>` whatever the settings say. A dry run found the real CLI and built the request, sending nothing.
 - [ ] Measure with `examples/live_note.rs` (with your approval): a text capture, a screenshot and a link on `haiku` and `sonnet`; the time per note (the CLI's start-up included) against the Claude API's 2–4 s.
 
 ### Part 6: Polish and docs
