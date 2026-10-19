@@ -58,6 +58,7 @@ fn run_until_done(
         queue.to_path_buf(),
         Box::new(ClaudeAt(server.url())),
         indexes,
+        None,
         Box::new(|| {}),
     );
     let store = Store::new(queue.to_path_buf());

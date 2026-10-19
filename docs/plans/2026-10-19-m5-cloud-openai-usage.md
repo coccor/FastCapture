@@ -59,8 +59,8 @@ src/
 
 ### Part 3: The usage ledger
 
-- [ ] `runner/usage.rs`: `%LocalAppData%\FastCapture\usage.txt`, one line per day and model: `2026-10-19 cloud/claude-haiku-5-5 input=900 cache_read=1605 cache_write=0 output=391`. `Ledger::add(day, label, usage)` updates the day's line and saves atomically (the atomic saver); `today(day)` and `month(day)` add up the lines. Lines older than 13 months are dropped when it is saved. A line it can't read is kept as it is and counts nothing; a file it can't read counts as empty, logged once.
-- [ ] `runner/worker.rs`: after each job, a cloud backend's `take_usage` is added to the ledger under the backend's label and today's date, whether the job was written, retried or failed.
+- [x] `runner/usage.rs`: `%LocalAppData%\FastCapture\usage.txt`, one line per day and model: `2026-10-19 cloud/claude-haiku-5-5 input=900 cache_read=1605 cache_write=0 output=391`. `Ledger::add(day, label, usage)` updates the day's line and saves atomically (the atomic saver); `today(day)` and `month(day)` add up the lines. Lines older than 13 months are dropped when it is saved. A line it can't read is kept as it is and counts nothing; a file it can't read counts as empty, logged once.
+- [x] `runner/worker.rs`: after each job, a cloud backend's `take_usage` is added to the ledger under the backend's label and today's date, whether the job was written, retried or failed. `Worker::start` takes the ledger's path; a cloud backend is one whose label starts `cloud/`.
 - **Tests:** add and total across days and models; a new month starts at zero; old lines dropped; a corrupt line kept; the worker records a written job and a job asked twice.
 
 ### Part 4: The token cap

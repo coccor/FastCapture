@@ -1,13 +1,14 @@
 //! The worker: one thread that takes queued jobs oldest first and turns them into notes. It
 //! sleeps until a capture arrives (`Waker::wake`), a retry falls due, or a minute passes; it
-//! stops taking jobs while paused, by you or by an error only you can fix; and it builds its
-//! backend again when the settings change.
+//! stops taking jobs while paused, by you or by an error only you can fix; it builds its
+//! backend again when the settings change; and it adds each cloud job's tokens to the usage
+//! ledger.
 
 use super::process::{self, Outcome};
 use crate::index::service::Indexes;
 use crate::model::Backend;
 use crate::queue::{State, Store};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, Condvar, Mutex};
 use std::time::Duration;
 
@@ -85,12 +86,13 @@ pub struct Worker {
 
 impl Worker {
     /// Starts the worker on the jobs in `queue`, offering candidate notes from `indexes` when
-    /// given. `changed` runs on the worker's thread whenever its status or a job changes, to
-    /// refresh the tray.
+    /// given and adding cloud jobs' tokens to the ledger at `usage`. `changed` runs on the
+    /// worker's thread whenever its status or a job changes, to refresh the tray.
     pub fn start(
         queue: PathBuf,
         factory: Box<dyn Factory>,
         indexes: Option<Indexes>,
+        usage: Option<PathBuf>,
         changed: Box<dyn Fn() + Send>,
     ) -> Self {
         let shared = Arc::new(Shared {
@@ -108,6 +110,7 @@ impl Worker {
                 &Store::new(queue),
                 factory.as_ref(),
                 indexes.as_ref(),
+                usage.as_deref(),
                 changed.as_ref(),
             );
         });
@@ -206,6 +209,7 @@ fn run(
     store: &Store,
     factory: &dyn Factory,
     indexes: Option<&Indexes>,
+    usage: Option<&Path>,
     changed: &dyn Fn(),
 ) {
     let mut backend: Option<Box<dyn Backend>> = None;
@@ -283,7 +287,9 @@ fn run(
         };
 
         set_status(shared, Status::Working, changed);
-        let outcome = process::process_with(store, job, active, now, &today(), indexes);
+        let day = today();
+        let outcome = process::process_with(store, job, active, now, &day, indexes);
+        record_usage(active, usage, &day);
         match &outcome {
             Outcome::Written(written) => {
                 crate::log::line(&format!("runner: wrote {}", written.path.display()));
@@ -300,6 +306,20 @@ fn run(
             }
         }
         changed();
+    }
+}
+
+/// Adds what a cloud backend's last job used to the ledger. Local servers aren't counted.
+fn record_usage(backend: &dyn Backend, ledger: Option<&Path>, day: &str) {
+    let Some(used) = backend.take_usage() else {
+        return;
+    };
+    let label = backend.label();
+    if let Some(ledger) = ledger
+        && label.starts_with("cloud/")
+        && let Err(error) = super::usage::record(ledger, day, &label, used)
+    {
+        crate::log::line(&format!("usage: {error}"));
     }
 }
 
@@ -344,6 +364,106 @@ mod tests {
         }
     }
 
+    /// A backend that used 100 input and 10 output tokens per request.
+    struct Metered {
+        label: &'static str,
+        script: Scripted,
+        meter: crate::model::backend::Meter,
+    }
+
+    impl Backend for Metered {
+        fn label(&self) -> String {
+            self.label.to_owned()
+        }
+        fn complete(
+            &self,
+            request: &crate::model::request::NoteRequest,
+        ) -> Result<crate::note::NoteJson, BackendError> {
+            self.meter.add(crate::model::Usage {
+                input: 100,
+                output: 10,
+                ..Default::default()
+            });
+            self.script.complete(request)
+        }
+        fn take_usage(&self) -> Option<crate::model::Usage> {
+            self.meter.take()
+        }
+    }
+
+    struct Once(Mutex<Option<Metered>>);
+
+    impl Factory for Once {
+        fn backend(&self) -> Result<Box<dyn Backend>, String> {
+            self.0
+                .lock()
+                .unwrap()
+                .take()
+                .map(|backend| Box::new(backend) as Box<dyn Backend>)
+                .ok_or_else(|| "built once".to_owned())
+        }
+    }
+
+    fn metered(
+        label: &'static str,
+        answers: Vec<Result<crate::note::NoteJson, BackendError>>,
+    ) -> Box<Once> {
+        Box::new(Once(Mutex::new(Some(Metered {
+            label,
+            script: Scripted::new(answers),
+            meter: Default::default(),
+        }))))
+    }
+
+    #[test]
+    fn a_cloud_jobs_tokens_go_in_the_ledger_both_requests_of_a_second_ask() {
+        let temp = Temp::new("usage");
+        let job = temp.capture("first");
+        let ledger = temp.0.join(super::super::usage::FILE);
+        let unusable =
+            BackendError::Invalid(crate::note::reply::ReplyError(vec!["no title".into()]));
+        let worker = Worker::start(
+            temp.0.join("queue"),
+            metered("cloud/test-model", vec![Err(unusable), Ok(note("One"))]),
+            None,
+            Some(ledger.clone()),
+            Box::new(|| {}),
+        );
+        let store = temp.store();
+        assert!(eventually(|| store
+            .get(&job.capture_id)
+            .is_some_and(|job| job.state == State::Done)));
+        assert!(eventually(|| worker.status() == Status::Idle));
+        worker.stop();
+        let used = super::super::usage::Ledger::load(&ledger).day(&today());
+        assert_eq!((used.input, used.output), (200, 20));
+        assert!(
+            std::fs::read_to_string(&ledger)
+                .unwrap()
+                .contains(" cloud/test-model ")
+        );
+    }
+
+    #[test]
+    fn a_local_servers_tokens_arent_counted() {
+        let temp = Temp::new("usage-local");
+        let job = temp.capture("first");
+        let ledger = temp.0.join(super::super::usage::FILE);
+        let worker = Worker::start(
+            temp.0.join("queue"),
+            metered("local/test-model", vec![Ok(note("One"))]),
+            None,
+            Some(ledger.clone()),
+            Box::new(|| {}),
+        );
+        let store = temp.store();
+        assert!(eventually(|| store
+            .get(&job.capture_id)
+            .is_some_and(|job| job.state == State::Done)));
+        worker.stop();
+        assert!(!ledger.exists());
+    }
+
     /// Waits up to two seconds for `done`.
     fn eventually(done: impl Fn() -> bool) -> bool {
         let until = std::time::Instant::now() + Duration::from_secs(2);
@@ -365,6 +485,7 @@ mod tests {
         let worker = Worker::start(
             temp.0.join("queue"),
             Box::new(Ready(script.clone(), builds.clone())),
+            None,
             None,
             Box::new(|| {}),
         );
@@ -403,6 +524,7 @@ mod tests {
             temp.0.join("queue"),
             Box::new(Ready(script, Arc::new(AtomicUsize::new(0)))),
             None,
+            None,
             Box::new(|| {}),
         );
         assert!(eventually(
@@ -437,6 +559,7 @@ mod tests {
             temp.0.join("queue"),
             Box::new(Missing(builds.clone())),
             None,
+            None,
             Box::new(|| {}),
         );
         assert!(eventually(
@@ -462,6 +585,7 @@ mod tests {
         let worker = Worker::start(
             temp.0.join("queue"),
             Box::new(Ready(script, Arc::new(AtomicUsize::new(0)))),
+            None,
             None,
             Box::new(|| {}),
         );

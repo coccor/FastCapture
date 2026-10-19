@@ -248,6 +248,7 @@ fn start_worker(window: HWND) {
         queue,
         Box::new(FromSettings { settings }),
         INDEXES.get().cloned(),
+        crate::runner::usage::path(),
         Box::new(move || unsafe {
             PostMessageW(window.get(), WM_APP_QUEUE, 0, 0);
         }),
