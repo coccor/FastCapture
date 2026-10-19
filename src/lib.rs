@@ -7,6 +7,7 @@ pub mod config;
 pub mod error;
 pub mod extract;
 pub mod icon;
+pub mod index;
 pub mod ipc;
 pub mod launch;
 pub mod log;

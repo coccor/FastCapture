@@ -49,8 +49,8 @@ src/
 
 ### Part 1: Scanning and watching the notebook
 
-- [ ] `index/scan.rs`: FastPad's `library/scan.rs` copied (naming it on its first line): notes and folders under the notebook, with FastPad's skip rules (folders starting with `.`, `node_modules`, `target`, `bin`, `obj`), sizes and write times without opening files, 10,000 notes at most. `raw/`, the attachments folder and the templates folder are left out of the notes.
-- [ ] `index/watch.rs`: FastPad's `library/watch.rs` copied: changes under the notebook, batched 250 ms after the last one, sent to a callback rather than a window.
+- [x] `index/scan.rs`: FastPad's `library/scan.rs` copied (naming it on its first line): notes and folders under the notebook, with FastPad's skip rules (folders starting with `.`, `node_modules`, `target`, `bin`, `obj`), sizes and write times without opening files, 10,000 notes at most. `raw/`, the attachments folder and the templates folder are left out of the notes, passed in by the caller and matched without regard to case. Only `.md` and `.markdown` files are notes; file IDs and the online-only flag FastPad keeps are dropped.
+- [x] `index/watch.rs`: FastPad's `library/watch.rs` copied: changes under the notebook, batched 250 ms after the last one, sent to a callback rather than a window, with no generation counter. Changes to `.fastpad\notebook.ini` and `.fastcapture\capture.ini` are kept, since they say where things go. Folders whose contents changed are reported too, as in FastPad.
 - **Tests:** a scratch notebook: notes found, skipped folders, `raw/` left out, the limit; the watcher reports a write, a rename and a delete.
 
 ### Part 2: The index and search
