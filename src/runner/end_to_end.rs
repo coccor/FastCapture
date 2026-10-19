@@ -66,6 +66,7 @@ fn a_screenshot_capture_becomes_a_note() {
             text: "lag spikes during ledger batch??".to_owned(),
             attachments: vec![Attachment::Png(png.clone())],
             source_window: None,
+            source_url: None,
         },
         Some(&queue),
         true,

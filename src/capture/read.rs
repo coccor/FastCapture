@@ -151,6 +151,7 @@ mod tests {
             text,
             links: &links,
             source_window: None,
+            source_url: None,
         })
     }
 

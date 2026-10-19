@@ -66,9 +66,9 @@ src/
 
 ### Part 3: Rich text paste
 
-- [ ] `platform/clipboard.rs`: reads `HTML Format` (UTF-8 with a header: `StartFragment`/`EndFragment` offsets, `SourceURL`), returns the fragment and the source URL.
-- [ ] Capture box: Ctrl+V with HTML on the clipboard inserts the fragment's Markdown (Part 2) instead of the plain text, when the HTML holds more than plain paragraphs (headings, lists, links, tables, code); otherwise plain text as now. The source URL is kept with the capture and written as `source_url` in the raw source's front matter. **Ctrl+Alt+V** pastes plain text.
-- [ ] Clipboard capture (the no-box hotkey) does the same.
+- [x] `platform/clipboard.rs`: reads `HTML Format` (UTF-8 with a header: `StartFragment`/`EndFragment` offsets, `SourceURL`), returns the fragment and the source URL.
+- [x] Capture box: Ctrl+V with HTML on the clipboard inserts the fragment's Markdown (Part 2) instead of the plain text, when the HTML holds more than plain paragraphs (headings, lists, links, tables, code); otherwise plain text as now. The source URL is kept with the capture and written as `source_url` in the raw source's front matter. **Ctrl+Alt+V** pastes plain text. Also: Word's list paragraphs (`mso-list` styles) become Markdown lists, keeping their numbers; the source URL is kept whenever HTML with one is pasted, rich or not (only `http(s)` URLs), and the draft keeps it.
+- [x] Clipboard capture (the no-box hotkey) does the same.
 - **Tests:** the header parsed (offsets in bytes, a missing `SourceURL`); a fragment from Chrome, Edge and Word (fixtures) converted; plain paragraphs stay plain; `source_url` in the raw source; through the box driven by messages, Ctrl+V and Ctrl+Alt+V with a fixture on the clipboard (saved and restored by `Backup`).
 
 ### Part 4: Web pages

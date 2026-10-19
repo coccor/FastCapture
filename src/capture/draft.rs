@@ -1,7 +1,8 @@
 //! The capture box's draft: what was in the box when it closed without saving, kept
 //! in `%LocalAppData%\FastCapture\draft` and brought back the next time it opens. Text goes in
 //! `draft.txt`; pasted images are saved beside it as PNGs; `attachments.txt` lists the
-//! attachments in order, `png:<name>` or `file:<path>` (dropped files are kept as their paths).
+//! attachments in order, `png:<name>` or `file:<path>` (dropped files are kept as their paths),
+//! and `source_url:<url>` for pasted rich text's page.
 
 use super::model::{Attachment, Capture};
 use std::fs;
@@ -35,6 +36,9 @@ pub fn save(dir: &Path, capture: &Capture) -> std::io::Result<()> {
             Attachment::File(path) => list.push_str(&format!("file:{}\n", path.display())),
         }
     }
+    if let Some(url) = &capture.source_url {
+        list.push_str(&format!("source_url:{}\n", url.replace(['\r', '\n'], "")));
+    }
     fs::write(dir.join(LIST_FILE), list)?;
     // The text last, so a draft is only there once it is whole.
     fs::write(dir.join(TEXT_FILE), &capture.text)
@@ -60,10 +64,15 @@ pub fn load(dir: &Path) -> Option<Capture> {
             }
         })
         .collect();
+    let source_url = list
+        .lines()
+        .find_map(|line| line.strip_prefix("source_url:"))
+        .map(str::to_owned);
     let capture = Capture {
         text,
         attachments,
         source_window: None,
+        source_url,
     };
     (!capture.is_empty()).then_some(capture)
 }
@@ -95,6 +104,7 @@ mod tests {
                 Attachment::Png(b"two".to_vec()),
             ],
             source_window: Some("not kept".to_owned()),
+            source_url: Some("https://example.com/kept".to_owned()),
         };
         save(&dir, &capture).unwrap();
         assert_eq!(

@@ -136,6 +136,7 @@ mod tests {
                 Attachment::Png(vec![2]),
             ],
             source_window: None,
+            source_url: None,
         };
         assert_eq!(
             kinds(&capture),

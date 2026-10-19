@@ -18,6 +18,8 @@ pub struct Capture {
     pub attachments: Vec<Attachment>,
     /// The title of the window in front when the hotkey was pressed, when `capture_source` is on.
     pub source_window: Option<String>,
+    /// The page pasted rich text was copied from, as the browser said.
+    pub source_url: Option<String>,
 }
 
 impl Capture {

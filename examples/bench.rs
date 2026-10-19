@@ -107,6 +107,7 @@ fn main() {
         text: "lag spikes during ledger batch??".to_owned(),
         attachments: vec![Attachment::Png(png)],
         source_window: None,
+        source_url: None,
     };
     let mut submit_times = Vec::new();
     for _ in 0..10 {

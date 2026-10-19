@@ -82,6 +82,110 @@ pub fn text(owner: HWND) -> Option<String> {
     Some(String::from_utf16_lossy(&units))
 }
 
+/// The registered `HTML Format` browsers and Office put beside the plain text.
+fn html_format() -> u32 {
+    let name: Vec<u16> = "HTML Format\0".encode_utf16().collect();
+    unsafe { RegisterClipboardFormatW(name.as_ptr()) }
+}
+
+/// The copied part of a page or document, from `HTML Format`.
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct Html {
+    /// The selection's HTML (between `StartFragment` and `EndFragment`).
+    pub fragment: String,
+    /// The page it was copied from, when the program said (browsers do, Word doesn't).
+    pub source_url: Option<String>,
+}
+
+/// The clipboard's `HTML Format`, or `None` when it holds none.
+pub fn html(owner: HWND) -> Option<Html> {
+    let format = html_format();
+    if !available(format) || !open(owner) {
+        return None;
+    }
+    let bytes = read_global(format);
+    unsafe { CloseClipboard() };
+    parse_html(&bytes?)
+}
+
+/// `HTML Format`'s header (`Version:`, `StartHTML:`, `StartFragment:`, `EndFragment:`,
+/// `SourceURL:` lines; offsets in bytes from the start) and the fragment it points at. Falls
+/// back to the `<!--StartFragment-->` comments, then to the whole HTML, when the offsets are
+/// missing or wrong.
+pub fn parse_html(bytes: &[u8]) -> Option<Html> {
+    let bytes = &bytes[..bytes.iter().position(|&b| b == 0).unwrap_or(bytes.len())];
+    let header_end = bytes.iter().position(|&b| b == b'<').unwrap_or(bytes.len());
+    let header = String::from_utf8_lossy(&bytes[..header_end]);
+    let field = |name: &str| {
+        header.lines().find_map(|line| {
+            let (key, value) = line.split_once(':')?;
+            (key.trim() == name).then(|| value.trim().to_owned())
+        })
+    };
+    let offset = |name: &str| field(name).and_then(|value| value.parse::<usize>().ok());
+    let source_url =
+        field("SourceURL").filter(|url| url.starts_with("http://") || url.starts_with("https://"));
+    let by_offsets = match (offset("StartFragment"), offset("EndFragment")) {
+        (Some(start), Some(end)) if start <= end && end <= bytes.len() => Some(&bytes[start..end]),
+        _ => None,
+    };
+    let by_comments = || {
+        let text = &bytes[header_end..];
+        let find = |needle: &[u8]| text.windows(needle.len()).position(|w| w == needle);
+        let start = find(b"<!--StartFragment-->")? + b"<!--StartFragment-->".len();
+        let end = find(b"<!--EndFragment-->")?;
+        (start <= end).then(|| &text[start..end])
+    };
+    let html = by_offsets.or_else(by_comments).unwrap_or(
+        &bytes[offset("StartHTML")
+            .filter(|&s| s <= bytes.len())
+            .unwrap_or(header_end)..],
+    );
+    let fragment = String::from_utf8_lossy(html).into_owned();
+    (!fragment.trim().is_empty()).then_some(Html {
+        fragment,
+        source_url,
+    })
+}
+
+/// `fragment` as the clipboard's `HTML Format`, with its header, for tests.
+#[cfg(test)]
+pub fn html_bytes(fragment: &str, source_url: Option<&str>) -> Vec<u8> {
+    let prefix = "<html><body>\r\n<!--StartFragment-->";
+    let suffix = "<!--EndFragment-->\r\n</body></html>";
+    let source = source_url
+        .map(|url| format!("SourceURL:{url}\r\n"))
+        .unwrap_or_default();
+    let header_length = format!(
+        "Version:0.9\r\nStartHTML:0000000000\r\nEndHTML:0000000000\r\nStartFragment:0000000000\r\nEndFragment:0000000000\r\n{source}"
+    )
+    .len();
+    let start_fragment = header_length + prefix.len();
+    let end_fragment = start_fragment + fragment.len();
+    let end_html = end_fragment + suffix.len();
+    format!(
+        "Version:0.9\r\nStartHTML:{header_length:010}\r\nEndHTML:{end_html:010}\r\nStartFragment:{start_fragment:010}\r\nEndFragment:{end_fragment:010}\r\n{source}{prefix}{fragment}{suffix}\0"
+    )
+    .into_bytes()
+}
+
+/// Puts `HTML Format` with `fragment` and `text` as its plain text on the clipboard, for tests.
+#[cfg(test)]
+pub fn set_html(owner: HWND, fragment: &str, text: &str, source_url: Option<&str>) {
+    set_text(owner, text).unwrap();
+    // `set` empties the clipboard first, so the second format is added by hand.
+    assert!(open(owner));
+    let bytes = html_bytes(fragment, source_url);
+    unsafe {
+        let memory = GlobalAlloc(GMEM_MOVEABLE, bytes.len());
+        let target = GlobalLock(memory).cast::<u8>();
+        std::ptr::copy_nonoverlapping(bytes.as_ptr(), target, bytes.len());
+        GlobalUnlock(memory);
+        SetClipboardData(html_format(), memory);
+        CloseClipboard();
+    }
+}
+
 /// The files copied in Explorer (`CF_HDROP`), or none.
 pub fn files(owner: HWND) -> Vec<PathBuf> {
     if !has_files() || !open(owner) {
@@ -306,5 +410,45 @@ pub(crate) mod tests {
             Some(Ok(b"\x89PNG\r\n\x1a\nrest".to_vec()))
         );
         assert!(super::files(std::ptr::null_mut()).is_empty());
+    }
+
+    #[test]
+    fn html_format_reads_its_fragment_and_source() {
+        let bytes = super::html_bytes("<b>zăpadă</b> & more", Some("https://example.com/a"));
+        assert_eq!(
+            super::parse_html(&bytes),
+            Some(super::Html {
+                fragment: "<b>zăpadă</b> & more".to_owned(),
+                source_url: Some("https://example.com/a".to_owned()),
+            })
+        );
+        // Word gives no SourceURL; a `file:` one isn't kept.
+        let bytes = super::html_bytes("<p>x</p>", Some("file:///C:/doc.htm"));
+        assert_eq!(super::parse_html(&bytes).unwrap().source_url, None);
+        // Wrong offsets: the comments find the fragment.
+        let broken = b"Version:0.9\r\nStartFragment:9999\r\nEndFragment:99999\r\n\
+            <html><body><!--StartFragment--><i>y</i><!--EndFragment--></body></html>";
+        assert_eq!(super::parse_html(broken).unwrap().fragment, "<i>y</i>");
+        // No offsets and no comments: the whole HTML.
+        let bare = b"Version:0.9\r\n<p>whole</p>";
+        assert_eq!(super::parse_html(bare).unwrap().fragment, "<p>whole</p>");
+        assert_eq!(super::parse_html(b"Version:0.9\r\n"), None);
+    }
+
+    #[test]
+    fn html_reads_back_from_the_clipboard() {
+        let _backup = Backup::take();
+        super::set_html(
+            std::ptr::null_mut(),
+            "<h1>T</h1>",
+            "T",
+            Some("https://e.com/"),
+        );
+        assert_eq!(super::text(std::ptr::null_mut()).as_deref(), Some("T"));
+        let html = super::html(std::ptr::null_mut()).unwrap();
+        assert_eq!(html.fragment, "<h1>T</h1>");
+        assert_eq!(html.source_url.as_deref(), Some("https://e.com/"));
+        super::set_text(std::ptr::null_mut(), "plain").unwrap();
+        assert_eq!(super::html(std::ptr::null_mut()), None);
     }
 }

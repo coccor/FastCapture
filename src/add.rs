@@ -124,6 +124,7 @@ pub fn handle(request: Request, context: &Context) -> Reply {
         text,
         attachments: attachments.into_iter().map(Attachment::File).collect(),
         source_window: None,
+        source_url: None,
     };
     match submit(&root, &capture, context.queue.as_deref(), false) {
         Ok(raw) => Reply::Filed(raw),

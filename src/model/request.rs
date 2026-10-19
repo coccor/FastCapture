@@ -186,6 +186,7 @@ mod tests {
                 text: "lag spikes during ledger batch??\nhttps://grafana.example/d/x".to_owned(),
                 attachments: vec![Attachment::Png(png(3000, 1000)), Attachment::File(log)],
                 source_window: Some("Grafana".to_owned()),
+                source_url: None,
             },
             Some(&temp.0.join("queue")),
             false,

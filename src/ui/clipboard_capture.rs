@@ -1,6 +1,7 @@
 //! Capture clipboard: the clipboard as it is, with no box. Files copied in Explorer
 //! come first; then an image when there is no text (as in FastPad, copying a paragraph from Word
-//! also puts a picture of it on the clipboard, and that must not win over its text); then text.
+//! also puts a picture of it on the clipboard, and that must not win over its text); then rich
+//! text as Markdown, or plain text.
 
 use crate::capture::{Attachment, Capture};
 use crate::platform::clipboard;
@@ -23,9 +24,16 @@ pub fn from_clipboard(owner: HWND) -> Result<Capture, String> {
             ..Capture::default()
         });
     }
-    match clipboard::text(owner) {
+    // Rich text with structure is kept as Markdown, as Ctrl+V in the box does.
+    let html = clipboard::html(owner);
+    let source_url = html.as_ref().and_then(|html| html.source_url.clone());
+    let rich = html.and_then(|html| {
+        crate::extract::markdown::rich_text(&html.fragment, html.source_url.as_deref())
+    });
+    match rich.or_else(|| clipboard::text(owner)) {
         Some(text) if !text.trim().is_empty() => Ok(Capture {
             text,
+            source_url,
             ..Capture::default()
         }),
         _ => Err("The clipboard has nothing FastCapture can capture.".to_owned()),
@@ -62,5 +70,32 @@ mod tests {
         );
         clipboard::set_text(std::ptr::null_mut(), "  \r\n").unwrap();
         assert!(from_clipboard(std::ptr::null_mut()).is_err());
+    }
+
+    #[test]
+    fn rich_text_is_captured_as_markdown_with_its_page() {
+        let _backup = Backup::take();
+        clipboard::set_html(
+            std::ptr::null_mut(),
+            "<ol><li>first</li><li>second</li></ol>",
+            "first\r\nsecond",
+            Some("https://example.com/steps"),
+        );
+        assert_eq!(
+            from_clipboard(std::ptr::null_mut()),
+            Ok(Capture {
+                text: "1. first\n2. second".to_owned(),
+                source_url: Some("https://example.com/steps".to_owned()),
+                ..Capture::default()
+            })
+        );
+        clipboard::set_html(std::ptr::null_mut(), "<p>plain</p>", "plain", None);
+        assert_eq!(
+            from_clipboard(std::ptr::null_mut()),
+            Ok(Capture {
+                text: "plain".to_owned(),
+                ..Capture::default()
+            })
+        );
     }
 }

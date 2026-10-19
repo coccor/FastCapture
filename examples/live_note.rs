@@ -71,6 +71,7 @@ fn main() {
             text,
             attachments,
             source_window: None,
+            source_url: None,
         },
         Some(&scratch.join("queue")),
         true,

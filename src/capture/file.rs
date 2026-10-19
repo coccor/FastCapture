@@ -94,6 +94,7 @@ pub fn file_capture(request: &Request<'_>) -> Result<Filed, FileError> {
         text: &capture.text,
         links: &links,
         source_window: capture.source_window.as_deref(),
+        source_url: capture.source_url.as_deref(),
     });
 
     let written = write_raw(root, &raw_folder, &stem, text.as_bytes());
@@ -268,6 +269,7 @@ mod tests {
                 Attachment::File(outside.clone()),
             ],
             source_window: None,
+            source_url: None,
         };
         let conventions = notebook.conventions();
         let filed = file_capture(&request(&conventions, &capture)).unwrap();
@@ -336,6 +338,7 @@ mod tests {
             text: String::new(),
             attachments: vec![Attachment::Png(b"x".to_vec())],
             source_window: None,
+            source_url: None,
         };
         let conventions = notebook.conventions();
         let filed = file_capture(&request(&conventions, &capture)).unwrap();
@@ -362,6 +365,7 @@ mod tests {
             text: "x".to_owned(),
             attachments: vec![Attachment::Png(b"x".to_vec()), Attachment::File(missing)],
             source_window: None,
+            source_url: None,
         };
         let conventions = notebook.conventions();
         let error = file_capture(&request(&conventions, &capture)).unwrap_err();
@@ -378,6 +382,7 @@ mod tests {
             text: "y".to_owned(),
             attachments: vec![Attachment::Png(b"y".to_vec())],
             source_window: None,
+            source_url: None,
         };
         assert!(file_capture(&request(&conventions, &capture)).is_err());
         assert!(notebook.files("attachments").is_empty());
@@ -394,6 +399,7 @@ mod tests {
             text: String::new(),
             attachments: vec![Attachment::File(big.clone())],
             source_window: None,
+            source_url: None,
         };
         let conventions = notebook.conventions();
         let error = file_capture(&request(&conventions, &capture)).unwrap_err();

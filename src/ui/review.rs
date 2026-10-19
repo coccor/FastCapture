@@ -991,6 +991,7 @@ mod tests {
                 text: "first".to_owned(),
                 attachments: vec![Attachment::Png(b"png".to_vec())],
                 source_window: None,
+                source_url: None,
             },
             Some(&queue),
             false,

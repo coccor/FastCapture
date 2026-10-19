@@ -92,6 +92,7 @@ pub struct RawSource<'a> {
     /// Lines from `link_lines`.
     pub links: &'a [String],
     pub source_window: Option<&'a str>,
+    pub source_url: Option<&'a str>,
 }
 
 /// `YYYY-MM-DDTHH:MM`, the `captured:` value.
@@ -124,6 +125,7 @@ fn quoted(value: &str) -> String {
 /// urls:
 ///   - "https://example.com"
 /// source_window: "Grafana – Google Chrome"
+/// source_url: "https://grafana.example.com/d/payments"
 /// ---
 ///
 /// your text
@@ -152,6 +154,9 @@ capture_id: {}
     }
     if let Some(window) = source.source_window {
         text.push_str(&format!("source_window: {}\n", quoted(window)));
+    }
+    if let Some(url) = source.source_url {
+        text.push_str(&format!("source_url: {}\n", quoted(url)));
     }
     text.push_str("---\n");
     let body: Vec<&str> = source.text.trim().lines().map(str::trim_end).collect();
@@ -248,12 +253,14 @@ mod tests {
             text: "lag spikes during ledger batch??\r\nhttps://grafana.example/d/x?from=1#panel\r\n\r\n",
             links: &["![](../attachments/a.png)".to_owned()],
             source_window: Some("Grafana \"payments\" \\ Chrome"),
+            source_url: Some("https://grafana.example/d/x"),
         });
         assert_eq!(
             text,
             "---\ntype: raw\ncaptured: 2026-10-19T10:30\nkind: [text, link, screenshot]\n\
              capture_id: 01JAB3K9X7Q2M8ZZZZZZZZZZZZ\nurls:\n  - \"https://grafana.example/d/x?from=1#panel\"\n\
-             source_window: \"Grafana \\\"payments\\\" \\\\ Chrome\"\n---\n\n\
+             source_window: \"Grafana \\\"payments\\\" \\\\ Chrome\"\n\
+             source_url: \"https://grafana.example/d/x\"\n---\n\n\
              lag spikes during ledger batch??\nhttps://grafana.example/d/x?from=1#panel\n\n\
              ![](../attachments/a.png)\n"
         );
@@ -285,6 +292,7 @@ mod tests {
             text: "  ",
             links: &["[a.log](../attachments/a.log)".to_owned()],
             source_window: None,
+            source_url: None,
         });
         assert_eq!(
             text,

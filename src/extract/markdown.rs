@@ -71,6 +71,54 @@ fn is_block(name: &str) -> bool {
     BLOCKS.contains(&name)
 }
 
+/// Pasted rich text as Markdown, when it has structure plain text would lose (headings,
+/// lists, links, tables, code, quotes); `None` when it is plain paragraphs, which paste better
+/// as the plain text beside them.
+pub fn rich_text(fragment: &str, base: Option<&str>) -> Option<String> {
+    let dom = Dom::parse(fragment);
+    let rich = dom
+        .descendants(dom.root())
+        .into_iter()
+        .any(|node| match dom.name(node) {
+            Some(
+                "h1" | "h2" | "h3" | "h4" | "h5" | "h6" | "ul" | "ol" | "table" | "pre" | "code"
+                | "blockquote",
+            ) => true,
+            Some("a") => dom
+                .attr(node, "href")
+                .is_some_and(|href| !href.trim().is_empty() && !href.starts_with('#')),
+            Some("p") => word_list_level(&dom, node).is_some(),
+            _ => false,
+        });
+    if !rich {
+        return None;
+    }
+    let markdown = to_markdown(&dom, dom.root(), base);
+    (!markdown.trim().is_empty()).then_some(markdown)
+}
+
+/// The level of a list paragraph Word pastes (`style="mso-list:l0 level2 lfo1"`).
+fn word_list_level(dom: &Dom, id: NodeId) -> Option<usize> {
+    let style = dom.attr(id, "style")?.to_ascii_lowercase();
+    let list = &style[style.find("mso-list:")? + "mso-list:".len()..];
+    if list.trim_start().starts_with("ignore") {
+        return None;
+    }
+    let level = &list[list.find("level")? + "level".len()..];
+    let digits: String = level.chars().take_while(char::is_ascii_digit).collect();
+    digits.parse().ok().filter(|&level| level >= 1)
+}
+
+/// The span holding a Word list item's bullet or number (`style="mso-list:Ignore"`).
+fn word_list_marker_span(dom: &Dom, id: NodeId) -> bool {
+    dom.attr(id, "style").is_some_and(|style| {
+        style
+            .to_ascii_lowercase()
+            .replace(char::is_whitespace, "")
+            .contains("mso-list:ignore")
+    })
+}
+
 /// Dropped with everything under it: the elements above, and hidden ones.
 fn skipped(dom: &Dom, id: NodeId) -> bool {
     let Some(name) = dom.name(id) else {
@@ -79,6 +127,7 @@ fn skipped(dom: &Dom, id: NodeId) -> bool {
     SKIPPED.contains(&name)
         || dom.attr(id, "hidden").is_some()
         || dom.attr(id, "aria-hidden") == Some("true")
+        || word_list_marker_span(dom, id)
         || dom.attr(id, "style").is_some_and(|style| {
             style
                 .to_ascii_lowercase()
@@ -99,6 +148,8 @@ struct Converter<'a> {
     base: Option<&'a str>,
     blocks: Vec<String>,
     inline: String,
+    /// The last block is an item of a Word list, so the next item joins it.
+    in_word_list: bool,
 }
 
 impl<'a> Converter<'a> {
@@ -108,6 +159,7 @@ impl<'a> Converter<'a> {
             base,
             blocks: Vec::new(),
             inline: String::new(),
+            in_word_list: false,
         }
     }
 
@@ -164,17 +216,56 @@ impl<'a> Converter<'a> {
         let end = lines.iter().rposition(|line| !line.is_empty());
         if let (Some(start), Some(end)) = (start, end) {
             self.blocks.push(lines[start..=end].join("\n"));
+            self.in_word_list = false;
         }
     }
 
     fn push(&mut self, block: String) {
         if !block.trim().is_empty() {
             self.blocks.push(block);
+            self.in_word_list = false;
         }
+    }
+
+    /// A Word list paragraph as a list item, joining the item before it.
+    fn word_list_item(&mut self, id: NodeId, level: usize) {
+        let marker = self
+            .dom
+            .descendants(id)
+            .into_iter()
+            .find(|&node| word_list_marker_span(self.dom, node))
+            .map(|span| squeeze(&collapse(&self.dom.text_of(span))))
+            .filter(|marker| {
+                marker.len() <= 4
+                    && marker.ends_with(['.', ')'])
+                    && marker[..marker.len() - 1]
+                        .chars()
+                        .all(char::is_alphanumeric)
+            })
+            .unwrap_or_else(|| "-".to_owned());
+        let text = self.sub(id).join(" ");
+        if text.is_empty() {
+            return;
+        }
+        let item = format!("{}{marker} {text}", "  ".repeat(level.saturating_sub(1)));
+        match self.blocks.last_mut() {
+            Some(last) if self.in_word_list => {
+                last.push('\n');
+                last.push_str(&item);
+            }
+            _ => self.blocks.push(item),
+        }
+        self.in_word_list = true;
     }
 
     fn block(&mut self, id: NodeId, name: &str) {
         self.flush();
+        if name == "p"
+            && let Some(level) = word_list_level(self.dom, id)
+        {
+            self.word_list_item(id, level);
+            return;
+        }
         match name {
             "h1" | "h2" | "h3" | "h4" | "h5" | "h6" => {
                 let level = usize::from(name.as_bytes()[1] - b'0');
@@ -795,5 +886,47 @@ mod tests {
             "https://example.com/x"
         );
         assert_eq!(resolve(None, "x"), "x");
+    }
+
+    fn fixture(name: &str) -> String {
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join(r"tests\fixtures\clipboard")
+            .join(name);
+        std::fs::read_to_string(path).unwrap()
+    }
+
+    #[test]
+    fn rich_text_from_chrome_keeps_its_structure() {
+        assert_eq!(
+            rich_text(
+                &fixture("chrome.html"),
+                Some("https://kafka.example.org/docs/lag")
+            )
+            .unwrap(),
+            "## Consumer lag\n\n\
+             Lag grows when a consumer group falls behind the \
+             [topic](https://kafka.example.org/docs/topics)'s newest offset.\n\n\
+             - **Check** the batch size.\n- Watch `records-lag-max`."
+        );
+    }
+
+    #[test]
+    fn plain_paragraphs_paste_as_plain_text() {
+        assert_eq!(rich_text(&fixture("edge.html"), None), None);
+        assert_eq!(rich_text("<p>one</p><p>two <i>three</i></p>", None), None);
+        assert_eq!(
+            rich_text("<p><a href='#top'>back to top</a></p>", None),
+            None
+        );
+    }
+
+    #[test]
+    fn word_lists_become_markdown_lists() {
+        assert_eq!(
+            rich_text(&fixture("word.html"), None).unwrap(),
+            "Ledger batch review\n\nFindings from the **night run**:\n\n\
+             - Lag peaked at 40k\n  - only ledger-events\n- Recovered by 02:35\n\
+             1. Check the batch size"
+        );
     }
 }

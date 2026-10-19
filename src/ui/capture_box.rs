@@ -32,7 +32,7 @@ use windows_sys::Win32::System::DataExchange::{
     AddClipboardFormatListener, RemoveClipboardFormatListener,
 };
 use windows_sys::Win32::System::LibraryLoader::GetModuleHandleW;
-use windows_sys::Win32::UI::Controls::{EM_SETSEL, MARGINS, SetWindowTheme};
+use windows_sys::Win32::UI::Controls::{EM_REPLACESEL, EM_SETSEL, MARGINS, SetWindowTheme};
 use windows_sys::Win32::UI::HiDpi::GetDpiForWindow;
 use windows_sys::Win32::UI::Input::KeyboardAndMouse::{
     GetFocus, GetKeyState, SetFocus, VK_BACK, VK_CONTROL, VK_DELETE, VK_ESCAPE, VK_LEFT, VK_MENU,
@@ -83,6 +83,8 @@ pub enum Action {
     Close,
     /// Ctrl+Shift+V: the clipboard's image even when it has text too.
     AttachImage,
+    /// Ctrl+Alt+V: the clipboard's plain text, even when it holds rich text.
+    PastePlain,
     Snip,
     /// Ctrl+N: another notebook for this capture.
     PickNotebook,
@@ -95,6 +97,7 @@ pub fn key_action(key: u16, ctrl: bool, shift: bool, alt: bool) -> Option<Action
         VK_RETURN if ctrl && !alt => Some(Action::Submit),
         VK_ESCAPE => Some(Action::Close),
         k if k == u16::from(b'V') && ctrl && shift && !alt => Some(Action::AttachImage),
+        k if k == u16::from(b'V') && ctrl && alt && !shift => Some(Action::PastePlain),
         k if k == u16::from(b'S') && ctrl && shift && !alt => Some(Action::Snip),
         k if k == u16::from(b'N') && ctrl && !shift && !alt => Some(Action::PickNotebook),
         VK_TAB if !ctrl && !alt => Some(Action::ToStrip),
@@ -276,6 +279,8 @@ struct CaptureBox {
     selected: usize,
     notebook: PathBuf,
     source_window: Option<String>,
+    /// The page the last rich text pasted came from.
+    source_url: Option<String>,
     draft_dir: Option<PathBuf>,
     error: Option<String>,
     layout: Layout,
@@ -413,6 +418,7 @@ pub fn open(options: Open) -> Option<HWND> {
         selected: 0,
         notebook: options.notebook,
         source_window: options.source_window,
+        source_url: restored.source_url,
         draft_dir: options.draft_dir,
         error: None,
         layout: Layout::default(),
@@ -586,6 +592,7 @@ fn current_capture(capture: &CaptureBox) -> Capture {
         text: edit_text(capture.edit),
         attachments: capture.items.clone(),
         source_window: capture.source_window.clone(),
+        source_url: capture.source_url.clone(),
     }
 }
 
@@ -657,8 +664,44 @@ fn confirm_large(hwnd: HWND, path: &Path, size: u64) -> bool {
     }
 }
 
-/// Ctrl+V and the edit's Paste: files and lone images are attached. Returns whether the paste
-/// was taken, so the edit doesn't paste text too.
+/// Puts `text` in place of the edit's selection, as typing would (it can be undone).
+fn insert_text(hwnd: HWND, text: &str) {
+    if let Some(capture) = state(hwnd) {
+        let text = text.replace("\r\n", "\n").replace('\n', "\r\n");
+        unsafe {
+            SendMessageW(
+                capture.edit,
+                EM_REPLACESEL,
+                1,
+                wide(&text).as_ptr() as LPARAM,
+            )
+        };
+    }
+    invalidate(hwnd);
+}
+
+/// Remembers the page the clipboard's rich text came from, and returns that rich text.
+fn clipboard_html(hwnd: HWND) -> Option<crate::platform::clipboard::Html> {
+    let html = crate::platform::clipboard::html(hwnd)?;
+    if let Some(url) = &html.source_url
+        && let Some(capture) = state(hwnd)
+    {
+        capture.source_url = Some(url.clone());
+    }
+    Some(html)
+}
+
+/// Ctrl+Alt+V: the clipboard's text as it is.
+fn paste_plain(hwnd: HWND) {
+    let _ = clipboard_html(hwnd);
+    if let Some(text) = crate::platform::clipboard::text(hwnd) {
+        insert_text(hwnd, &text);
+    }
+}
+
+/// Ctrl+V and the edit's Paste: files and lone images are attached, and rich text with
+/// structure goes in as Markdown. Returns whether the paste was taken, so the edit doesn't
+/// paste the plain text too.
 fn paste(hwnd: HWND, force_image: bool) -> bool {
     use crate::platform::clipboard;
     let kind = if force_image {
@@ -675,7 +718,18 @@ fn paste(hwnd: HWND, force_image: bool) -> bool {
         )
     };
     match kind {
-        Paste::Text => false,
+        Paste::Text => {
+            let Some(html) = clipboard_html(hwnd) else {
+                return false;
+            };
+            match crate::extract::markdown::rich_text(&html.fragment, html.source_url.as_deref()) {
+                Some(markdown) => {
+                    insert_text(hwnd, &markdown);
+                    true
+                }
+                None => false,
+            }
+        }
         Paste::Files => {
             for path in clipboard::files(hwnd) {
                 attach(hwnd, Attachment::File(path));
@@ -885,6 +939,7 @@ fn run(hwnd: HWND, action: Action) {
                 capture.swallow_paste_char = true;
             }
         }
+        Action::PastePlain => paste_plain(hwnd),
         Action::Snip => start_snip(hwnd),
         Action::PickNotebook => pick_notebook(hwnd),
         Action::ToStrip => {
@@ -1346,6 +1401,10 @@ mod tests {
             "the edit pastes"
         );
         assert_eq!(
+            key_action(u16::from(b'V'), true, false, true),
+            Some(Action::PastePlain)
+        );
+        assert_eq!(
             key_action(u16::from(b'S'), true, true, false),
             Some(Action::Snip)
         );
@@ -1412,6 +1471,7 @@ mod tests {
                 Attachment::File(PathBuf::from("a.log")),
             ],
             source_window: None,
+            source_url: None,
         };
         assert_eq!(
             footer_text(&capture),
@@ -1621,6 +1681,49 @@ mod preparing_tests {
             [Attachment::Png(png)] => assert!(png.starts_with(b"\x89PNG")),
             other => panic!("{other:?}"),
         }
+        draft::clear(&drafts);
+    }
+
+    #[test]
+    fn rich_text_pastes_as_markdown_and_ctrl_alt_v_as_plain_text() {
+        let _backup = Backup::take();
+        let drafts =
+            std::env::temp_dir().join(format!("fastcapture-box-rich-{}", std::process::id()));
+        let (hwnd, filed) = open_box(&drafts, None);
+        let edit = state(hwnd).unwrap().edit;
+        clipboard::set_html(
+            std::ptr::null_mut(),
+            "<h2>Lag</h2><ul><li>one</li><li><a href='/b'>two</a></li></ul>",
+            "Lag\r\none\r\ntwo",
+            Some("https://example.com/a"),
+        );
+        paste_for_test(hwnd);
+        assert_eq!(
+            edit_text(edit),
+            "## Lag\n\n- one\n- [two](https://example.com/b)"
+        );
+        run(hwnd, Action::PastePlain);
+        assert_eq!(
+            edit_text(edit),
+            "## Lag\n\n- one\n- [two](https://example.com/b)Lag\none\ntwo"
+        );
+
+        // Plain paragraphs paste as the plain text beside them; the page is still kept.
+        set_edit_text(edit, "");
+        clipboard::set_html(
+            std::ptr::null_mut(),
+            "<p>Just <b>a</b> line</p>",
+            "Just a line",
+            Some("https://example.com/c"),
+        );
+        paste_for_test(hwnd);
+        assert_eq!(edit_text(edit), "Just a line");
+        submit(hwnd);
+        let filed = filed.borrow();
+        assert_eq!(
+            filed[0].0.source_url.as_deref(),
+            Some("https://example.com/c")
+        );
         draft::clear(&drafts);
     }
 }
