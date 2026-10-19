@@ -53,8 +53,8 @@ src/
 
 ### Part 1: Text files and the budget
 
-- [ ] `extract/text.rs`: FastPad's `file/encoding.rs` and `file/sniff.rs` copied, naming their source file on their first line (BOMs, UTF-16 without a BOM, UTF-8, and Windows-1252 as the fallback; NUL-heavy files are binary). Logs (`.log`, or a name containing `log`) longer than 400 lines keep their first and last 200 with a `… n lines cut …` line between. Code (by extension, the list FastPad uses) goes in a fenced block with its language.
-- [ ] `extract/mod.rs`: `Budget` hands out characters (60,000 per capture) and PDF pages (20) to sources in capture order. Anything cut is recorded by name for `truncated:`. Your own text is never cut by the budget.
+- [x] `extract/text.rs`: decoding adapted from FastPad's `file/encoding.rs`, naming it on its first line. FastPad handles BOMs and UTF-8 only, and its `sniff.rs` matches image signatures, so the rest is new: UTF-16 without a BOM (by its zero bytes), Windows-1252 as the fallback, and binary detection (a NUL, or over 10% control characters, in the first 8 KB). Logs (`.log`, or a name containing `log`) longer than 400 lines keep their first and last 200 with a `… n lines cut …` line between. Code (by extension, the list FastPad uses) goes in a fenced block with its language.
+- [x] `extract/mod.rs`: `Budget` hands out characters (60,000 per capture) and PDF pages (20) to sources in capture order. Anything cut is recorded by name for `truncated:`. Your own text is never cut by the budget.
 - **Tests:** each encoding; a binary file refused; a 1,000-line log cut to 401 lines; a code file fenced; the budget across three sources, with the third cut and named.
 
 ### Part 2: HTML to Markdown

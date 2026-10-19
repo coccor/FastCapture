@@ -5,6 +5,7 @@ pub mod add;
 pub mod capture;
 pub mod config;
 pub mod error;
+pub mod extract;
 pub mod icon;
 pub mod ipc;
 pub mod launch;
