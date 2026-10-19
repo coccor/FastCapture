@@ -187,10 +187,14 @@ impl Watcher {
         let io = event()?;
         let stop = Arc::new(event()?);
         let thread_stop = Arc::clone(&stop);
+        let (armed, ready) = std::sync::mpsc::channel();
         let thread = std::thread::Builder::new()
             .name("fastcapture-watch".to_owned())
-            .spawn(move || run(&folder, &directory, &io, &thread_stop, &*on_changes))
+            .spawn(move || run(&folder, &directory, &io, &thread_stop, &armed, &*on_changes))
             .map_err(|error| crate::Error::Message(error.to_string()))?;
+        // Changes are only recorded once the first read is issued: wait for it, so none made
+        // after `start` returns are missed.
+        let _ = ready.recv();
         Ok(Self {
             stop,
             thread: Some(thread),
@@ -225,6 +229,7 @@ fn run(
     directory: &SharedHandle,
     io: &SharedHandle,
     stop: &SharedHandle,
+    armed: &std::sync::mpsc::Sender<()>,
     on_changes: &(dyn Fn(FileChanges) + Send),
 ) {
     use windows_sys::Win32::Foundation::{WAIT_OBJECT_0, WAIT_TIMEOUT};
@@ -265,7 +270,9 @@ fn run(
             ) != 0
         }
     };
-    if !issue(&mut buffer, &mut overlapped) {
+    let issued = issue(&mut buffer, &mut overlapped);
+    let _ = armed.send(());
+    if !issued {
         on_changes(failed());
         return;
     }

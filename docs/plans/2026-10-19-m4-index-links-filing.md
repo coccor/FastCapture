@@ -25,7 +25,7 @@ src/
     scan.rs           the notebook's notes and folders (copied from FastPad: FileIdBothDirectoryInfo listing, skip rules)
     watch.rs          ReadDirectoryChangesW on the notebook, batched (copied from FastPad)
     words.rs          tokenizing: lowercase words, accents folded, numbers kept, a short stop list
-    index.rs          per note: path, title, aliases, tags, type, headings, term counts; built incrementally by size and write time; cached
+    notes.rs          per note: path, title, aliases, tags, type, headings, term counts; built incrementally by size and write time; cached
     search.rs         BM25 over fields (title, aliases and tags weigh more), the top 30; the notebook's most used tags
     service.rs        one index per notebook on its own thread, kept current by the watcher; the worker asks it for candidates
   model/
@@ -55,9 +55,10 @@ src/
 
 ### Part 2: The index and search
 
-- [ ] `index/words.rs`: words as runs of letters and digits, lowercase, accents folded (`café` → `cafe`), at least 2 characters, a short English stop list (`the`, `and`, `of`…), `snake_case` and `kebab-case` split as well as kept whole.
-- [ ] `index/index.rs`: per note: its path, title (first `# ` heading, else the file name), aliases, tags (front matter and inline, FastPad's rules through `notebook::frontmatter`), `type:`, headings, and word counts per field, plus the first 300 characters of its text for snippets. Built by reading only notes whose size or write time changed, 2 MB per note at most. Cached as `%LocalAppData%\FastCapture\index\<folder key>.cache` (versioned, thrown away when it can't be read).
-- [ ] `index/search.rs`: BM25 (k1 1.2, b 0.75) per field, weighted title 3, aliases 3, tags 2, headings 1.5, text 1; the top 30 for a query. The notebook's 50 most used tags.
+- [x] `index/words.rs`: words as runs of letters and digits, lowercase, accents folded (`café` → `cafe`), at least 2 characters, a short English stop list (`the`, `and`, `of`…), `snake_case` and `kebab-case` split as well as kept whole. Also left out: runs over 64 characters, and `http`, `https`, `www`, `com`.
+- [x] `index/notes.rs`: per note: its path, title (first `# ` heading, else the file name), aliases, tags (front matter and inline, FastPad's rules through `notebook::frontmatter`), `type:`, headings, and word counts per field, plus the first 300 characters of its text for snippets. Built by reading only notes whose size or write time changed, 2 MB per note at most. Cached as `%LocalAppData%\FastCapture\index\<folder key>.cache` (versioned, thrown away when it can't be read). Words are numbered in a vocabulary shared by the notes, so each count takes 8 bytes. The title is a `# ` heading only when nothing comes before it. Inline tags are read line by line, leaving out code blocks and code spans, since FastCapture has no Markdown parser. Named `notes.rs` rather than `index.rs`, which Clippy refuses inside `index/`.
+- [x] `index/search.rs`: BM25 (k1 1.2, b 0.75) per field, weighted title 3, aliases 3, tags 2, headings 1.5, text 1; the top 30 for a query. The notebook's 50 most used tags. `Searcher` keeps per-word postings built from the index, so the service rebuilds it when the index changes.
+- [x] `index/watch.rs` (from Part 1): `Watcher::start` now waits for the first read to be issued, so changes made right after it returns are no longer missed.
 - **Tests:** words; an index of a scratch notebook, then one note edited, one added and one deleted, rebuilt incrementally; the cache round trip and a corrupt cache; ranking on a small fixed notebook (a title match beats a text match, a rare word beats a common one); 5,000 generated notes searched under 20 ms.
 
 ### Part 3: The index service
