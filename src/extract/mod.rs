@@ -2,6 +2,7 @@
 //! PDFs and Word files. A capture's sources share one budget, so a single capture can't cost
 //! much.
 
+pub mod docx;
 pub mod dom;
 pub mod markdown;
 pub mod page;

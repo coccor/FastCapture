@@ -89,9 +89,9 @@ src/
 
 ### Part 6: Word
 
-- [ ] `Cargo.toml`: `zip = { version = "=9.0.5", default-features = false, features = ["deflate"] }`.
-- [ ] `extract/docx.rs`: `word/document.xml` scanned for `w:p` (paragraphs), `w:pStyle` `Heading1`–`Heading6` and `Title` (as `#` headings), `w:numPr` (list items), `w:t`, `w:tab`, `w:br`, and `w:tbl` (rows as `|`-separated lines). XML entities decoded. A file over 50 MB uncompressed, or one that isn't a zip, is listed as unreadable.
-- **Tests:** a fixture `.docx` with headings, a list, a table and a tab; a zip with no `word/document.xml`; a zip bomb refused by the size check.
+- [x] `Cargo.toml`: `zip = { version = "=9.0.5", default-features = false, features = ["deflate"] }`.
+- [x] `extract/docx.rs`: `word/document.xml` scanned for `w:p` (paragraphs), `w:pStyle` `Heading1`–`Heading6` and `Title` (as `#` headings), `w:numPr` (list items), `w:t`, `w:tab`, `w:br`, and `w:tbl` (rows as `|`-separated lines). XML entities decoded. A file over 50 MB uncompressed, or one that isn't a zip, says why it wasn't read; the size in the zip header is checked, and no more than 50 MB is ever unpacked, whatever it says. List levels (`w:ilvl`) are indented; deleted text and field codes aren't read; a table inside a cell joins that cell.
+- **Tests:** **Changed:** `.docx` files are built in the tests (`extract::docx::build`): headings, a list, a table and a tab; a zip with no `word/document.xml`; a zip bomb refused by the size check.
 
 ### Part 7: The request and the note
 
