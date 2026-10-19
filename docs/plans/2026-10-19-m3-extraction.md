@@ -105,7 +105,10 @@ src/
 - [x] `runner/end_to_end.rs`: a link capture through the worker: the page from the test server becomes a sidecar, the request carries its Markdown, and the note is checked byte for byte. A PDF capture sends its text pages in an attachment block and its scanned page as an image.
 - [x] `examples/bench.rs`: an article page from HTML to Markdown under 300 ms after download, a 20-page text PDF under 1 s (§14). Measured: a 47 KB article page in 4.6 ms, a 20-page PDF in 26 ms.
 - [x] `examples/live_note.rs`: `--attach PATH` (any file, more than once), pages fetched as the worker fetches them, and `--dry-run`, which prints the request without asking the model (free). Tried on real pages: the Rust book and Wikipedia. That led to dropping in-page anchor links, keeping page images as alt text, judging class names one by one (`ambox-content` is a banner), more clutter words (`noprint`, `navbox`, `reflist`, …) and dropping headings whose sections were left out.
-- [ ] Measure with `examples/live_note.rs` (with your approval): a real article link and a real PDF, comparing the notes and the token counts.
+- [x] Measure with `examples/live_note.rs` (with your approval): a real article link and a real PDF, comparing the notes and the token counts.
+  - Measured 2026-10-19 on `claude-haiku-5-5` at effort `low`.
+  - Wikipedia's Apache Kafka article: 6,138 characters of main text, 2,475 input and 504 output tokens, 3.8 s. The rules weren't cached, since their text changed in Part 7. A good note: titled for the capture's purpose, five facts from the page, `url`, `site` and `## Source`.
+  - A 2-page Kafka guide PDF (32 KB): read in 22 ms, 1,504 input (1,506 cached) and 648 output tokens, 4.3 s. The content was good, eight accurate key points and two tasks, but Haiku garbled the title ("…familiarising Kafka concepts and fit.)"), though the request was clean.
 
 ### Part 9: Polish and docs
 
