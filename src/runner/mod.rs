@@ -1,6 +1,8 @@
 //! Turning queued captures into notes, in the background.
 
 pub mod backoff;
+#[cfg(test)]
+mod end_to_end;
 pub mod from_settings;
 pub mod process;
 pub mod worker;

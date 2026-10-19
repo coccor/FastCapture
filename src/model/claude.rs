@@ -25,13 +25,25 @@ const SERVICE: &str = "Claude";
 const TIMEOUT: Duration = Duration::from_secs(120);
 const MAX_TOKENS: u32 = 16_000;
 /// Writing a note from a capture is a short task.
-const EFFORT: &str = "low";
+pub const DEFAULT_EFFORT: &str = "low";
 
 pub struct Claude {
     client: Client,
     base: String,
     model: String,
     key: String,
+    effort: &'static str,
+    last_usage: std::sync::Mutex<Option<Usage>>,
+}
+
+/// The tokens one request used, as the API counted them.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct Usage {
+    /// Input not read from the cache.
+    pub input: u64,
+    pub cache_read: u64,
+    pub cache_write: u64,
+    pub output: u64,
 }
 
 impl Claude {
@@ -48,7 +60,20 @@ impl Claude {
             base: base.trim_end_matches('/').to_owned(),
             model: model.to_owned(),
             key,
+            effort: DEFAULT_EFFORT,
+            last_usage: std::sync::Mutex::new(None),
         })
+    }
+
+    /// The tokens the last request used, when the API said.
+    pub fn last_usage(&self) -> Option<Usage> {
+        self.last_usage.lock().ok().and_then(|usage| *usage)
+    }
+
+    /// The same backend at another effort (`low`, `medium`, `high`…), for comparing them.
+    pub fn with_effort(mut self, effort: &'static str) -> Self {
+        self.effort = effort;
+        self
     }
 
     /// The request body for `request`.
@@ -69,7 +94,7 @@ impl Claude {
             "max_tokens": MAX_TOKENS,
             "system": [{"type": "text", "text": request.system, "cache_control": {"type": "ephemeral"}}],
             "output_config": {
-                "effort": EFFORT,
+                "effort": self.effort,
                 "format": {"type": "json_schema", "schema": schema::schema()}
             },
             "fallbacks": "default",
@@ -110,12 +135,19 @@ impl Backend for Claude {
             })?;
         if let Some(usage) = message.get("usage") {
             let count = |key: &str| usage.get(key).and_then(Value::as_u64).unwrap_or(0);
+            let usage = Usage {
+                input: count("input_tokens"),
+                cache_read: count("cache_read_input_tokens"),
+                cache_write: count("cache_creation_input_tokens"),
+                output: count("output_tokens"),
+            };
             crate::log::line(&format!(
                 "claude: {} input ({} cached), {} output tokens",
-                count("input_tokens"),
-                count("cache_read_input_tokens"),
-                count("output_tokens")
+                usage.input, usage.cache_read, usage.output
             ));
+            if let Ok(mut last) = self.last_usage.lock() {
+                *last = Some(usage);
+            }
         }
         match message.get("stop_reason").and_then(Value::as_str) {
             Some("refusal") => {
@@ -149,6 +181,7 @@ impl Backend for Claude {
 
 #[cfg(test)]
 mod tests {
+    use super::Usage;
     use super::*;
     use crate::model::images::ModelImage;
     use crate::model::request::CaptureFacts;
@@ -200,6 +233,15 @@ mod tests {
         assert_eq!(note.title, "Lag");
         assert_eq!(note.tags, ["ops"]);
         assert_eq!(claude.label(), "cloud/claude-sonnet-5-5");
+        assert_eq!(
+            claude.last_usage(),
+            Some(Usage {
+                input: 1200,
+                cache_read: 900,
+                cache_write: 0,
+                output: 210
+            })
+        );
 
         let seen = &server.requests()[0];
         assert_eq!(seen.path, "/v1/messages");
