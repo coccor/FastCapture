@@ -78,11 +78,11 @@ src/
 
 ### Part 5: Filing
 
-- [ ] `file/front.rs`: changes `status:` and removes `suggested_home:`, leaving every other byte of the note as it was (line endings, other keys, order).
-- [ ] `file/move_note.rs`: moves a note into a folder under a free name (` 2`, ` 3`… on a clash). Its own relative links are rewritten first so they keep reaching their files (FastPad's `edits_for_moves_with`, copied).
-- [ ] `file/topic.rs`: the line `- <date> [[<note>]]: <summary>` appended to a topic note with FastPad's append rules (in its list, a blank line before it when needed, its line endings kept); the note moves into the topic note's folder.
-- [ ] Writes use the atomic saver with a stamp check, retried up to three times when the file changed meanwhile, as FastPad's capture does. A topic note that can't be written leaves the note in the inbox with the error.
-- [ ] `file/undo.rs`: each file or discard records what it did (moved from, moved to, the topic note's text before), so it can be put back while the file is still as FastCapture left it.
+- [x] `file/front.rs`: changes `status:` and removes `suggested_home:`, leaving every other byte of the note as it was (line endings, other keys, order). A missing `status:` is added before the closing line; a key's continuation lines go with it.
+- [x] `file/move_note.rs`: moves a note into a folder under a free name (` 2`, ` 3`… on a clash). Its own relative links are rewritten first so they keep reaching their files. FastPad's `edits_for_moves_with` reads links with its Markdown parser, which FastCapture doesn't have, so its rule for a moved note's own links (`unlisted_target`) is applied line by line, leaving out code. Filing into the note's own folder only changes its status.
+- [x] `file/topic.rs`: the line `- <date> [[<note>]]: <summary>` appended to a topic note with FastPad's append rules (in its list, a blank line before it when needed, its line endings kept); the note moves into the topic note's folder. The summary comes from the note's `summary:`, cut to 140 characters; the caller says how the note is linked from there.
+- [x] Writes use the atomic saver with a stamp check, retried up to three times when the file changed meanwhile, as FastPad's capture does. A topic note that can't be written leaves the note in the inbox with the error. A move is a new file under the free name, then the old one removed, and only when the note didn't change meanwhile; otherwise the topic line is taken back and it starts again. `file::file_note` and `file::keep_note` do it all.
+- [x] `file/undo.rs`: each file or discard records what it did (moved from, moved to, the topic note's text before), so it can be put back while the file is still as FastCapture left it. A discard keeps the note's text and writes it back, unless its name was taken since; the copy in the Recycle Bin stays there.
 - **Tests:** front matter edits keep every other byte (CRLF, BOM, unknown keys); moves with attachments in a subfolder; clashes; a topic note ending with a list, with text, with no final line end, in CRLF; a topic note changed between read and write; undo of a move and of an append, and undo refused when the file changed since.
 
 ### Part 6: The review window
