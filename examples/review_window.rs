@@ -17,6 +17,7 @@ fn main() {
         queue,
         settings: None,
         notebook,
+        indexes: Some(fastcapture::index::service::Indexes::new(None)),
         actions: Box::new(review::ShellActions {
             on_change: Box::new(|| {}),
         }),
@@ -29,7 +30,9 @@ fn main() {
     while review::find().is_some()
         && unsafe { GetMessageW(&mut message, std::ptr::null_mut(), 0, 0) } > 0
     {
-        if review::dialog_message(&message) {
+        if fastcapture::ui::home_picker::dialog_message(&message)
+            || review::dialog_message(&message)
+        {
             continue;
         }
         unsafe {

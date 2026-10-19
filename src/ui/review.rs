@@ -1,20 +1,30 @@
-//! The review window: captures and the notes written for them on the left, newest first; the
-//! selected note above its raw source, read-only, on the right. **E** (or a double-click) opens
-//! the note, or the raw source when there is none, in FastPad or the default editor; **R**
-//! writes the note again with the current settings; **Del** sends the note to the Recycle Bin
-//! and keeps the raw source; **Shift+Del** sends the note, the raw source and the attachments
-//! only it links to; **Enter** opens the folder; **F5** refreshes; **Esc** closes. Filing comes
-//! later. A standard ListView and a read-only edit give keyboard and screen-reader support from
-//! Windows.
+//! The review window: the notes waiting in the inbox and the captures still being written on
+//! the left, newest first, each with its suggested home; the selected note above its raw
+//! source, read-only, on the right. **Enter** files the note in its suggested home (or opens the
+//! folder when it has none); **H** picks another home; **I** keeps it in the inbox; **Ctrl+Z**
+//! undoes the last file, keep or discard; **E** (or a double-click) opens the note, or the raw
+//! source when there is none, in FastPad or the default editor; **R** writes the note again with
+//! the current settings; **Del** sends the note to the Recycle Bin and keeps the raw source;
+//! **Shift+Del** sends the note, the raw source and the attachments only it links to; **F5**
+//! refreshes; **Esc** closes. A standard ListView and a read-only edit give keyboard and
+//! screen-reader support from Windows.
 
 use super::review_list::{self, Row};
 use super::theme::{self, Palette, scale};
 use crate::capture::read::{self, RawInfo};
 use crate::config::settings::SettingsFile;
+use crate::file::undo::{self, Undo};
+use crate::file::{self as filing, Target, home};
+use crate::index::service::{Indexes, Snapshot};
+use crate::notebook::Conventions;
+use crate::notebook::links::{Resolver, wiki_target};
 use crate::platform::window::SendHwnd;
 use crate::queue::store::raw_sources;
-use crate::queue::{State, Store};
+use crate::queue::{Job, State, Store};
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
+use std::time::Duration;
 use windows_sys::Win32::Foundation::{
     ERROR_CLASS_ALREADY_EXISTS, GetLastError, HWND, LPARAM, LRESULT, RECT, WPARAM,
 };
@@ -54,9 +64,10 @@ const PAD_AT_96_DPI: i32 = 10;
 const FOOTER_AT_96_DPI: i32 = 30;
 const DEFAULT_WIDTH: i32 = 900;
 const DEFAULT_HEIGHT: i32 = 560;
-/// Each column's share of the list's width, in percent: Capture, Kind, Time, State.
-const COLUMN_SHARES: [i32; 4] = [41, 22, 17, 20];
-const HINT: &str = "E open \u{00B7} R regenerate \u{00B7} Del discard note \u{00B7} Shift+Del delete capture \u{00B7} Enter folder \u{00B7} F5 refresh \u{00B7} Esc close";
+/// Each column's share of the list's width, in percent: Capture, Home, Time, State.
+const COLUMN_SHARES: [i32; 4] = [41, 26, 15, 18];
+/// How long filing waits for the notebook's index, which names topic notes.
+const INDEX_WAIT: Duration = Duration::from_secs(3);
 const EMPTY: &str = "Nothing here yet. Captures and the notes written for them appear here.";
 
 /// What the window does to the world, so tests can watch instead.
@@ -120,14 +131,25 @@ pub struct Open {
     pub settings: Option<PathBuf>,
     /// Opened by Enter when nothing is selected.
     pub notebook: Option<PathBuf>,
+    /// The notebooks' indexes, for the homes and the topic notes' names.
+    pub indexes: Option<Indexes>,
     pub actions: Box<dyn Actions>,
+}
+
+/// A file, keep or discard done in this window, newest last, for Ctrl+Z.
+struct Done {
+    /// The capture's job before.
+    job: Job,
+    undo: Undo,
 }
 
 struct Review {
     queue: PathBuf,
     settings: Option<PathBuf>,
     notebook: Option<PathBuf>,
+    indexes: Option<Indexes>,
     actions: Box<dyn Actions>,
+    done: Vec<Done>,
     colors: Palette,
     dpi: u32,
     list: HWND,
@@ -341,7 +363,7 @@ pub fn open(options: Open) -> Option<HWND> {
             );
         }
     }
-    for (index, title) in ["Capture", "Kind", "Time", "State"].iter().enumerate() {
+    for (index, title) in ["Capture", "Home", "Time", "State"].iter().enumerate() {
         let text = wide(title);
         let column = LVCOLUMNW {
             mask: LVCF_TEXT | LVCF_WIDTH,
@@ -355,7 +377,9 @@ pub fn open(options: Open) -> Option<HWND> {
         queue: options.queue,
         settings: options.settings,
         notebook: options.notebook,
+        indexes: options.indexes,
         actions: options.actions,
+        done: Vec::new(),
         colors,
         dpi,
         list,
@@ -429,7 +453,18 @@ fn reload(hwnd: HWND) {
     };
     let selected = selected_row(review).map(|row| row.capture_id.clone());
     let store = Store::new(review.queue.clone());
-    let (rows, gone) = review_list::rows(store.list(), |path| std::fs::read_to_string(path).ok());
+    let folders = std::cell::RefCell::new(HashMap::<PathBuf, PathBuf>::new());
+    let (rows, gone) = review_list::rows(
+        store.list(),
+        |path| std::fs::read_to_string(path).ok(),
+        |notebook| {
+            folders
+                .borrow_mut()
+                .entry(notebook.to_path_buf())
+                .or_insert_with(|| Conventions::load(notebook).capture_folder().to_path_buf())
+                .clone()
+        },
+    );
     for job in gone {
         crate::log::line(&format!(
             "review: {} is gone; its job is removed",
@@ -450,11 +485,8 @@ fn reload(hwnd: HWND) {
         };
         unsafe { SendMessageW(review.list, LVM_INSERTITEMW, 0, (&raw const item) as isize) };
         let time = review_list::time_label(&row.created, today);
-        for (column, text) in [
-            (1, row.kinds.as_str()),
-            (2, time.as_str()),
-            (3, row.status()),
-        ] {
+        let home = row.home_label();
+        for (column, text) in [(1, home.as_str()), (2, time.as_str()), (3, row.status())] {
             let text = wide(text);
             let sub = LVITEMW {
                 iSubItem: column,
@@ -533,8 +565,288 @@ fn show_problem(review: &Review, problem: &str) {
     unsafe { SetWindowTextW(review.preview, wide(problem).as_ptr()) };
 }
 
+/// The footer: the keys that apply to the selected row.
+fn footer_text(review: &Review) -> String {
+    let keys: Vec<String> = match selected_row(review) {
+        Some(row) if row.note_text.is_some() => {
+            let enter = match &row.home {
+                Some(_) => format!("Enter file {}", row.home_label()),
+                None => "Enter folder".to_owned(),
+            };
+            vec![
+                enter,
+                "H home".to_owned(),
+                "I keep".to_owned(),
+                "E open".to_owned(),
+                "R regenerate".to_owned(),
+                "Del discard".to_owned(),
+                "Ctrl+Z undo".to_owned(),
+                "Esc close".to_owned(),
+            ]
+        }
+        Some(_) => [
+            "E open",
+            "R regenerate",
+            "Del delete capture",
+            "Enter folder",
+            "Ctrl+Z undo",
+            "Esc close",
+        ]
+        .map(str::to_owned)
+        .to_vec(),
+        None => ["Ctrl+Z undo", "F5 refresh", "Esc close"]
+            .map(str::to_owned)
+            .to_vec(),
+    };
+    keys.join(" \u{00B7} ")
+}
+
+/// Repaints the footer, after the selection changed.
+fn refresh_footer(hwnd: HWND) {
+    let Some(review) = state(hwnd) else {
+        return;
+    };
+    let mut client: RECT = unsafe { std::mem::zeroed() };
+    unsafe { GetClientRect(hwnd, &mut client) };
+    let footer = RECT {
+        top: client.bottom - scale(FOOTER_AT_96_DPI, review.dpi),
+        ..client
+    };
+    unsafe { InvalidateRect(hwnd, &footer, 0) };
+}
+
+/// The notebook's index, waiting a little while it is built.
+fn snapshot(review: &Review, notebook: &Path) -> Option<Arc<Snapshot>> {
+    review.indexes.as_ref()?.snapshot(notebook, INDEX_WAIT)
+}
+
+/// The notebook's notes, for naming topic notes and the note moved under them.
+fn resolver(snapshot: &Snapshot, without: &Path, with: Option<&Path>) -> Resolver {
+    let notes = &snapshot.searcher.index().notes;
+    let key = |path: &Path| path.to_string_lossy().to_lowercase();
+    Resolver::new(
+        notes
+            .values()
+            .map(|note| note.path.as_path())
+            .filter(|path| key(path) != key(without))
+            .chain(with),
+        notes.values().flat_map(|note| {
+            note.aliases
+                .iter()
+                .map(|alias| (alias.clone(), note.path.clone()))
+        }),
+    )
+}
+
+/// Where `row`'s suggested home is: a folder, or the topic note its link reaches.
+fn suggested_target(review: &Review, row: &Row) -> Result<Option<Target>, String> {
+    let Some(home) = &row.home else {
+        return Ok(None);
+    };
+    let Some(name) = home
+        .strip_prefix("[[")
+        .and_then(|name| name.strip_suffix("]]"))
+    else {
+        let folder = home.trim().trim_matches('/').replace('/', "\\");
+        return Ok((!folder.is_empty()).then(|| Target::Folder(PathBuf::from(folder))));
+    };
+    let note = row.note.as_ref().map(|note| note.path.as_path());
+    let snapshot = snapshot(review, &row.notebook)
+        .ok_or("The notebook's index isn't ready yet, so its topic notes can't be found.")?;
+    resolver(&snapshot, Path::new(""), None)
+        .resolve_wiki(name, note.unwrap_or(Path::new("note.md")))
+        .map(|path| Some(Target::Topic(path)))
+        .ok_or_else(|| format!("No note named [[{name}]] was found in the notebook."))
+}
+
+/// Puts `job` in the queue, saying so when it can't.
+fn save_job(store: &Store, job: &Job) {
+    if let Err(error) = store.put(job) {
+        crate::log::line(&format!("review: {error}"));
+    }
+}
+
+/// Files the note of the capture `capture_id` in `target`, and remembers how to undo it. A note
+/// that can't be filed stays in the list with the reason.
+fn file_to(hwnd: HWND, capture_id: &str, target: &Target) {
+    let Some(review) = state(hwnd) else {
+        return;
+    };
+    let Some(row) = review
+        .rows
+        .iter()
+        .find(|row| row.capture_id == capture_id)
+        .cloned()
+    else {
+        return;
+    };
+    let Some(note) = row.note.clone().filter(|_| row.note_text.is_some()) else {
+        return;
+    };
+    let today = crate::notebook::dates::format(crate::platform::clock::local_now().0, "YYYY-MM-DD");
+    let snapshot = match target {
+        Target::Topic(_) => snapshot(review, &row.notebook),
+        Target::Folder(_) => None,
+    };
+    let link_name = |to: &Path| match (&snapshot, target) {
+        (Some(snapshot), Target::Topic(topic)) => {
+            wiki_target(&resolver(snapshot, &note.path, Some(to)), to, topic)
+        }
+        _ => to
+            .file_stem()
+            .unwrap_or_default()
+            .to_string_lossy()
+            .into_owned(),
+    };
+    match filing::file_note(&row.notebook, &note.path, target, &today, &link_name) {
+        Ok((written, undo)) => remember(review, &row.capture_id, written, undo),
+        Err(error) => {
+            show_problem(review, &format!("Couldn't file this note: {error}"));
+            return;
+        }
+    }
+    review.actions.changed();
+    reload(hwnd);
+}
+
+/// Records the note's new place in its job, and the undo.
+fn remember(
+    review: &mut Review,
+    capture_id: &str,
+    written: crate::note::write::Written,
+    undo: Undo,
+) {
+    let store = Store::new(review.queue.clone());
+    if let Some(job) = store.get(capture_id) {
+        let mut changed = job.clone();
+        changed.note = Some(written);
+        save_job(&store, &changed);
+        review.done.push(Done { job, undo });
+    }
+}
+
+/// Enter: files the note in its suggested home; without one, or for a capture with no note,
+/// opens the folder.
+fn enter(hwnd: HWND) {
+    let Some(review) = state(hwnd) else {
+        return;
+    };
+    let Some(row) = selected_row(review).cloned() else {
+        open_folder(hwnd);
+        return;
+    };
+    if row.note_text.is_none() {
+        open_folder(hwnd);
+        return;
+    }
+    match suggested_target(review, &row) {
+        Ok(Some(target)) => file_to(hwnd, &row.capture_id, &target),
+        Ok(None) => open_folder(hwnd),
+        Err(problem) => show_problem(review, &problem),
+    }
+}
+
+/// H: the home picker, the suggestion first; the note is filed where you pick.
+fn pick_home(hwnd: HWND) {
+    let Some(review) = state(hwnd) else {
+        return;
+    };
+    let Some(row) = selected_row(review).cloned() else {
+        return;
+    };
+    if row.note_text.is_none() {
+        return;
+    }
+    let Some(snapshot) = snapshot(review, &row.notebook) else {
+        show_problem(
+            review,
+            "The notebook's index isn't ready yet; try again in a moment.",
+        );
+        return;
+    };
+    let conventions = Conventions::load(&row.notebook);
+    let suggested = suggested_target(review, &row).ok().flatten();
+    let own = row
+        .note
+        .as_ref()
+        .map(|note| note.path.to_string_lossy().to_lowercase());
+    let options = home::options(
+        snapshot
+            .searcher
+            .index()
+            .notes
+            .values()
+            .filter(|note| own.as_deref() != Some(&*note.path.to_string_lossy().to_lowercase()))
+            .map(|note| (note.path.as_path(), note.kind.as_deref())),
+        &snapshot.folders,
+        &conventions.capture.home_types,
+        conventions.capture_folder(),
+        suggested.as_ref(),
+    );
+    let owner = SendHwnd::new(hwnd);
+    let capture_id = row.capture_id.clone();
+    let opened = super::home_picker::open(
+        SendHwnd::new(hwnd),
+        options,
+        Box::new(move |target| file_to(owner.get(), &capture_id, &target)),
+    );
+    if opened.is_none() {
+        show_problem(review, "The home picker couldn't open.");
+    }
+}
+
+/// I: the note stays in the inbox as `status: kept`, and leaves the list.
+fn keep_selected(hwnd: HWND) {
+    let Some(review) = state(hwnd) else {
+        return;
+    };
+    let Some(row) = selected_row(review).cloned() else {
+        return;
+    };
+    let Some(note) = row.note.clone().filter(|_| row.note_text.is_some()) else {
+        return;
+    };
+    match filing::keep_note(&row.notebook, &note.path) {
+        Ok((written, undo)) => remember(review, &row.capture_id, written, undo),
+        Err(error) => {
+            show_problem(review, &format!("Couldn't keep this note: {error}"));
+            return;
+        }
+    }
+    review.actions.changed();
+    reload(hwnd);
+}
+
+/// Ctrl+Z: puts back the last file, keep or discard of this window, and selects it.
+fn undo_last(hwnd: HWND) {
+    let Some(review) = state(hwnd) else {
+        return;
+    };
+    let Some(done) = review.done.pop() else {
+        return;
+    };
+    match undo::undo(&done.job.notebook, &done.undo) {
+        Ok(written) => {
+            let mut job = done.job;
+            job.note = Some(written);
+            save_job(&Store::new(review.queue.clone()), &job);
+            review.actions.changed();
+            reload(hwnd);
+            if let Some(review) = state(hwnd)
+                && let Some(index) = review
+                    .rows
+                    .iter()
+                    .position(|row| row.capture_id == job.capture_id)
+            {
+                select(review, index);
+            }
+        }
+        Err(error) => show_problem(review, &format!("Couldn't undo: {error}")),
+    }
+}
+
 /// Del: a written note goes to the Recycle Bin and its capture is marked discarded, so it isn't
-/// written again (R brings it back). For a capture without a note, Del is Shift+Del.
+/// written again (Ctrl+Z brings it back). For a capture without a note, Del is Shift+Del.
 fn discard_selected(hwnd: HWND) {
     let Some(review) = state(hwnd) else {
         return;
@@ -542,21 +854,28 @@ fn discard_selected(hwnd: HWND) {
     let Some(row) = selected_row(review).cloned() else {
         return;
     };
-    let Some(note) = row.note_path().filter(|_| row.state == State::Done) else {
+    let Some(note) = row
+        .note
+        .clone()
+        .filter(|_| row.state == State::Done && row.note_text.is_some())
+    else {
         recycle_selected(hwnd);
         return;
     };
-    if let Err(error) = review.actions.recycle(&[note]) {
+    let before = undo::before_discard(&row.notebook, &note.path);
+    if let Err(error) = review.actions.recycle(&[row.notebook.join(&note.path)]) {
         show_problem(review, &format!("Couldn't recycle this note: {error}"));
         return;
     }
     let store = Store::new(review.queue.clone());
-    if let Some(mut job) = store.get(&row.capture_id) {
-        job.state = State::Discarded;
-        job.note = None;
-        job.regenerate = false;
-        if let Err(error) = store.put(&job) {
-            crate::log::line(&format!("review: {error}"));
+    if let Some(job) = store.get(&row.capture_id) {
+        let mut discarded = job.clone();
+        discarded.state = State::Discarded;
+        discarded.note = None;
+        discarded.regenerate = false;
+        save_job(&store, &discarded);
+        if let Ok(undo) = before {
+            review.done.push(Done { job, undo });
         }
     }
     review.actions.changed();
@@ -701,16 +1020,20 @@ fn notify(hwnd: HWND, header: &NMHDR, lparam: LPARAM) -> LRESULT {
             let change = unsafe { &*(lparam as *const NMLISTVIEW) };
             if change.uNewState & LVIS_SELECTED != 0 {
                 show_preview(review);
+                refresh_footer(hwnd);
             }
         }
         LVN_KEYDOWN => {
             let key = unsafe { &*(lparam as *const NMLVKEYDOWN) }.wVKey;
-            let shift = unsafe {
-                windows_sys::Win32::UI::Input::KeyboardAndMouse::GetKeyState(i32::from(
-                    windows_sys::Win32::UI::Input::KeyboardAndMouse::VK_SHIFT,
-                ))
-            } < 0;
+            let down = |key| unsafe {
+                windows_sys::Win32::UI::Input::KeyboardAndMouse::GetKeyState(i32::from(key)) < 0
+            };
+            let shift = down(windows_sys::Win32::UI::Input::KeyboardAndMouse::VK_SHIFT);
+            let control = down(windows_sys::Win32::UI::Input::KeyboardAndMouse::VK_CONTROL);
             match key {
+                k if k == u16::from(b'Z') && control => undo_last(hwnd),
+                k if k == u16::from(b'H') => pick_home(hwnd),
+                k if k == u16::from(b'I') => keep_selected(hwnd),
                 k if k == u16::from(b'E') => open_selected(hwnd),
                 k if k == u16::from(b'R') => regenerate_selected(hwnd),
                 VK_DELETE if shift => recycle_selected(hwnd),
@@ -747,7 +1070,7 @@ fn paint(hwnd: HWND) {
         right: client.right - pad,
         bottom: client.bottom,
     };
-    let text: Vec<u16> = HINT.encode_utf16().collect();
+    let text: Vec<u16> = footer_text(review).encode_utf16().collect();
     unsafe {
         let old = SelectObject(dc, review.font);
         DrawTextW(
@@ -805,7 +1128,7 @@ unsafe extern "system" fn review_proc(
         }
         WM_COMMAND => {
             match (wparam & 0xFFFF) as i32 {
-                IDOK => open_folder(hwnd),
+                IDOK => enter(hwnd),
                 IDCANCEL => unsafe {
                     DestroyWindow(hwnd);
                 },
@@ -918,6 +1241,7 @@ mod tests {
             queue: temp.0.join("queue"),
             settings: None,
             notebook: Some(temp.notebook()),
+            indexes: None,
             actions: Box::new(Watch(seen.clone())),
         })
         .unwrap();
@@ -943,11 +1267,11 @@ mod tests {
         done.regenerate = false;
         store.put(&done).unwrap();
         reload(hwnd);
-        std::fs::write(
-            &note_path,
-            "# Consumer lag spikes\n\nmy own words, longer than before\n",
-        )
-        .unwrap();
+        let edited = format!(
+            "{}\nmy own words, longer than before\n",
+            std::fs::read_to_string(&note_path).unwrap()
+        );
+        std::fs::write(&note_path, &edited).unwrap();
         regenerate_selected(hwnd);
         assert_eq!(seen.borrow().asked.len(), 1);
         assert_eq!(
@@ -971,16 +1295,220 @@ mod tests {
         discard_selected(hwnd);
         assert_eq!(seen.borrow().recycled, std::slice::from_ref(&note_path));
         assert_eq!(store.get(&job.capture_id).unwrap().state, State::Discarded);
-        assert_eq!(state(hwnd).unwrap().rows[0].status(), "Discarded");
-        assert!(temp.notebook().join(&job.raw).exists());
-        discard_selected(hwnd);
         assert!(
-            !temp.notebook().join(&job.raw).exists(),
-            "without a note, Del deletes the capture"
+            state(hwnd).unwrap().rows.is_empty(),
+            "a discarded note leaves the list"
         );
+        assert!(temp.notebook().join(&job.raw).exists());
+
+        // Ctrl+Z writes it back and the capture is done again.
+        undo_last(hwnd);
+        assert_eq!(std::fs::read_to_string(&note_path).unwrap(), edited);
+        let back = store.get(&job.capture_id).unwrap();
+        assert_eq!(back.state, State::Done);
+        assert_eq!(back.note.unwrap().path, written.path);
+
+        // Without a note, Del deletes the capture.
+        let mut queued = store.get(&job.capture_id).unwrap();
+        queued.state = State::Failed;
+        queued.note = None;
+        store.put(&queued).unwrap();
+        reload(hwnd);
+        discard_selected(hwnd);
+        assert!(!temp.notebook().join(&job.raw).exists());
         assert!(store.get(&job.capture_id).is_none());
 
         unsafe { DestroyWindow(hwnd) };
+    }
+
+    /// A note waiting in the inbox for a new capture of `title`, suggesting `home`.
+    fn inbox_note(
+        temp: &crate::runner::process::tests::Temp,
+        title: &str,
+        home: Option<&str>,
+    ) -> Job {
+        let mut job = temp.capture(title);
+        let path = PathBuf::from(format!(r"inbox\{title}.md"));
+        let home = home
+            .map(|home| format!("suggested_home: \"{home}\"\n"))
+            .unwrap_or_default();
+        let text = format!(
+            "---\ntype: capture\ncaptured: 2026-10-19T10:00\nsummary: \"About {title}.\"\n{home}status: inbox\n---\n\n# {title}\n"
+        );
+        let absolute = temp.notebook().join(&path);
+        std::fs::create_dir_all(absolute.parent().unwrap()).unwrap();
+        std::fs::write(&absolute, text).unwrap();
+        job.state = State::Done;
+        job.note = Some(crate::note::write::Written {
+            path,
+            stamp: crate::note::write::Stamp::of(&absolute).unwrap(),
+        });
+        temp.store().put(&job).unwrap();
+        job
+    }
+
+    fn select_titled(hwnd: HWND, title: &str) {
+        let review = state(hwnd).unwrap();
+        let index = review
+            .rows
+            .iter()
+            .position(|row| row.title == title)
+            .unwrap_or_else(|| panic!("{title} isn't listed"));
+        select(review, index);
+    }
+
+    fn titles(hwnd: HWND) -> Vec<String> {
+        let mut titles: Vec<String> = state(hwnd)
+            .unwrap()
+            .rows
+            .iter()
+            .map(|row| row.title.clone())
+            .collect();
+        titles.sort();
+        titles
+    }
+
+    fn preview(hwnd: HWND) -> String {
+        let review = state(hwnd).unwrap();
+        let mut buffer = vec![0u16; 4096];
+        let length = unsafe {
+            windows_sys::Win32::UI::WindowsAndMessaging::GetWindowTextW(
+                review.preview,
+                buffer.as_mut_ptr(),
+                buffer.len() as i32,
+            )
+        };
+        String::from_utf16_lossy(&buffer[..length.max(0) as usize])
+    }
+
+    #[test]
+    fn notes_are_filed_kept_and_put_back_from_the_keyboard() {
+        use crate::runner::process::tests::Temp;
+        let temp = Temp::new("review-filing");
+        let notebook = temp.notebook();
+        let write = |path: &str, text: &str| {
+            let path = notebook.join(path);
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            std::fs::write(path, text).unwrap();
+        };
+        write(
+            r"Payments\Payments incidents.md",
+            "---\ntype: topic\n---\n# Payments incidents\n\n- 2026-10-01 [[Old outage]]\n",
+        );
+        write(r"Payments\Incidents\Earlier.md", "# Earlier\n");
+        let lag = inbox_note(&temp, "Lag spikes", Some("[[Payments incidents]]"));
+        let rebalance = inbox_note(&temp, "Rebalance", Some("Payments/Incidents/"));
+        inbox_note(&temp, "Soup", None);
+        let queued = temp.capture("still being written");
+
+        let indexes = Indexes::new(None);
+        let seen = Rc::new(RefCell::new(Seen::default()));
+        let hwnd = open(Open {
+            queue: temp.0.join("queue"),
+            settings: None,
+            notebook: Some(notebook.clone()),
+            indexes: Some(indexes.clone()),
+            actions: Box::new(Watch(seen.clone())),
+        })
+        .unwrap();
+        assert_eq!(
+            titles(hwnd),
+            ["Lag spikes", "Rebalance", "Soup", "still being written"]
+        );
+        select_titled(hwnd, "Lag spikes");
+        assert!(
+            footer_text(state(hwnd).unwrap())
+                .starts_with("Enter file \u{2192} Payments incidents \u{00B7} H home")
+        );
+
+        // Enter files to the topic note: listed there, moved beside it.
+        enter(hwnd);
+        assert_eq!(
+            std::fs::read_to_string(notebook.join(r"Payments\Payments incidents.md")).unwrap(),
+            "---\ntype: topic\n---\n# Payments incidents\n\n- 2026-10-01 [[Old outage]]\n- 2026-10-19 [[Lag spikes]]: About Lag spikes.\n"
+                .replace("2026-10-19", &crate::notebook::dates::format(crate::platform::clock::local_now().0, "YYYY-MM-DD"))
+        );
+        let filed = temp.store().get(&lag.capture_id).unwrap().note.unwrap();
+        assert_eq!(filed.path, PathBuf::from(r"Payments\Lag spikes.md"));
+        assert!(
+            std::fs::read_to_string(notebook.join(&filed.path))
+                .unwrap()
+                .contains("status: filed\n")
+        );
+        assert_eq!(titles(hwnd), ["Rebalance", "Soup", "still being written"]);
+
+        // Enter files to a folder; Ctrl+Z puts it back in the inbox and the list.
+        select_titled(hwnd, "Rebalance");
+        enter(hwnd);
+        assert!(notebook.join(r"Payments\Incidents\Rebalance.md").exists());
+        assert!(!notebook.join(r"inbox\Rebalance.md").exists());
+        assert_eq!(titles(hwnd), ["Soup", "still being written"]);
+        undo_last(hwnd);
+        assert!(notebook.join(r"inbox\Rebalance.md").exists());
+        assert!(!notebook.join(r"Payments\Incidents\Rebalance.md").exists());
+        assert_eq!(
+            temp.store()
+                .get(&rebalance.capture_id)
+                .unwrap()
+                .note
+                .unwrap()
+                .path,
+            PathBuf::from(r"inbox\Rebalance.md")
+        );
+        assert_eq!(titles(hwnd), ["Rebalance", "Soup", "still being written"]);
+
+        // H: the picker, narrowed by typing, files where you pick.
+        select_titled(hwnd, "Soup");
+        pick_home(hwnd);
+        assert!(super::super::home_picker::find().is_some());
+        super::super::home_picker::type_text("incidents folder");
+        let picker = super::super::home_picker::find().unwrap();
+        unsafe { SendMessageW(picker, WM_COMMAND, IDOK as usize, 0) };
+        assert!(notebook.join(r"Payments\Incidents\Soup.md").exists());
+        assert_eq!(titles(hwnd), ["Rebalance", "still being written"]);
+
+        // I keeps it in the inbox and off the list.
+        select_titled(hwnd, "Rebalance");
+        keep_selected(hwnd);
+        assert!(
+            std::fs::read_to_string(notebook.join(r"inbox\Rebalance.md"))
+                .unwrap()
+                .contains("status: kept\n")
+        );
+        assert_eq!(titles(hwnd), ["still being written"]);
+
+        // Enter on a capture with no note opens the folder.
+        select_titled(hwnd, "still being written");
+        enter(hwnd);
+        assert_eq!(seen.borrow().folders, [notebook.join("raw")]);
+        assert!(temp.store().get(&queued.capture_id).is_some());
+        temp.store().remove(&queued.capture_id);
+
+        // A topic note that can't be written leaves the note in the list, with the reason.
+        inbox_note(&temp, "Another lag", Some("[[Payments incidents]]"));
+        reload(hwnd);
+        // Another program holds the topic note open, sharing nothing.
+        use std::os::windows::fs::OpenOptionsExt;
+        let held = std::fs::OpenOptions::new()
+            .read(true)
+            .share_mode(0)
+            .open(notebook.join(r"Payments\Payments incidents.md"))
+            .unwrap();
+        select_titled(hwnd, "Another lag");
+        enter(hwnd);
+        drop(held);
+        assert!(
+            preview(hwnd).starts_with(
+                "Couldn't file this note: Couldn't add the note to Payments incidents"
+            ),
+            "{}",
+            preview(hwnd)
+        );
+        assert!(titles(hwnd).contains(&"Another lag".to_owned()));
+        assert!(notebook.join(r"inbox\Another lag.md").exists());
+
+        unsafe { DestroyWindow(hwnd) };
+        indexes.stop();
     }
 
     #[test]
@@ -1029,6 +1557,7 @@ mod tests {
             queue: queue.clone(),
             settings: None,
             notebook: Some(notebook.clone()),
+            indexes: None,
             actions: Box::new(Watch(seen.clone())),
         })
         .unwrap();
@@ -1093,6 +1622,7 @@ mod tests {
             queue: temp.join("queue"),
             settings: Some(settings.clone()),
             notebook: None,
+            indexes: None,
             actions: Box::new(Watch(Rc::default())),
         })
         .unwrap();

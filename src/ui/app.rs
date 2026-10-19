@@ -153,8 +153,11 @@ pub fn run() -> i32 {
 
     let mut message: MSG = unsafe { std::mem::zeroed() };
     while unsafe { GetMessageW(&mut message, std::ptr::null_mut(), 0, 0) } > 0 {
-        // Tab, Enter and Esc in the review and Settings windows.
-        if review::dialog_message(&message) || settings_window::dialog_message(&message) {
+        // Tab, Enter and Esc in the home picker, the review and Settings windows.
+        if super::home_picker::dialog_message(&message)
+            || review::dialog_message(&message)
+            || settings_window::dialog_message(&message)
+        {
             continue;
         }
         unsafe {
@@ -362,7 +365,7 @@ impl App {
         self.refresh_tip();
     }
 
-    /// Captures waiting, notes written, and failures.
+    /// Captures waiting, notes waiting in the inbox, and failures.
     fn queue_counts(&self) -> (usize, usize, usize) {
         let Some(queue) = &self.context.queue else {
             return (0, 0, 0);
@@ -370,9 +373,26 @@ impl App {
         let jobs = Store::new(queue.clone()).list();
         let count =
             |wanted: fn(&crate::queue::Job) -> bool| jobs.iter().filter(|job| wanted(job)).count();
+        let mut folders: std::collections::HashMap<PathBuf, PathBuf> = Default::default();
+        let in_inbox = jobs
+            .iter()
+            .filter(|job| job.state == State::Done)
+            .filter(|job| {
+                let Some(note) = &job.note else {
+                    return false;
+                };
+                let folder = folders.entry(job.notebook.clone()).or_insert_with(|| {
+                    crate::notebook::Conventions::load(&job.notebook)
+                        .capture_folder()
+                        .to_path_buf()
+                });
+                std::fs::read_to_string(job.notebook.join(&note.path))
+                    .is_ok_and(|text| super::review_list::waits_in_inbox(&note.path, &text, folder))
+            })
+            .count();
         (
             count(|job| matches!(job.state, State::Queued | State::Working)),
-            count(|job| job.state == State::Done && job.note.is_some()),
+            in_inbox,
             count(|job| job.state == State::Failed),
         )
     }
@@ -402,7 +422,7 @@ impl App {
         });
         if notes > 0 {
             tip.push_str(&format!(
-                "\n{notes} note{} to review",
+                "\n{notes} note{} in the inbox",
                 if notes == 1 { "" } else { "s" }
             ));
         }
@@ -520,6 +540,7 @@ fn open_review(window: HWND) {
         queue,
         settings,
         notebook,
+        indexes: INDEXES.get().cloned(),
         actions: Box::new(review::ShellActions {
             // A capture queued again (R) needs the worker.
             on_change: Box::new(move || {

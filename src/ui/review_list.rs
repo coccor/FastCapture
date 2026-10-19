@@ -1,9 +1,12 @@
-//! What the review window lists: one row per capture, newest first, from the queue, the raw
-//! sources and the notes written for them. Pure: the caller reads the files.
+//! What the review window lists, newest first: the notes FastCapture wrote that wait in the
+//! inbox (`type: capture`, `status: inbox`, in the capture folder), and the captures still
+//! queued, being written or failed. Filed, kept and discarded notes leave the list. Pure: the
+//! caller reads the files.
 
 use crate::capture::read::{self, RawInfo};
 use crate::note::write::Written;
 use crate::notebook::dates::{self, Date};
+use crate::notebook::frontmatter::{self, Value};
 use crate::queue::{Job, State};
 use std::path::{Path, PathBuf};
 
@@ -25,6 +28,9 @@ pub struct Row {
     pub note: Option<Written>,
     /// The note's text now, when it is still there.
     pub note_text: Option<String>,
+    /// Where the note suggests it be filed, as written: `[[Payments incidents]]`,
+    /// `Payments/Incidents/`.
+    pub home: Option<String>,
 }
 
 impl Row {
@@ -36,6 +42,21 @@ impl Row {
         self.note
             .as_ref()
             .map(|note| self.notebook.join(&note.path))
+    }
+
+    /// What the Home column says: the suggestion without its brackets.
+    pub fn home_label(&self) -> String {
+        match &self.home {
+            Some(home) => {
+                let name = home
+                    .strip_prefix("[[")
+                    .and_then(|name| name.strip_suffix("]]"))
+                    .unwrap_or(home);
+                format!("\u{2192} {name}")
+            }
+            None if self.note_text.is_some() => "No home".to_owned(),
+            None => String::new(),
+        }
     }
 
     /// What the State column says.
@@ -56,9 +77,37 @@ fn note_title(text: &str) -> Option<String> {
         .filter(|title| !title.is_empty())
 }
 
-/// The rows for `jobs`, newest first, reading each raw source with `read_file` (absolute path).
-/// The second list holds the jobs whose raw source is gone.
-pub fn rows(jobs: Vec<Job>, read_file: impl Fn(&Path) -> Option<String>) -> (Vec<Row>, Vec<Job>) {
+/// Whether the note at `path` (relative to its notebook), whose text is `text`, waits in the
+/// inbox: FastCapture wrote it, it is still `status: inbox`, and it is in `capture_folder`.
+pub fn waits_in_inbox(path: &Path, text: &str, capture_folder: &Path) -> bool {
+    let Some(front) = frontmatter::parse(text) else {
+        return false;
+    };
+    let is = |key: &str, wanted: &str| matches!(front.get(key), Some(Value::Text(value)) if value.trim().eq_ignore_ascii_case(wanted));
+    let folder = path.parent().unwrap_or(Path::new(""));
+    is("type", "capture")
+        && is("status", "inbox")
+        && folder
+            .to_string_lossy()
+            .eq_ignore_ascii_case(&capture_folder.to_string_lossy())
+}
+
+/// The note's `suggested_home:`, as written.
+fn suggested_home(text: &str) -> Option<String> {
+    match frontmatter::parse(text)?.get("suggested_home")? {
+        Value::Text(home) if !home.trim().is_empty() => Some(home.trim().to_owned()),
+        _ => None,
+    }
+}
+
+/// The rows for `jobs`, newest first, reading each raw source with `read_file` (absolute path)
+/// and asking `capture_folder` where a notebook's notes wait. The second list holds the jobs
+/// whose raw source is gone.
+pub fn rows(
+    jobs: Vec<Job>,
+    read_file: impl Fn(&Path) -> Option<String>,
+    capture_folder: impl Fn(&Path) -> PathBuf,
+) -> (Vec<Row>, Vec<Job>) {
     let mut rows = Vec::new();
     let mut gone = Vec::new();
     for job in jobs {
@@ -71,6 +120,20 @@ pub fn rows(jobs: Vec<Job>, read_file: impl Fn(&Path) -> Option<String>) -> (Vec
             .note
             .as_ref()
             .and_then(|note| read_file(&job.notebook.join(&note.path)));
+        let listed = match job.state {
+            State::Queued | State::Working | State::Failed => true,
+            State::Done => match (&job.note, &note_text) {
+                (Some(note), Some(text)) => {
+                    waits_in_inbox(&note.path, text, &capture_folder(&job.notebook))
+                }
+                _ => false,
+            },
+            State::Discarded => false,
+        };
+        if !listed {
+            continue;
+        }
+        let home = note_text.as_deref().and_then(suggested_home);
         let title = note_text
             .as_deref()
             .and_then(note_title)
@@ -95,6 +158,7 @@ pub fn rows(jobs: Vec<Job>, read_file: impl Fn(&Path) -> Option<String>) -> (Vec
             info,
             note: job.note,
             note_text,
+            home,
         });
     }
     rows.sort_by(|a, b| {
@@ -193,6 +257,7 @@ mod tests {
                 job("C", "2026-10-19T11:00", r"raw\gone.md"),
             ],
             |path| files.get(path).cloned(),
+            |_| PathBuf::from("inbox"),
         );
         assert_eq!(gone.len(), 1);
         assert_eq!(gone[0].capture_id, "C");
@@ -205,7 +270,7 @@ mod tests {
     }
 
     #[test]
-    fn a_written_note_names_the_row_and_leads_the_preview() {
+    fn inbox_notes_are_listed_and_filed_kept_or_discarded_ones_are_not() {
         use crate::note::write::Stamp;
         let files: HashMap<PathBuf, String> = [
             (
@@ -214,7 +279,19 @@ mod tests {
             ),
             (
                 PathBuf::from(r"D:\Notes\inbox\Lag.md"),
-                "---\ntype: capture\n---\n\n# Consumer lag spikes\n\n> Summary.\n".to_owned(),
+                "---\ntype: capture\nsuggested_home: \"[[Payments incidents]]\"\nstatus: inbox\n---\n\n# Consumer lag spikes\n\n> Summary.\n".to_owned(),
+            ),
+            (
+                PathBuf::from(r"D:\Notes\Payments\Filed.md"),
+                "---\ntype: capture\nstatus: filed\n---\n# Filed\n".to_owned(),
+            ),
+            (
+                PathBuf::from(r"D:\Notes\inbox\Kept.md"),
+                "---\ntype: capture\nstatus: kept\n---\n# Kept\n".to_owned(),
+            ),
+            (
+                PathBuf::from(r"D:\Notes\inbox\Plain.md"),
+                "---\nstatus: inbox\n---\n# Not ours\n".to_owned(),
             ),
         ]
         .into();
@@ -237,7 +314,28 @@ mod tests {
         });
         let mut discarded = job("C", "2026-10-19T07:00", r"raw\a.md");
         discarded.state = State::Discarded;
-        let (rows, _) = rows(vec![done, gone, discarded], |path| files.get(path).cloned());
+        let elsewhere = |id: &str, path: &str| {
+            let mut job = job(id, "2026-10-19T06:00", r"raw\a.md");
+            job.state = State::Done;
+            job.note = Some(Written {
+                path: PathBuf::from(path),
+                ..note
+            });
+            job
+        };
+        let (rows, _) = rows(
+            vec![
+                done,
+                gone,
+                discarded,
+                elsewhere("D", r"Payments\Filed.md"),
+                elsewhere("E", r"inbox\Kept.md"),
+                elsewhere("F", r"inbox\Plain.md"),
+            ],
+            |path| files.get(path).cloned(),
+            |_| PathBuf::from("Inbox"),
+        );
+        assert_eq!(rows.len(), 1, "only the note waiting in the inbox");
 
         assert_eq!(rows[0].title, "Consumer lag spikes");
         assert_eq!(rows[0].status(), "Note");
@@ -254,12 +352,7 @@ mod tests {
             preview
                 .contains("> Summary.\r\n\r\n──────── Raw source ────────\r\n\r\n---\r\ntype: raw")
         );
-        assert_eq!(
-            (rows[1].title.as_str(), rows[1].status()),
-            ("lag", "Note gone")
-        );
-        assert_eq!(rows[2].status(), "Discarded");
-        assert!(!preview_text(&rows[2]).contains("Raw source"));
+        assert_eq!(rows[0].home_label(), "\u{2192} Payments incidents");
     }
 
     #[test]

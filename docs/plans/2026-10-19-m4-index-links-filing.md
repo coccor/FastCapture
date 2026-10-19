@@ -87,10 +87,10 @@ src/
 
 ### Part 6: The review window
 
-- [ ] The list shows FastCapture's notes with `status: inbox` in the capture folder (`type: capture`), newest first, with their suggested home under the title, plus queued, working and failed jobs (§10.1).
-- [ ] **Enter** files to the suggested home; **H** opens `ui/home_picker.rs` (folders and home notes, filtered as you type, the suggestion first) and files there; **I** sets `status: kept` and takes the note off the list; **Ctrl+Z** undoes the last file or discard of this session. Enter opens the folder when there's no suggestion. The footer shows the keys that apply.
-- [ ] A note filed, kept or undone updates its job (its path and stamp), so **R** still finds it.
-- [ ] The tray icon's count is the notes waiting in the inbox.
+- [x] The list shows FastCapture's notes with `status: inbox` in the capture folder (`type: capture`), newest first, with their suggested home under the title, plus queued, working and failed jobs (§10.1). A ListView row has one line, so the home is its own column (`→ Payments incidents`) in place of Kind. Discarded notes leave the list too; Ctrl+Z brings one back.
+- [x] **Enter** files to the suggested home; **H** opens `ui/home_picker.rs` (folders and home notes, filtered as you type, the suggestion first) and files there; **I** sets `status: kept` and takes the note off the list; **Ctrl+Z** undoes the last file or discard of this session. Enter opens the folder when there's no suggestion. The footer shows the keys that apply. A topic suggestion is found through the notebook's index (waiting up to 3 s), and the line in the topic note links the moved note by the name FastPad would use from there. The picker is modeless, so the note is filed by its capture, whatever is selected by then.
+- [x] A note filed, kept or undone updates its job (its path and stamp), so **R** still finds it.
+- [x] The tray icon's count is the notes waiting in the inbox. The count is in the tooltip, as before: "2 notes in the inbox".
 - **Tests:** driven through messages: Enter files to a folder and to a topic note; H picks a home typed in the picker; I keeps; Ctrl+Z puts a filed note back; a failed append leaves the note in the list with the error.
 
 ### Part 7: End to end
