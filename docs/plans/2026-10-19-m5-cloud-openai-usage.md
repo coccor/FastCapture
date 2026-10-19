@@ -78,8 +78,8 @@ src/
 
 ### Part 6: End to end
 
-- [ ] `runner/end_to_end.rs`: a capture written by a scripted OpenAI-compatible server, with its tokens in the ledger; the cap reached pauses the next job, and raising it lets it run.
-- [ ] `examples/live_note.rs` uses whichever cloud backend the settings choose, and prints its tokens the same way for both.
+- [x] `runner/end_to_end.rs`: a capture written by a scripted OpenAI-compatible server, with its tokens in the ledger; the cap reached pauses the next job, and raising it lets it run.
+- [x] `examples/live_note.rs` uses whichever cloud backend the settings choose, and prints its tokens the same way for both. `--effort` applies to the Claude API only.
 - [ ] Measure with `examples/live_note.rs` (with your approval, with a key you add in Settings yourself) on a provider you choose: one text capture, one screenshot, one link; tokens and time against the Claude numbers from M2–M4.
 
 ### Part 7: Polish and docs

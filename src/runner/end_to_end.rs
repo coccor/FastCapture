@@ -1,6 +1,7 @@
 //! End to end, without the internet: a capture (a screenshot, a link, a PDF) is filed and queued
 //! as the box files it, the worker fetches what it links to and takes it to the Claude backend
-//! (both from scripted servers on loopback), and the note it writes is checked.
+//! or an OpenAI-compatible API (all scripted servers on loopback), and the note it writes, and
+//! the tokens it used, are checked.
 
 use super::worker::{Factory, Worker};
 use crate::capture::submit::submit;
@@ -12,6 +13,8 @@ use crate::platform::png::{Pixels, encode_png};
 use crate::queue::{State, Store};
 use serde_json::json;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
 struct ClaudeAt(String);
@@ -449,4 +452,147 @@ fn a_capture_links_its_notebook_and_is_filed_under_a_topic() {
     assert!(moved.contains("status: filed\n") && !moved.contains("suggested_home"));
     assert!(!notebook.join(&written.path).exists());
     indexes.stop();
+}
+
+/// An OpenAI-compatible cloud API at a scripted server, with a monthly cap read each time.
+struct OpenAiAt(String, Arc<AtomicU64>);
+
+impl Factory for OpenAiAt {
+    fn backend(&self) -> Result<Box<dyn Backend>, String> {
+        crate::model::openai::OpenAi::new(
+            &format!("{}/v1", self.0),
+            "gpt-test",
+            Some("sk-e2e".into()),
+            "cloud",
+            Duration::from_secs(5),
+        )
+        .map(|backend| Box::new(backend) as Box<dyn Backend>)
+        .map_err(|error| error.to_string())
+    }
+
+    fn token_cap(&self) -> Option<u64> {
+        Some(self.1.load(Ordering::SeqCst)).filter(|cap| *cap > 0)
+    }
+}
+
+/// A chat completion with a note titled `title` that used 1,000 input tokens (400 cached) and
+/// 200 output tokens.
+fn chat_reply(title: &str) -> String {
+    let note = json!({
+        "title": title,
+        "summary": "Lag during the batch.",
+        "body": "Consumer lag spikes when the ledger batch runs.",
+        "key_points": [],
+        "tasks": [],
+        "tags": ["kafka"],
+        "links": [],
+        "home": null
+    });
+    json!({
+        "id": "chatcmpl-e2e",
+        "object": "chat.completion",
+        "choices": [{"index": 0, "finish_reason": "stop",
+            "message": {"role": "assistant", "content": note.to_string(), "refusal": null}}],
+        "usage": {"prompt_tokens": 1000, "completion_tokens": 200,
+            "prompt_tokens_details": {"cached_tokens": 400}}
+    })
+    .to_string()
+}
+
+/// Waits up to ten seconds for `done`.
+fn wait_for(what: &str, done: impl Fn() -> bool) {
+    let until = std::time::Instant::now() + Duration::from_secs(10);
+    while !done() {
+        assert!(std::time::Instant::now() < until, "waited for {what}");
+        std::thread::sleep(Duration::from_millis(20));
+    }
+}
+
+#[test]
+fn an_openai_compatible_api_writes_notes_counts_their_tokens_and_stops_at_the_cap() {
+    let temp = Temp::new("openai");
+    let queue = temp.0.join("queue");
+    let ledger = temp.0.join(super::usage::FILE);
+    let server = TestServer::start(vec![
+        Scripted::json(200, &chat_reply("Lag during the ledger batch")),
+        Scripted::json(200, &chat_reply("Batch size and lag")),
+    ]);
+    // The first note's 1,200 tokens reach the cap.
+    let cap = Arc::new(AtomicU64::new(1_200));
+    let first = temp.submit(Capture {
+        text: "lag spikes during ledger batch".to_owned(),
+        ..Capture::default()
+    });
+    let worker = Worker::start(
+        queue.clone(),
+        Box::new(OpenAiAt(server.url(), cap.clone())),
+        None,
+        Some(ledger.clone()),
+        Box::new(|| {}),
+    );
+    let store = Store::new(queue.clone());
+    wait_for("the first note", || {
+        store
+            .get(&first.capture_id)
+            .is_some_and(|job| job.state == State::Done)
+    });
+
+    let written = store.get(&first.capture_id).unwrap().note.unwrap();
+    let note = std::fs::read_to_string(temp.0.join("Work notes").join(&written.path)).unwrap();
+    assert!(note.contains("model: \"cloud/gpt-test\""), "{note}");
+    assert!(note.contains("# Lag during the ledger batch"), "{note}");
+    let seen = &server.requests()[0];
+    assert_eq!(seen.path, "/v1/chat/completions");
+    assert_eq!(seen.header("authorization"), Some("Bearer sk-e2e"));
+    let body = seen.json();
+    assert_eq!(body["model"], "gpt-test");
+    assert_eq!(body["response_format"]["type"], "json_schema");
+    let today = super::usage::today();
+    assert_eq!(
+        super::usage::Ledger::load(&ledger).day(&today),
+        crate::model::Usage {
+            input: 600,
+            cache_read: 400,
+            cache_write: 0,
+            output: 200
+        }
+    );
+
+    // The next capture waits: this month's tokens have reached the cap.
+    let second = temp.submit(Capture {
+        text: "batch size vs lag".to_owned(),
+        ..Capture::default()
+    });
+    let second = if second.capture_id == first.capture_id {
+        store
+            .list()
+            .into_iter()
+            .find(|job| job.capture_id != first.capture_id)
+            .unwrap()
+    } else {
+        second
+    };
+    worker.waker().wake();
+    wait_for("the cap's pause", || {
+        matches!(
+            worker.status(),
+            super::Status::Paused(Some(ref reason)) if reason.starts_with("This month's token cap (1,200) is reached")
+        )
+    });
+    assert_eq!(store.get(&second.capture_id).unwrap().state, State::Queued);
+    assert_eq!(server.requests().len(), 1, "nothing more was sent");
+
+    // A higher cap lets it run.
+    cap.store(10_000, Ordering::SeqCst);
+    worker.waker().wake();
+    wait_for("the second note", || {
+        store
+            .get(&second.capture_id)
+            .is_some_and(|job| job.state == State::Done)
+    });
+    worker.stop();
+    assert_eq!(
+        super::usage::Ledger::load(&ledger).month(&today).total(),
+        2_400
+    );
 }

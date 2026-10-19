@@ -1,6 +1,7 @@
 //! One real note from a sample capture, with the backend your settings choose, to see what a
 //! model writes and what it costs. In Cloud mode this makes a real API request, billed to your
-//! Anthropic account; it never runs in `cargo test` or CI.
+//! account with the provider Settings chose (Anthropic, or the OpenAI-compatible API); it never
+//! runs in `cargo test` or CI. `--effort` applies to the Claude API only.
 //!
 //! ```text
 //! cargo run --release --example live_note -- [--dry-run] [--effort low|medium|high] [--notebook PATH] [--attach PATH]… ["text"]
@@ -18,7 +19,7 @@
 
 use fastcapture::capture::submit::submit;
 use fastcapture::capture::{Attachment, Capture};
-use fastcapture::config::settings::{self, Mode, SettingsFile};
+use fastcapture::config::settings::{self, CloudBackend, Mode, SettingsFile};
 use fastcapture::model::Backend;
 use fastcapture::model::claude::Claude;
 use fastcapture::model::request;
@@ -57,8 +58,8 @@ fn main() {
 
     let path = settings::settings_path().expect("APPDATA is set");
     let settings = SettingsFile::load(&path).settings().0;
-    let backend: Box<dyn Backend> = match (settings.mode, effort) {
-        (Some(Mode::Cloud), Some(effort)) => {
+    let backend: Box<dyn Backend> = match (settings.mode, settings.backend, effort) {
+        (Some(Mode::Cloud), CloudBackend::Claude, Some(effort)) => {
             let key = fastcapture::secrets::load(&fastcapture::secrets::target("claude"))
                 .expect("a Claude API key saved in Settings");
             Box::new(
