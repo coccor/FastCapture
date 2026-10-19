@@ -137,14 +137,56 @@ pub fn parse(text: &str) -> Result<NoteJson, ReplyError> {
     })
 }
 
-/// What a note may link to: the candidate notes the model was offered, and whether new notes
-/// may be suggested. M2 offers none.
+/// What a note may link to and be filed under: the candidate notes the model was offered by
+/// name, the home notes among them, and the folders offered (`Payments/Incidents/`). New notes
+/// may be linked only when candidates were offered.
 #[derive(Clone, Debug, Default)]
 pub struct Allowed<'a> {
     pub notes: &'a [String],
-    pub homes: &'a [String],
-    pub new_notes: bool,
+    pub home_notes: &'a [String],
+    pub home_folders: &'a [String],
 }
+
+impl Allowed<'_> {
+    /// The offered spelling of the candidate `name` names.
+    fn note(&self, name: &str) -> Option<&String> {
+        self.notes
+            .iter()
+            .find(|candidate| candidate.eq_ignore_ascii_case(name.trim()))
+    }
+
+    /// The home `home` names, as offered: a home note, else a folder.
+    fn home(&self, home: &Home) -> Option<Home> {
+        let note = home.note.trim();
+        let note = note
+            .strip_prefix("[[")
+            .and_then(|note| note.strip_suffix("]]"))
+            .unwrap_or(note);
+        let found_note = self
+            .home_notes
+            .iter()
+            .find(|candidate| candidate.eq_ignore_ascii_case(note));
+        let found = match found_note {
+            Some(name) => Some((HOME_TOPIC, name)),
+            None => crate::file::home::normalize_folder(note).and_then(|folder| {
+                self.home_folders
+                    .iter()
+                    .find(|candidate| candidate.eq_ignore_ascii_case(&folder))
+                    .map(|name| (HOME_FOLDER, name))
+            }),
+        };
+        found.map(|(kind, name)| Home {
+            kind: kind.to_owned(),
+            note: name.clone(),
+            reason: home.reason.trim().to_owned(),
+        })
+    }
+}
+
+/// `Home::kind` for a home note.
+pub const HOME_TOPIC: &str = "topic";
+/// `Home::kind` for a folder.
+pub const HOME_FOLDER: &str = "folder";
 
 /// `note` with every field trimmed and capped, tags cleaned, and links and the home kept only
 /// when `allowed`. An empty title becomes `fallback_title`.
@@ -173,27 +215,37 @@ pub fn check(note: NoteJson, fallback_title: &str, allowed: &Allowed<'_>) -> Not
         }
     }
     tags.truncate(TAG_LIMIT);
-    let links = note
-        .links
-        .into_iter()
-        .filter(|link| {
-            allowed
-                .notes
+    let mut links: Vec<Link> = Vec::new();
+    for link in note.links {
+        let name = line(&link.note);
+        let name = name
+            .strip_prefix("[[")
+            .and_then(|name| name.strip_suffix("]]"))
+            .unwrap_or(&name)
+            .trim()
+            .to_owned();
+        // A note offered is linked as offered, even when the model marked it new.
+        let kept = match allowed.note(&name) {
+            Some(candidate) => Some(Link {
+                note: candidate.clone(),
+                new: false,
+            }),
+            None if link.new && !allowed.notes.is_empty() && is_new_name(&name) => Some(Link {
+                note: name,
+                new: true,
+            }),
+            None => None,
+        };
+        if let Some(kept) = kept
+            && !links
                 .iter()
-                .any(|candidate| candidate.eq_ignore_ascii_case(link.note.trim()))
-                || (allowed.new_notes && link.new && !link.note.trim().is_empty())
-        })
-        .map(|link| Link {
-            note: link.note.trim().to_owned(),
-            new: link.new,
-        })
-        .collect();
-    let home = note.home.filter(|home| {
-        allowed
-            .homes
-            .iter()
-            .any(|candidate| candidate.eq_ignore_ascii_case(home.note.trim()))
-    });
+                .any(|known| known.note.eq_ignore_ascii_case(&kept.note))
+        {
+            links.push(kept);
+        }
+    }
+    links.truncate(LIST_LIMIT);
+    let home = note.home.as_ref().and_then(|home| allowed.home(home));
     NoteJson {
         title,
         summary: cap(&line(&note.summary), SUMMARY_LIMIT),
@@ -204,6 +256,13 @@ pub fn check(note: NoteJson, fallback_title: &str, allowed: &Allowed<'_>) -> Not
         links,
         home,
     }
+}
+
+/// Whether `name` can be a new note's wikilink: a name, not a path or a link with parts.
+fn is_new_name(name: &str) -> bool {
+    !name.is_empty()
+        && name.chars().count() <= TITLE_LIMIT
+        && !name.contains(['[', ']', '|', '#', '/', '\\', '^'])
 }
 
 /// `text` cut to at most `limit` characters, at a word boundary when there is one, with `…`.
@@ -321,8 +380,7 @@ mod tests {
             "fallback",
             &Allowed {
                 notes: &candidates,
-                homes: &[],
-                new_notes: false,
+                ..Allowed::default()
             },
         );
         assert!(checked.title.chars().count() <= TITLE_LIMIT);
@@ -334,15 +392,24 @@ mod tests {
         assert_eq!(checked.tags, ["Payments", "ledger-batch", "c", "a/b", "x"]);
         assert_eq!(
             checked.links,
-            [Link {
-                note: "Payments incidents".into(),
-                new: false
-            }]
+            [
+                Link {
+                    note: "payments incidents".into(),
+                    new: false
+                },
+                Link {
+                    note: "Ledger batch".into(),
+                    new: true
+                }
+            ]
         );
         assert_eq!(checked.home, None);
 
-        let m2 = check(note, "fallback", &Allowed::default());
-        assert!(m2.links.is_empty(), "M2 offers no candidates");
+        let none = check(note, "fallback", &Allowed::default());
+        assert!(
+            none.links.is_empty(),
+            "no candidates, no links, not even new ones"
+        );
         let empty_title = check(
             NoteJson {
                 title: " ".into(),
@@ -352,6 +419,88 @@ mod tests {
             &Allowed::default(),
         );
         assert_eq!(empty_title.title, "lag spikes during");
+    }
+
+    #[test]
+    fn links_are_kept_as_offered_once_and_new_ones_only_as_names() {
+        let link = |note: &str, new: bool| Link {
+            note: note.to_owned(),
+            new,
+        };
+        let candidates = ["Payments/Lag".to_owned(), "Kafka".to_owned()];
+        let checked = check(
+            NoteJson {
+                title: "t".into(),
+                links: vec![
+                    link("[[payments/lag]]", false),
+                    link("Payments/Lag", false),
+                    link("kafka", true),
+                    link("Search/Invented", true),
+                    link("Consumer groups", true),
+                    link("Made up", false),
+                ],
+                ..NoteJson::default()
+            },
+            "",
+            &Allowed {
+                notes: &candidates,
+                ..Allowed::default()
+            },
+        );
+        assert_eq!(
+            checked.links,
+            [
+                link("Payments/Lag", false),
+                link("Kafka", false),
+                link("Consumer groups", true)
+            ]
+        );
+    }
+
+    #[test]
+    fn a_home_is_kept_when_it_names_a_home_note_or_a_folder() {
+        let home = |kind: &str, note: &str| {
+            Some(Home {
+                kind: kind.to_owned(),
+                note: note.to_owned(),
+                reason: " fits ".to_owned(),
+            })
+        };
+        let notes = ["Payments incidents".to_owned(), "Kafka".to_owned()];
+        let home_notes = ["Payments incidents".to_owned()];
+        let folders = ["Payments/Incidents/".to_owned()];
+        let allowed = Allowed {
+            notes: &notes,
+            home_notes: &home_notes,
+            home_folders: &folders,
+        };
+        let checked = |suggested| {
+            check(
+                NoteJson {
+                    title: "t".into(),
+                    home: suggested,
+                    ..NoteJson::default()
+                },
+                "",
+                &allowed,
+            )
+            .home
+        };
+        assert_eq!(
+            checked(home("topic", "[[payments incidents]]")),
+            home("topic", "Payments incidents").map(|home| Home {
+                reason: "fits".into(),
+                ..home
+            })
+        );
+        assert_eq!(
+            checked(home("topic", r"payments\incidents")).map(|home| (home.kind, home.note)),
+            Some(("folder".to_owned(), "Payments/Incidents/".to_owned())),
+            "a folder named as a topic is still the folder"
+        );
+        assert_eq!(checked(home("topic", "Kafka")), None, "not a home type");
+        assert_eq!(checked(home("folder", "Elsewhere/")), None);
+        assert_eq!(checked(None), None);
     }
 
     #[test]

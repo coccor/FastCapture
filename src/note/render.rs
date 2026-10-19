@@ -2,7 +2,7 @@
 //! key points, tasks, related notes, the links captured and the capture's attachments. Empty
 //! sections are left out. Pure: the caller writes the text.
 
-use super::reply::NoteJson;
+use super::reply::{HOME_FOLDER, NoteJson};
 use crate::capture::detect;
 use crate::notebook::{links, title};
 use std::path::Path;
@@ -83,10 +83,13 @@ pub fn render(file: &NoteFile<'_>) -> String {
         text.push_str(&format!("summary: {}\n", quoted(&note.summary)));
     }
     if let Some(home) = &note.home {
-        text.push_str(&format!(
-            "suggested_home: {}\n",
-            quoted(&format!("[[{}]]", home.note))
-        ));
+        // A folder as `Payments/Incidents/`, a home note as a link to it.
+        let value = if home.kind == HOME_FOLDER {
+            home.note.clone()
+        } else {
+            format!("[[{}]]", home.note)
+        };
+        text.push_str(&format!("suggested_home: {}\n", quoted(&value)));
     }
     if !file.truncated.is_empty() {
         let names: Vec<String> = file.truncated.iter().map(|name| quoted(name)).collect();
@@ -303,6 +306,31 @@ mod tests {
         });
         assert!(linked.contains("suggested_home: \"[[Payments incidents]]\"\n"));
         assert!(linked.ends_with("## Related\n\n- [[Payments incidents]]\n"));
+
+        // An ambiguous name was offered as its path; a folder home is written as a folder.
+        note.links = vec![Link {
+            note: "Payments/Lag".into(),
+            new: false,
+        }];
+        note.home = Some(Home {
+            kind: "folder".into(),
+            note: "Payments/Incidents/".into(),
+            reason: String::new(),
+        });
+        let filed = render(&NoteFile {
+            note: &note,
+            captured: "2026-10-19T08:00",
+            capture_id: "ID",
+            raw: Path::new(r"raw\x.md"),
+            kinds: &[],
+            model: "local/llama",
+            attachments: &[],
+            links: &[],
+            truncated: &[],
+            path: Path::new(r"inbox\x.md"),
+        });
+        assert!(filed.contains("suggested_home: \"Payments/Incidents/\"\n"));
+        assert!(filed.ends_with("## Related\n\n- [[Payments/Lag]]\n"));
     }
 
     #[test]

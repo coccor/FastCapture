@@ -52,6 +52,7 @@ fn run_until_done(queue: &Path, capture_id: &str, server: &TestServer) -> Store 
     let worker = Worker::start(
         queue.to_path_buf(),
         Box::new(ClaudeAt(server.url())),
+        None,
         Box::new(|| {}),
     );
     let store = Store::new(queue.to_path_buf());

@@ -6,6 +6,7 @@ pub mod capture;
 pub mod config;
 pub mod error;
 pub mod extract;
+pub mod file;
 pub mod icon;
 pub mod index;
 pub mod ipc;

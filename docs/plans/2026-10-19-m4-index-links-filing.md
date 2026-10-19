@@ -69,11 +69,11 @@ src/
 
 ### Part 4: Candidates for the model
 
-- [ ] `model/request.rs`: the query is your text, the titles of read pages and the first 2,000 characters of the material; the top 30 notes (never the capture's own note) become candidates.
-- [ ] `model/prompt.rs`: `<candidate_notes>` with each candidate's name as the model should give it, aliases, folder, tags, type and snippet, and the notebook's 50 most used tags, all inside escaped blocks. The rules change only where they already talk about candidates.
-- [ ] `file/home.rs`: home candidates are the candidates whose `type:` is in `capture.ini`'s `home_types` (default `topic, project, moc`), and the folders that hold candidates.
-- [ ] `note/reply.rs`: `Allowed` now holds the candidates, home notes and folders. A link is kept when it names a candidate, or is marked `new` (§7.2). The home is kept when it names a home note or a folder. Anything else is dropped, as now.
-- [ ] `note/render.rs`: `## Related` links in the form FastPad's completion inserts (the name, or the path when the name is ambiguous, through FastPad's `wiki_target`, copied into `notebook::links`); `suggested_home: "[[Payments incidents]]"` for a note, `"Payments/Incidents/"` for a folder.
+- [x] `model/request.rs`: the query is your text, the titles of read pages and the first 2,000 characters of the material; the top 30 notes (never the capture's own note) become candidates. `build_with` takes the notebook's snapshot; `build` (no candidates) stays for the examples. The worker gets the indexes and waits for a snapshot in `process_with`.
+- [x] `model/prompt.rs`: `<candidate_notes>` with each candidate's name as the model should give it, aliases, folder, tags, type and snippet, and the notebook's 50 most used tags, all inside escaped blocks. The rules change only where they already talk about candidates. Home notes are marked `home="yes"`; the folders offered are in `<home_folders>`; the tags are one line after the blocks. `<candidate_notes>` is named as material, never instructions.
+- [x] `file/home.rs`: home candidates are the candidates whose `type:` is in `capture.ini`'s `home_types` (default `topic, project, moc`), and the folders that hold candidates (not the root or the capture folder).
+- [x] `note/reply.rs`: `Allowed` now holds the candidates, home notes and folders. A link is kept when it names a candidate, or is marked `new` (§7.2). The home is kept when it names a home note or a folder. Anything else is dropped, as now. Links and homes take the spelling offered; a new link must be a plain name and is kept only when candidates were offered; a folder named as a topic is still the folder.
+- [x] `note/render.rs`: `## Related` links in the form FastPad's completion inserts (the name, or the path when the name is ambiguous, through FastPad's `wiki_target`, copied into `notebook::links`); `suggested_home: "[[Payments incidents]]"` for a note, `"Payments/Incidents/"` for a folder.
 - **Tests:** golden user turns with candidates; links and homes kept or dropped; `## Related` with an ambiguous name; the capture's own note isn't a candidate.
 
 ### Part 5: Filing

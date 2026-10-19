@@ -729,6 +729,9 @@ fn test_request() -> NoteRequest {
             fallback_title: "Settings test".to_owned(),
             links: Vec::new(),
             truncated: Vec::new(),
+            candidates: Vec::new(),
+            home_notes: Vec::new(),
+            home_folders: Vec::new(),
         },
     }
 }

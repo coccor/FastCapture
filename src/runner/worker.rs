@@ -4,6 +4,7 @@
 //! backend again when the settings change.
 
 use super::process::{self, Outcome};
+use crate::index::service::Indexes;
 use crate::model::Backend;
 use crate::queue::{State, Store};
 use std::path::PathBuf;
@@ -83,9 +84,15 @@ pub struct Worker {
 }
 
 impl Worker {
-    /// Starts the worker on the jobs in `queue`. `changed` runs on the worker's thread whenever
-    /// its status or a job changes, to refresh the tray.
-    pub fn start(queue: PathBuf, factory: Box<dyn Factory>, changed: Box<dyn Fn() + Send>) -> Self {
+    /// Starts the worker on the jobs in `queue`, offering candidate notes from `indexes` when
+    /// given. `changed` runs on the worker's thread whenever its status or a job changes, to
+    /// refresh the tray.
+    pub fn start(
+        queue: PathBuf,
+        factory: Box<dyn Factory>,
+        indexes: Option<Indexes>,
+        changed: Box<dyn Fn() + Send>,
+    ) -> Self {
         let shared = Arc::new(Shared {
             signals: Mutex::new(Signals {
                 rebuild: true,
@@ -100,6 +107,7 @@ impl Worker {
                 &worker_shared,
                 &Store::new(queue),
                 factory.as_ref(),
+                indexes.as_ref(),
                 changed.as_ref(),
             );
         });
@@ -193,7 +201,13 @@ fn today() -> String {
     crate::notebook::dates::format(date, "YYYY-MM-DD")
 }
 
-fn run(shared: &Shared, store: &Store, factory: &dyn Factory, changed: &dyn Fn()) {
+fn run(
+    shared: &Shared,
+    store: &Store,
+    factory: &dyn Factory,
+    indexes: Option<&Indexes>,
+    changed: &dyn Fn(),
+) {
     let mut backend: Option<Box<dyn Backend>> = None;
     loop {
         let (stop, rebuild, paused) = match shared.signals.lock() {
@@ -269,7 +283,7 @@ fn run(shared: &Shared, store: &Store, factory: &dyn Factory, changed: &dyn Fn()
         };
 
         set_status(shared, Status::Working, changed);
-        let outcome = process::process(store, job, active, now, &today());
+        let outcome = process::process_with(store, job, active, now, &today(), indexes);
         match &outcome {
             Outcome::Written(written) => {
                 crate::log::line(&format!("runner: wrote {}", written.path.display()));
@@ -351,6 +365,7 @@ mod tests {
         let worker = Worker::start(
             temp.0.join("queue"),
             Box::new(Ready(script.clone(), builds.clone())),
+            None,
             Box::new(|| {}),
         );
         let store = temp.store();
@@ -387,6 +402,7 @@ mod tests {
         let worker = Worker::start(
             temp.0.join("queue"),
             Box::new(Ready(script, Arc::new(AtomicUsize::new(0)))),
+            None,
             Box::new(|| {}),
         );
         assert!(eventually(
@@ -420,6 +436,7 @@ mod tests {
         let worker = Worker::start(
             temp.0.join("queue"),
             Box::new(Missing(builds.clone())),
+            None,
             Box::new(|| {}),
         );
         assert!(eventually(
@@ -445,6 +462,7 @@ mod tests {
         let worker = Worker::start(
             temp.0.join("queue"),
             Box::new(Ready(script, Arc::new(AtomicUsize::new(0)))),
+            None,
             Box::new(|| {}),
         );
         assert!(eventually(|| matches!(

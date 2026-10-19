@@ -3,6 +3,7 @@
 //! record what happened.
 
 use super::backoff;
+use crate::index::service::{FIRST_BUILD_WAIT, Indexes};
 use crate::model::request;
 use crate::model::{Backend, BackendError};
 use crate::note::reply::{self, Allowed};
@@ -24,19 +25,25 @@ pub enum Outcome {
 }
 
 /// Runs `job` with `backend` at `now` (milliseconds since 1970) on `today` (`YYYY-MM-DD`), and
-/// saves the job's new state in `store`.
-pub fn process(
+/// saves the job's new state in `store`. No candidate notes are offered.
+pub fn process(store: &Store, job: Job, backend: &dyn Backend, now: u64, today: &str) -> Outcome {
+    process_with(store, job, backend, now, today, None)
+}
+
+/// `process`, with candidate notes from `indexes` when given.
+pub fn process_with(
     store: &Store,
     mut job: Job,
     backend: &dyn Backend,
     now: u64,
     today: &str,
+    indexes: Option<&Indexes>,
 ) -> Outcome {
     job.state = State::Working;
     job.attempts += 1;
     save(store, &job);
 
-    let outcome = run(&job, backend, today);
+    let outcome = run(&job, backend, today, indexes);
     match &outcome {
         Ok(written) => {
             job.state = State::Done;
@@ -80,10 +87,18 @@ fn save(store: &Store, job: &Job) {
     }
 }
 
-fn run(job: &Job, backend: &dyn Backend, today: &str) -> Result<write::Written, BackendError> {
+fn run(
+    job: &Job,
+    backend: &dyn Backend,
+    today: &str,
+    indexes: Option<&Indexes>,
+) -> Result<write::Written, BackendError> {
     let (date, time) = crate::platform::clock::local_now();
     super::pages::fetch_pages(job, &crate::capture::raw::captured_stamp(date, time))?;
-    let request = request::build(job, today).map_err(BackendError::Fail)?;
+    // Without the index in time, the note is written without candidates.
+    let snapshot = indexes.and_then(|indexes| indexes.snapshot(&job.notebook, FIRST_BUILD_WAIT));
+    let request =
+        request::build_with(job, today, snapshot.as_deref()).map_err(BackendError::Fail)?;
     let note = match backend.complete(&request) {
         Err(BackendError::Invalid(problems)) => {
             crate::log::line(&format!("runner: asking again ({problems})"));
@@ -91,8 +106,16 @@ fn run(job: &Job, backend: &dyn Backend, today: &str) -> Result<write::Written, 
         }
         other => other?,
     };
-    let note = reply::check(note, &request.capture.fallback_title, &Allowed::default());
     let facts = &request.capture;
+    let note = reply::check(
+        note,
+        &facts.fallback_title,
+        &Allowed {
+            notes: &facts.candidates,
+            home_notes: &facts.home_notes,
+            home_folders: &facts.home_folders,
+        },
+    );
     let conventions = Conventions::load(&facts.notebook);
     let path = match (&job.note, job.regenerate) {
         (Some(old), true) => old.path.clone(),

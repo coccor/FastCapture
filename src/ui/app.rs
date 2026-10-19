@@ -244,6 +244,7 @@ fn start_worker(window: HWND) {
     let worker = Worker::start(
         queue,
         Box::new(FromSettings { settings }),
+        INDEXES.get().cloned(),
         Box::new(move || unsafe {
             PostMessageW(window.get(), WM_APP_QUEUE, 0, 0);
         }),

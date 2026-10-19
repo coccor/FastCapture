@@ -6,11 +6,16 @@
 //! scanned PDF pages).
 
 use super::images::{self, MAX_EDGE, MAX_IMAGES, ModelImage};
-use super::prompt::{self, FileRead, FileSource, LinkPage, LinkSource, Turn};
+use super::prompt::{self, Candidate, FileRead, FileSource, LinkPage, LinkSource, Turn};
 use crate::capture::{detect, raw, read, sidecar};
 use crate::extract::{self, Budget};
+use crate::file::home;
+use crate::index::search::{CANDIDATES, TOP_TAGS};
+use crate::index::service::Snapshot;
 use crate::note::render::SourceLink;
+use crate::notebook::Conventions;
 use crate::notebook::frontmatter::{self, Value};
+use crate::notebook::links::{Resolver, wiki_target};
 use crate::queue::Job;
 use std::path::{Path, PathBuf};
 
@@ -32,6 +37,11 @@ pub struct CaptureFacts {
     pub links: Vec<SourceLink>,
     /// Sources cut to fit the request, by name.
     pub truncated: Vec<String>,
+    /// The candidate notes offered, by name, the homes among them, and the folders offered:
+    /// what the reply may link to and suggest.
+    pub candidates: Vec<String>,
+    pub home_notes: Vec<String>,
+    pub home_folders: Vec<String>,
 }
 
 #[derive(Clone, Debug)]
@@ -51,8 +61,14 @@ impl NoteRequest {
     }
 }
 
-/// The request for `job`, on `today` (`YYYY-MM-DD`).
+/// The request for `job`, on `today` (`YYYY-MM-DD`), without candidate notes.
 pub fn build(job: &Job, today: &str) -> Result<NoteRequest, String> {
+    build_with(job, today, None)
+}
+
+/// The request for `job`, on `today` (`YYYY-MM-DD`), with candidates from `index`, the
+/// notebook's index, when there is one.
+pub fn build_with(job: &Job, today: &str, index: Option<&Snapshot>) -> Result<NoteRequest, String> {
     let raw_path = job.notebook.join(&job.raw);
     let text = std::fs::read_to_string(&raw_path)
         .map_err(|error| format!("FastCapture could not read {}: {error}", raw_path.display()))?;
@@ -199,6 +215,36 @@ pub fn build(job: &Job, today: &str) -> Result<NoteRequest, String> {
             },
         })
         .collect();
+    // What the capture is about, to find the notes it relates to: your text, the pages'
+    // titles, and the start of the material.
+    let mut query = your_note.clone();
+    for link in &source_links {
+        if let Some(title) = &link.title {
+            query.push('\n');
+            query.push_str(title);
+        }
+    }
+    let material: String = pages
+        .iter()
+        .filter_map(|page| match page {
+            PageMaterial::Read { text, .. } => Some(text.as_str()),
+            PageMaterial::NotRead(_) => None,
+        })
+        .chain(files.iter().filter_map(|(_, file)| match file {
+            FileMaterial::Read { text, .. } => Some(text.as_str()),
+            _ => None,
+        }))
+        .flat_map(|text| text.chars().chain(std::iter::once('\n')))
+        .take(QUERY_MATERIAL_CHARS)
+        .collect();
+    query.push('\n');
+    query.push_str(&material);
+    let conventions = Conventions::load(&job.notebook);
+    let own_note = job.note.as_ref().map(|note| note.path.as_path());
+    let related = index
+        .map(|index| related(index, &query, &conventions, own_note))
+        .unwrap_or_default();
+
     let notebook_name = job
         .notebook
         .file_name()
@@ -215,6 +261,9 @@ pub fn build(job: &Job, today: &str) -> Result<NoteRequest, String> {
         cut: budget.truncated(),
         source_window: source_window.as_deref(),
         source_url: source_url.as_deref(),
+        candidates: &related.candidates,
+        home_folders: &related.home_folders,
+        notebook_tags: &related.tags,
     });
     let fallback_title = raw::first_words(&your_note)
         .or_else(|| source_links.first().and_then(|link| link.title.clone()))
@@ -239,8 +288,89 @@ pub fn build(job: &Job, today: &str) -> Result<NoteRequest, String> {
             fallback_title,
             links: source_links,
             truncated: budget.truncated().to_vec(),
+            candidates: related
+                .candidates
+                .iter()
+                .map(|candidate| candidate.name.clone())
+                .collect(),
+            home_notes: related
+                .candidates
+                .iter()
+                .filter(|candidate| candidate.home)
+                .map(|candidate| candidate.name.clone())
+                .collect(),
+            home_folders: related.home_folders,
         },
     })
+}
+
+/// How much of the material goes in the query, in characters.
+const QUERY_MATERIAL_CHARS: usize = 2_000;
+
+/// The notes a capture relates to, the folders it could be filed in, and the notebook's tags.
+#[derive(Default)]
+struct Related {
+    candidates: Vec<Candidate>,
+    home_folders: Vec<String>,
+    tags: Vec<String>,
+}
+
+/// The best matches for `query` in `index`, never `own_note` (the capture's note, when it is
+/// written again), named as links from the capture folder.
+fn related(
+    index: &Snapshot,
+    query: &str,
+    conventions: &Conventions,
+    own_note: Option<&Path>,
+) -> Related {
+    let notes = index.searcher.index();
+    let resolver = Resolver::new(
+        notes.notes.values().map(|note| note.path.as_path()),
+        notes.notes.values().flat_map(|note| {
+            note.aliases
+                .iter()
+                .map(|alias| (alias.clone(), note.path.clone()))
+        }),
+    );
+    let from = conventions.capture_folder().join("note.md");
+    let own = own_note.map(|path| path.to_string_lossy().to_lowercase());
+    let hits: Vec<_> = index
+        .searcher
+        .search(query, CANDIDATES + 1)
+        .into_iter()
+        .filter(|hit| own.as_deref() != Some(&*hit.note.path.to_string_lossy().to_lowercase()))
+        .take(CANDIDATES)
+        .collect();
+    let candidates: Vec<Candidate> = hits
+        .iter()
+        .map(|hit| {
+            let note = hit.note;
+            Candidate {
+                name: wiki_target(&resolver, &note.path, &from),
+                path: note.path.clone(),
+                aliases: note.aliases.clone(),
+                tags: note.tags.clone(),
+                kind: note.kind.clone(),
+                home: home::is_home_type(note.kind.as_deref(), &conventions.capture.home_types),
+                snippet: note.snippet.clone(),
+            }
+        })
+        .collect();
+    let home_folders = home::home_folders(
+        candidates.iter().map(|candidate| candidate.path.as_path()),
+        conventions.capture_folder(),
+    );
+    let tags = index
+        .searcher
+        .top_tags(TOP_TAGS)
+        .into_iter()
+        .map(|tag| tag.name)
+        .collect();
+    Related {
+        candidates,
+        home_folders,
+        tags,
+    }
 }
 
 /// A link's page, owned until the turn borrows it.
@@ -604,6 +734,81 @@ mod tests {
         assert_eq!(request.images[1].height, MAX_EDGE);
         assert!(text.contains("2 images are attached above"));
         assert_eq!(request.capture.truncated, ["server.log", "huge.txt"]);
+    }
+
+    /// The index of `notebook` as the service would build it.
+    fn snapshot(notebook: &Path) -> Snapshot {
+        use crate::index::notes::NoteIndex;
+        use crate::index::search::Searcher;
+        let raw = Conventions::load(notebook).raw_folder().to_path_buf();
+        let scan = crate::index::scan::scan(notebook, &[raw], 10_000).unwrap();
+        let (index, _) = NoteIndex::build(notebook, &scan.entries, NoteIndex::default());
+        Snapshot {
+            searcher: Searcher::new(index),
+            folders: scan.folders,
+            truncated: false,
+        }
+    }
+
+    #[test]
+    fn the_notes_a_capture_relates_to_become_candidates() {
+        let temp = temp("candidates");
+        let notebook = temp.0.join("Work notes");
+        let note = |path: &str, text: &str| {
+            let path = notebook.join(path);
+            fs::create_dir_all(path.parent().unwrap()).unwrap();
+            fs::write(path, text).unwrap();
+        };
+        note(
+            r"Payments\Payments incidents.md",
+            "---\ntype: topic\ntags: [incidents]\n---\n# Payments incidents\n\nLedger batch outages.\n",
+        );
+        note(
+            r"Payments\Lag.md",
+            "# Lag\n\nLedger lag during the nightly batch. #kafka\n",
+        );
+        note(r"Search\Lag.md", "# Lag\n\nSearch indexing lag.\n");
+        note(r"Recipes\Soup.md", "# Soup\n\nLeeks and potatoes.\n");
+        note(
+            r"inbox\Earlier capture.md",
+            "# Earlier capture\n\nlag spikes during ledger batch\n",
+        );
+        let mut job = capture(
+            &temp,
+            Capture {
+                text: "lag spikes during ledger batch".to_owned(),
+                ..Capture::default()
+            },
+        );
+        // Written before and now written again: its own note isn't a candidate.
+        job.note = Some(crate::note::write::Written {
+            path: PathBuf::from(r"inbox\Earlier capture.md"),
+            stamp: crate::note::write::Stamp {
+                len: 0,
+                modified_ms: 0,
+            },
+        });
+        let request = build_with(&job, "2026-10-19", Some(&snapshot(&notebook))).unwrap();
+        let facts = &request.capture;
+        let mut names = facts.candidates.clone();
+        names.sort();
+        assert_eq!(names, ["Payments incidents", "Payments/Lag", "Search/Lag"]);
+        assert_eq!(facts.home_notes, ["Payments incidents"]);
+        let mut folders = facts.home_folders.clone();
+        folders.sort();
+        assert_eq!(folders, ["Payments/", "Search/"]);
+        let text = &request.user_text;
+        assert!(text.contains("<note name=\"Payments/Lag\" folder=\"Payments\" tags=\"kafka\">\nLedger lag during the nightly batch. #kafka\n</note>"), "{text}");
+        assert!(text.contains(
+            "<note name=\"Payments incidents\" folder=\"Payments\" type=\"topic\" home=\"yes\" tags=\"incidents\">"
+        ));
+        assert!(!text.contains("Earlier capture") && !text.contains("Soup"));
+        assert!(text.contains("Tags the notebook uses most: incidents, kafka."));
+
+        // Without the index, nothing is offered.
+        let plain = build(&job, "2026-10-19").unwrap();
+        assert!(plain.capture.candidates.is_empty());
+        assert!(plain.user_text.contains("No candidate notes are given."));
     }
 
     #[test]

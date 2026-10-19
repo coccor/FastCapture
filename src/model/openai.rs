@@ -219,6 +219,9 @@ mod tests {
                 fallback_title: "lag".into(),
                 links: Vec::new(),
                 truncated: Vec::new(),
+                candidates: Vec::new(),
+                home_notes: Vec::new(),
+                home_folders: Vec::new(),
             },
         }
     }
