@@ -96,7 +96,20 @@ These run the installed `claude` against your Claude plan: a few short requests,
 
 - [x] `runner/end_to_end.rs`: a capture with a screenshot written through the fake CLI: the stream-json it was given, the note written, nothing in the ledger. It found that the token cap held Claude Code back too, since it took every `cloud/` label as billed: `Backend::metered` (true for the cloud APIs, false for Claude Code) now decides both the ledger and the cap.
 - [x] `examples/live_note.rs` works with it: when Settings chooses it, or with `--claude-code <model>` whatever the settings say. A dry run found the real CLI and built the request, sending nothing.
-- [ ] Measure with `examples/live_note.rs` (with your approval): a text capture, a screenshot and a link on `haiku` and `sonnet`; the time per note (the CLI's start-up included) against the Claude API's 2–4 s.
+- [x] Measure with `examples/live_note.rs` (with your approval): a text capture, a screenshot and a link on `haiku` and `sonnet`; the time per note (the CLI's start-up included) against the Claude API's 2–4 s.
+
+  **Measured 2026-10-20** with `live_note --claude-code` on Claude Code 2.1.303, signed in with a Max plan. Times include starting the CLI; input counts what the CLI reported as input plus cache writes, with cache reads apart.
+
+  | Capture | Model | Time | Input (cached) | Output |
+  | --- | --- | --- | --- | --- |
+  | The sample text | haiku | 5.0 s | 2,434 (0) | 569 |
+  | The M2 chart screenshot | haiku | 6.7 s | 1,665 (1,710) | 1,173 |
+  | A Wikipedia link (6,138 characters read) | haiku | 7.1 s | 3,091 (1,710) | 1,104 |
+  | The sample text | sonnet | 4.4 s | 2,436 (0) | 369 |
+  | The M2 chart screenshot | sonnet | 5.4 s | 1,667 (1,710) | 541 |
+  | A Wikipedia link | sonnet | 7.5 s | 3,093 (1,710) | 904 |
+
+  All six wrote good notes: both models read the chart exactly (0.8k baseline, the batch at 02:05, the 39.8k peak at 02:12, back by 02:30), and the link notes are drawn from the article. Each run took 2 turns (the `StructuredOutput` tool). Compared with the Claude API on Haiku (2.4–3.4 s; a text capture 103 input besides the cached rules), a note takes 2–4 s longer, mostly the CLI starting, and about 600 more input tokens, the structured-output tool and Claude Code's own framing; it costs nothing beyond the plan. A first link capture with text after the address on the same line wasn't read as a link, as FastCapture intends (a link is an address alone on its line), so it was run again.
 
 ### Part 6: Polish and docs
 
