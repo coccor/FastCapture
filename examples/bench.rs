@@ -1,6 +1,7 @@
 //! Times the capture path against its budgets: the box from "open" to visible, a 4K screenshot
 //! from clipboard pixels to PNG, Ctrl+Enter's filing of a capture holding it, the worker
-//! building a model request from that capture, and reading an article page and a 20-page PDF.
+//! building a model request from that capture, reading an article page and a 20-page PDF, and
+//! the index of 10,000 notes: built cold, from its cache, and searched.
 //! Run it as a release build: `cargo run --release --example bench`.
 
 use fastcapture::capture::submit::submit;
@@ -175,7 +176,76 @@ fn main() {
     }
     report("20-page text PDF", 1000, pdf_times);
 
+    index(&temp.join("notebook"));
+
     let _ = std::fs::remove_dir_all(&temp);
+}
+
+/// The index of 10,000 generated notes: built cold, built again from its cache, and searched.
+fn index(notebook: &Path) {
+    use fastcapture::index::notes::{self, NoteIndex};
+    use fastcapture::index::scan;
+    use fastcapture::index::search::{CANDIDATES, Searcher};
+    const TOPICS: [&str; 16] = [
+        "kafka", "ledger", "payments", "consumer", "invoice", "deploy", "budget", "garden",
+        "recipe", "travel", "lag", "incident", "rust", "search", "hiring", "roadmap",
+    ];
+    println!("    writing 10,000 notes…");
+    for number in 0..10_000usize {
+        let folder = notebook.join(format!("area {}", number % 40));
+        if number < 40 {
+            std::fs::create_dir_all(&folder).unwrap();
+        }
+        let mut text = format!(
+            "---\ntags: [{}, {}]\n---\n# Note {number} about {}\n\n",
+            TOPICS[number % 16],
+            TOPICS[(number / 16) % 16],
+            TOPICS[(number * 7) % 16]
+        );
+        for word in 0..200usize {
+            text.push_str(TOPICS[(number * 7 + word * 3) % 16]);
+            text.push_str(&format!(" w{} ", (number * 31 + word * 17) % 5_000));
+            if word % 20 == 19 {
+                text.push_str("\n\n");
+            }
+        }
+        std::fs::write(folder.join(format!("note {number}.md")), text).unwrap();
+    }
+    let cache = notebook.with_extension("cache");
+
+    let started = Instant::now();
+    let listed = scan::scan(notebook, &[], scan::NOTE_LIMIT).unwrap();
+    let (index, _) = NoteIndex::build(notebook, &listed.entries, NoteIndex::default());
+    let searcher = Searcher::new(index);
+    let cold = started.elapsed();
+    assert_eq!(searcher.index().notes.len(), 10_000);
+    report("index of 10,000 notes, cold", 5000, vec![cold]);
+    notes::write_cache(&cache, searcher.index()).unwrap();
+
+    let mut warm = Vec::new();
+    for _ in 0..3 {
+        let started = Instant::now();
+        let previous = notes::read_cache(&cache);
+        let listed = scan::scan(notebook, &[], scan::NOTE_LIMIT).unwrap();
+        let (index, changed) = NoteIndex::build(notebook, &listed.entries, previous);
+        assert!(!changed);
+        let rebuilt = Searcher::new(index);
+        warm.push(started.elapsed());
+        assert_eq!(rebuilt.index().notes.len(), 10_000);
+    }
+    report("index of 10,000 notes, from its cache", 500, warm);
+
+    let query = "Consumer lag on the payments ledger after the deploy, incident w42 w1999 kafka \
+                 budget. "
+        .repeat(25);
+    let mut searches = Vec::new();
+    for _ in 0..10 {
+        let started = Instant::now();
+        let hits = searcher.search(&query, CANDIDATES);
+        searches.push(started.elapsed());
+        assert_eq!(hits.len(), CANDIDATES);
+    }
+    report("search of 10,000 notes, 2,000 chars", 20, searches);
 }
 
 /// A news page as sites serve them: navigation, a sidebar of links, 150 paragraphs of

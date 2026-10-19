@@ -48,11 +48,16 @@ fn reply() -> String {
 }
 
 /// Runs the worker with Claude at `server` until the job is done.
-fn run_until_done(queue: &Path, capture_id: &str, server: &TestServer) -> Store {
+fn run_until_done(
+    queue: &Path,
+    capture_id: &str,
+    server: &TestServer,
+    indexes: Option<crate::index::service::Indexes>,
+) -> Store {
     let worker = Worker::start(
         queue.to_path_buf(),
         Box::new(ClaudeAt(server.url())),
-        None,
+        indexes,
         Box::new(|| {}),
     );
     let store = Store::new(queue.to_path_buf());
@@ -154,7 +159,7 @@ fn a_link_capture_becomes_a_note_about_its_page() {
         200,
         &reply_with("Consumer lag explained", "Why lag grows during batches."),
     )]);
-    let store = run_until_done(&temp.0.join("queue"), &job.capture_id, &model);
+    let store = run_until_done(&temp.0.join("queue"), &job.capture_id, &model, None);
 
     // The page was fetched once, kept beside the raw source, and sent as material.
     assert_eq!(pages.requests().len(), 1);
@@ -227,7 +232,7 @@ fn a_pdf_capture_sends_its_text_and_its_scanned_page() {
         200,
         &reply_with("Ledger batch review", "The review of the night run."),
     )]);
-    let store = run_until_done(&temp.0.join("queue"), &job.capture_id, &model);
+    let store = run_until_done(&temp.0.join("queue"), &job.capture_id, &model, None);
 
     let request = model.requests().remove(0).json();
     let content = request["messages"][0]["content"].as_array().unwrap();
@@ -277,7 +282,7 @@ fn a_screenshot_capture_becomes_a_note() {
     let job = Store::new(queue.clone()).list().remove(0);
 
     let server = TestServer::start(vec![Scripted::json(200, &reply())]);
-    let store = run_until_done(&queue, &job.capture_id, &server);
+    let store = run_until_done(&queue, &job.capture_id, &server, None);
 
     // What was sent: the screenshot as it was, then the user turn.
     let request = server.requests().remove(0).json();
@@ -337,4 +342,110 @@ fn a_screenshot_capture_becomes_a_note() {
     let note = std::fs::read_to_string(notebook.join(&written.path)).unwrap();
     assert_eq!(note, expected);
     let _ = std::fs::remove_dir_all(&temp);
+}
+
+#[test]
+fn a_capture_links_its_notebook_and_is_filed_under_a_topic() {
+    use crate::file::{self, Target};
+    use crate::index::service::Indexes;
+    let temp = Temp::new("filing");
+    let notebook = temp.0.join("Work notes");
+    let write = |path: &str, text: &str| {
+        let path = notebook.join(path);
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(path, text).unwrap();
+    };
+    let topic = "---\ntype: topic\n---\n# Payments incidents\n\nEvery payments outage, newest last.\n\n- 2026-10-01 [[Card declines]]\n";
+    write(r"Payments\Payments incidents.md", topic);
+    write(
+        r"Payments\Ledger batch.md",
+        "# Ledger batch\n\nThe nightly ledger batch writes millions of records; consumer lag follows.\n",
+    );
+    write(r"Recipes\Soup.md", "# Soup\n\nLeeks and potatoes.\n");
+    let job = temp.submit(Capture {
+        text: "consumer lag spikes during ledger batch, another payments incident".to_owned(),
+        ..Capture::default()
+    });
+    let note = json!({
+        "title": "Consumer lag spikes during ledger batch",
+        "summary": "Kafka consumer lag on payments jumps to about 40k during the ledger batch.",
+        "body": "Consumer lag spikes when the ledger batch runs.",
+        "key_points": [],
+        "tasks": [],
+        "tags": ["payments"],
+        "links": [
+            {"note": "Ledger batch", "new": false},
+            {"note": "Invented note", "new": false}
+        ],
+        "home": {"kind": "topic", "note": "Payments incidents", "reason": "Another outage."}
+    });
+    let model = TestServer::start(vec![Scripted::json(
+        200,
+        &json!({
+            "id": "msg_e2e",
+            "type": "message",
+            "role": "assistant",
+            "content": [{"type": "text", "text": note.to_string()}],
+            "stop_reason": "end_turn",
+            "usage": {"input_tokens": 1200, "output_tokens": 150}
+        })
+        .to_string(),
+    )]);
+    let indexes = Indexes::new(None);
+    let store = run_until_done(
+        &temp.0.join("queue"),
+        &job.capture_id,
+        &model,
+        Some(indexes.clone()),
+    );
+
+    // The request offered the notebook's related notes, the topic note as a home.
+    let request = model.requests().remove(0).json();
+    let user_text = request["messages"][0]["content"][0]["text"]
+        .as_str()
+        .unwrap();
+    assert!(user_text.contains("<candidate_notes>\n"), "{user_text}");
+    assert!(user_text.contains(
+        "<note name=\"Payments incidents\" folder=\"Payments\" type=\"topic\" home=\"yes\">"
+    ));
+    assert!(user_text.contains("<note name=\"Ledger batch\" folder=\"Payments\">"));
+    assert!(user_text.contains("<home_folders>\nPayments/\n</home_folders>"));
+    assert!(!user_text.contains("Soup"));
+
+    // The note keeps the real link and the home, not the invented one.
+    let written = store.get(&job.capture_id).unwrap().note.unwrap();
+    let text = std::fs::read_to_string(notebook.join(&written.path)).unwrap();
+    assert!(
+        text.contains("suggested_home: \"[[Payments incidents]]\"\n"),
+        "{text}"
+    );
+    assert!(
+        text.ends_with("## Related\n\n- [[Ledger batch]]\n"),
+        "{text}"
+    );
+    assert!(!text.contains("Invented"));
+
+    // Filed under the topic: listed there, moved beside it.
+    let (filed, _) = file::file_note(
+        &notebook,
+        &written.path,
+        &Target::Topic(PathBuf::from(r"Payments\Payments incidents.md")),
+        "2026-10-19",
+        &|to| to.file_stem().unwrap().to_string_lossy().into_owned(),
+    )
+    .unwrap();
+    assert_eq!(
+        filed.path,
+        PathBuf::from(r"Payments\Consumer lag spikes during ledger batch.md")
+    );
+    assert_eq!(
+        std::fs::read_to_string(notebook.join(r"Payments\Payments incidents.md")).unwrap(),
+        format!(
+            "{topic}- 2026-10-19 [[Consumer lag spikes during ledger batch]]: Kafka consumer lag on payments jumps to about 40k during the ledger batch.\n"
+        )
+    );
+    let moved = std::fs::read_to_string(notebook.join(&filed.path)).unwrap();
+    assert!(moved.contains("status: filed\n") && !moved.contains("suggested_home"));
+    assert!(!notebook.join(&written.path).exists());
+    indexes.stop();
 }

@@ -95,9 +95,9 @@ src/
 
 ### Part 7: End to end
 
-- [ ] `runner/end_to_end.rs`: a notebook with notes; a capture whose text matches one of them goes through the worker; the request carries the candidates; the scripted reply links one candidate, invents another and suggests a topic note as home; the written note keeps the real link and the home; filing it appends the line to the topic note and moves the note.
-- [ ] `examples/bench.rs`: the index of 10,000 generated notes built cold under 5 s and from the cache under 500 ms; a query under 20 ms (§14).
-- [ ] Measure with `examples/live_note.rs` (with your approval) on a scratch copy of a notebook you choose: whether the model links sensibly and suggests a sensible home.
+- [x] `runner/end_to_end.rs`: a notebook with notes; a capture whose text matches one of them goes through the worker; the request carries the candidates; the scripted reply links one candidate, invents another and suggests a topic note as home; the written note keeps the real link and the home; filing it appends the line to the topic note and moves the note.
+- [x] `examples/bench.rs`: the index of 10,000 generated notes built cold under 5 s and from the cache under 500 ms; a query under 20 ms (§14). Measured: cold 4.0 s, from the cache 396 ms, a query of 2,000 characters 3 ms. The first runs were over (cold 5.6 s, cached 622 ms), so notes are now read and parsed on up to 8 threads, the word maps use FNV hashing, and the cache (version 2) lists each word once and counts words by number. Both cold and cached times vary by a few hundred ms with the virus scanner, which reads the files the bench just wrote.
+- [ ] Measure with `examples/live_note.rs` (with your approval) on a scratch copy of a notebook you choose (`--notebook` reads it into an index kept in memory, writing nothing there): whether the model links sensibly and suggests a sensible home.
 
 ### Part 8: Polish and docs
 

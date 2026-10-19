@@ -3,10 +3,14 @@
 //! Anthropic account; it never runs in `cargo test` or CI.
 //!
 //! ```text
-//! cargo run --release --example live_note -- [--dry-run] [--effort low|medium|high] [--attach PATH]… ["text"]
+//! cargo run --release --example live_note -- [--dry-run] [--effort low|medium|high] [--notebook PATH] [--attach PATH]… ["text"]
 //! ```
 //!
 //! `--dry-run` fetches pages and prints the request's text without asking the model: free.
+//!
+//! `--notebook` offers that notebook's related notes as candidates, so the note can link them
+//! and suggest a home. The notebook is only read, into an index kept in memory: nothing is
+//! written there, and no index cache is kept.
 //!
 //! `--attach` takes any file (an image, a PDF, a Word file, a log) and can be given more than
 //! once; links in the text are fetched as the worker fetches them. The capture goes to a scratch
@@ -31,6 +35,7 @@ fn main() {
     let mut effort: Option<&'static str> = None;
     let mut dry_run = false;
     let mut attach: Vec<PathBuf> = Vec::new();
+    let mut related: Option<PathBuf> = None;
     let mut text = SAMPLE.to_owned();
     let mut args = std::env::args().skip(1);
     while let Some(arg) = args.next() {
@@ -45,6 +50,7 @@ fn main() {
                 }
             }
             "--attach" | "--image" => attach.extend(args.next().map(PathBuf::from)),
+            "--notebook" => related = args.next().map(PathBuf::from),
             other => text = other.to_owned(),
         }
     }
@@ -99,14 +105,35 @@ fn main() {
     if fetched.as_millis() > 0 {
         println!("--- pages fetched in {:.1} s", fetched.as_secs_f64());
     }
+    let indexes = fastcapture::index::service::Indexes::new(None);
+    let snapshot = related.as_deref().map(|notebook| {
+        let indexing = Instant::now();
+        let snapshot = indexes
+            .snapshot(notebook, std::time::Duration::from_secs(120))
+            .unwrap_or_else(|| panic!("{} couldn't be indexed", notebook.display()));
+        println!(
+            "--- {} notes indexed in {:.1} s",
+            snapshot.searcher.index().notes.len(),
+            indexing.elapsed().as_secs_f64()
+        );
+        snapshot
+    });
     let building = Instant::now();
-    let request = request::build(&job, "2026-10-19").unwrap();
+    let request = request::build_with(&job, "2026-10-19", snapshot.as_deref()).unwrap();
+    indexes.stop();
     println!(
         "--- request built in {:.0} ms: {} characters of text, {} images",
         building.elapsed().as_secs_f64() * 1000.0,
         request.user_text.chars().count(),
         request.images.len()
     );
+    if !request.capture.candidates.is_empty() {
+        println!(
+            "--- {} candidates: {}",
+            request.capture.candidates.len(),
+            request.capture.candidates.join(", ")
+        );
+    }
 
     if dry_run {
         println!("{}", request.user_text);
@@ -119,8 +146,16 @@ fn main() {
     let elapsed = started.elapsed();
     match result {
         Ok(note) => {
-            let note = reply::check(note, &request.capture.fallback_title, &Allowed::default());
             let facts = &request.capture;
+            let note = reply::check(
+                note,
+                &facts.fallback_title,
+                &Allowed {
+                    notes: &facts.candidates,
+                    home_notes: &facts.home_notes,
+                    home_folders: &facts.home_folders,
+                },
+            );
             let text = render::render(&render::NoteFile {
                 note: &note,
                 captured: &facts.captured,

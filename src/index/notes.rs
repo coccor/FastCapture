@@ -12,7 +12,7 @@ use std::path::{Path, PathBuf};
 pub const MAX_NOTE_BYTES: u64 = 2 * 1024 * 1024;
 /// A note's snippet holds this many characters of its text at most.
 pub const SNIPPET_CHARS: usize = 300;
-const CACHE_VERSION: &str = "1";
+const CACHE_VERSION: &str = "2";
 
 /// The parts of a note searched separately, each with its own weight.
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
@@ -73,9 +73,38 @@ pub struct IndexedNote {
 /// Every word the index has seen, each with a number, so notes keep numbers rather than strings.
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct Vocabulary {
-    ids: HashMap<Box<str>, u32>,
+    ids: Fast<Box<str>, u32>,
     words: Vec<Box<str>>,
 }
+
+/// FNV-1a, for the index's maps of short words: much faster than the default hasher, and the
+/// words are the notebook's own, not an attacker's.
+#[derive(Clone, Copy)]
+pub struct Fnv(u64);
+
+impl Default for Fnv {
+    fn default() -> Self {
+        Self(0xcbf2_9ce4_8422_2325)
+    }
+}
+
+impl std::hash::Hasher for Fnv {
+    fn finish(&self) -> u64 {
+        self.0
+    }
+
+    fn write(&mut self, bytes: &[u8]) {
+        for &byte in bytes {
+            self.0 = (self.0 ^ u64::from(byte)).wrapping_mul(0x0100_0000_01b3);
+        }
+    }
+}
+
+/// A map hashed with `Fnv`.
+pub type Fast<K, V> = HashMap<K, V, std::hash::BuildHasherDefault<Fnv>>;
+
+/// How often each word appears in each field of one note, before the words are numbered.
+type Counts = Fast<(Box<str>, Field), u16>;
 
 impl Vocabulary {
     /// The id of `word`, which is added when new.
@@ -131,7 +160,7 @@ impl NoteIndex {
         } = previous;
         let before = known.len();
         let mut notes = HashMap::with_capacity(entries.len());
-        let mut changed = false;
+        let mut unread = Vec::new();
         for entry in entries {
             if !is_note(&entry.path) || entry.size > MAX_NOTE_BYTES {
                 continue;
@@ -145,16 +174,41 @@ impl NoteIndex {
                 notes.insert(key, note);
                 continue;
             }
-            changed = true;
-            // A note that can't be read now is left out; the next build tries again.
-            let Some(text) = std::fs::read(notebook.join(&entry.path))
-                .ok()
-                .and_then(|bytes| crate::extract::text::decode(&bytes))
-            else {
-                continue;
-            };
-            let note = read_note(&entry.path, entry.size, entry.mtime, &text, &mut vocabulary);
-            notes.insert(key, note);
+            unread.push(entry);
+        }
+        let mut changed = !unread.is_empty();
+        // Reading and parsing are spread over the processors; numbering the words isn't.
+        let threads = std::thread::available_parallelism()
+            .map_or(1, |count| count.get())
+            .clamp(1, 8);
+        let chunk = unread.len().div_ceil(threads).max(1);
+        let parsed: Vec<Vec<(IndexedNote, Counts)>> = std::thread::scope(|scope| {
+            let workers: Vec<_> = unread
+                .chunks(chunk)
+                .map(|entries| {
+                    scope.spawn(move || {
+                        entries
+                            .iter()
+                            .filter_map(|entry| {
+                                // A note that can't be read now is left out; the next build
+                                // tries again.
+                                let text = std::fs::read(notebook.join(&entry.path))
+                                    .ok()
+                                    .and_then(|bytes| crate::extract::text::decode(&bytes))?;
+                                Some(parse_note(&entry.path, entry.size, entry.mtime, &text))
+                            })
+                            .collect()
+                    })
+                })
+                .collect();
+            workers
+                .into_iter()
+                .map(|worker| worker.join().unwrap_or_default())
+                .collect()
+        });
+        for (note, counts) in parsed.into_iter().flatten() {
+            let note = number_words(note, counts, &mut vocabulary);
+            notes.insert(path_key(&note.path), note);
         }
         changed |= notes.len() != before;
         (NoteIndex { notes, vocabulary }, changed)
@@ -165,10 +219,26 @@ impl NoteIndex {
     }
 
     /// The cache file's text.
+    ///
+    /// The words the notes use come first, one per line, numbered by their order; the notes
+    /// count them by those numbers, so reading the cache hashes each word once. Words of notes
+    /// since removed are left out.
     pub fn encode(&self) -> String {
         let mut notes: Vec<&IndexedNote> = self.notes.values().collect();
         notes.sort_by(|a, b| a.path.cmp(&b.path));
+        let mut numbers: Fast<u32, u32> = Fast::default();
         let mut output = format!("version={CACHE_VERSION}\r\n");
+        for note in &notes {
+            for count in &note.words {
+                let next = numbers.len() as u32;
+                numbers.entry(count.word).or_insert_with(|| {
+                    output.push_str("word=");
+                    output.push_str(self.vocabulary.word(count.word));
+                    output.push_str("\r\n");
+                    next
+                });
+            }
+        }
         for note in notes {
             output.push_str(&format!(
                 "note={}|{}|{}\r\n",
@@ -195,7 +265,7 @@ impl NoteIndex {
                     .words
                     .iter()
                     .filter(|count| count.field == field)
-                    .map(|count| format!("{}:{}", self.vocabulary.word(count.word), count.count))
+                    .map(|count| format!("{}:{}", numbers[&count.word], count.count))
                     .collect();
                 if !counts.is_empty() {
                     output.push_str(&format!("words={}|{}\r\n", field as u8, counts.join(" ")));
@@ -224,6 +294,14 @@ impl NoteIndex {
                 continue;
             }
             let (key, value) = line.split_once('=')?;
+            if key == "word" {
+                // Only before the notes, and each word once, so its id is its number.
+                let id = index.vocabulary.len() as u32;
+                if current.is_some() || value.is_empty() || index.vocabulary.intern(value) != id {
+                    return None;
+                }
+                continue;
+            }
             if key == "note" {
                 if let Some(note) = current.take() {
                     finish(note, &mut index);
@@ -249,9 +327,13 @@ impl NoteIndex {
                     let (field, counts) = value.split_once('|')?;
                     let field = Field::from_index(field.parse().ok()?)?;
                     for pair in counts.split(' ') {
-                        let (word, count) = pair.rsplit_once(':')?;
+                        let (word, count) = pair.split_once(':')?;
+                        let word: u32 = word.parse().ok()?;
+                        if word as usize >= index.vocabulary.len() {
+                            return None;
+                        }
                         note.words.push(WordCount {
-                            word: index.vocabulary.intern(word),
+                            word,
                             field,
                             count: count.parse().ok()?,
                         });
@@ -275,6 +357,26 @@ pub fn read_note(
     text: &str,
     vocabulary: &mut Vocabulary,
 ) -> IndexedNote {
+    let (note, counts) = parse_note(path, size, mtime, text);
+    number_words(note, counts, vocabulary)
+}
+
+/// `note` with its words numbered in `vocabulary`.
+fn number_words(mut note: IndexedNote, counts: Counts, vocabulary: &mut Vocabulary) -> IndexedNote {
+    note.words = counts
+        .into_iter()
+        .map(|((word, field), count)| WordCount {
+            word: vocabulary.intern(&word),
+            field,
+            count,
+        })
+        .collect();
+    note.words.sort_by_key(|count| (count.word, count.field));
+    note
+}
+
+/// What `text` says about itself, and its words' counts, not yet numbered.
+fn parse_note(path: &Path, size: u64, mtime: u64, text: &str) -> (IndexedNote, Counts) {
     let text = text.strip_prefix('\u{feff}').unwrap_or(text);
     let front = frontmatter::parse(text);
     let mut note = IndexedNote {
@@ -345,30 +447,25 @@ pub fn read_note(
     }
     note.snippet = snippet(&prose);
 
-    let mut counts: HashMap<(u32, Field), u16> = HashMap::new();
-    let mut count = |field: Field, text: &str, vocabulary: &mut Vocabulary| {
+    let mut counts = Counts::default();
+    let mut count = |field: Field, text: &str| {
         words::words(text, |word| {
-            let slot = counts.entry((vocabulary.intern(word), field)).or_default();
+            let slot = counts.entry((word.into(), field)).or_default();
             *slot = slot.saturating_add(1);
         });
     };
-    count(Field::Title, &note.title, vocabulary);
+    count(Field::Title, &note.title);
     for alias in &note.aliases {
-        count(Field::Aliases, alias, vocabulary);
+        count(Field::Aliases, alias);
     }
     for tag in &note.tags {
-        count(Field::Tags, tag, vocabulary);
+        count(Field::Tags, tag);
     }
     for heading in &note.headings {
-        count(Field::Headings, heading, vocabulary);
+        count(Field::Headings, heading);
     }
-    count(Field::Text, &prose, vocabulary);
-    note.words = counts
-        .into_iter()
-        .map(|((word, field), count)| WordCount { word, field, count })
-        .collect();
-    note.words.sort_by_key(|count| (count.word, count.field));
-    note
+    count(Field::Text, &prose);
+    (note, counts)
 }
 
 /// An ATX heading's level and text, without closing `#`s.
@@ -685,16 +782,24 @@ mod tests {
         assert!(!changed);
 
         for bad in [
-            "version=0\r\n",
-            "version=1\r\ntitle=x\r\n",
-            "version=1\r\nnote=1|2|a.md\r\nwhat=ever\r\n",
-            "version=1\r\nnote=1|2|a.md\r\nwords=9|kafka:1\r\n",
-            "version=1\r\nnote=1|2|a.md\r\nwords=0|kafka\r\n",
-            "version=1\r\nnote=x|2|a.md\r\n",
+            "version=1\r\nword=kafka\r\nnote=1|2|a.md\r\nwords=0|0:1\r\n",
+            "version=2\r\ntitle=x\r\n",
+            "version=2\r\nnote=1|2|a.md\r\nwhat=ever\r\n",
+            "version=2\r\nword=kafka\r\nnote=1|2|a.md\r\nwords=9|0:1\r\n",
+            "version=2\r\nword=kafka\r\nnote=1|2|a.md\r\nwords=0|1:1\r\n",
+            "version=2\r\nword=kafka\r\nnote=1|2|a.md\r\nwords=0|kafka:1\r\n",
+            "version=2\r\nword=kafka\r\nword=kafka\r\n",
+            "version=2\r\nnote=1|2|a.md\r\nword=late\r\n",
+            "version=2\r\nnote=x|2|a.md\r\n",
         ] {
             assert!(NoteIndex::parse(bad).is_none(), "{bad:?}");
         }
-        std::fs::write(&path, "version=1\r\nnote=x\r\n").unwrap();
+        assert_eq!(
+            NoteIndex::parse("version=2\r\nword=kafka\r\nnote=1|2|a.md\r\nwords=0|0:3\r\n")
+                .map(|index| index.notes.len()),
+            Some(1)
+        );
+        std::fs::write(&path, "version=2\r\nnote=x\r\n").unwrap();
         assert!(read_cache(&path).notes.is_empty());
         assert!(
             read_cache(&scratch.0.join("missing.cache"))
