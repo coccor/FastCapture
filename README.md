@@ -4,7 +4,7 @@ A Windows tray app that captures what you come across (a thought, a screenshot, 
 
 FastCapture writes plain Markdown files with YAML front matter and attachments into a notebook folder. [FastPad](https://github.com/coccor/FastPad), Obsidian, any other editor or an AI agent reads them. Neither app needs the other.
 
-**Status:** milestone M3, extraction. Everything you capture is saved, the pages it links to and the documents attached to it are read, and the model you choose writes it up as a note. Links between notes and filing come in a later milestone. See the [design](docs/specs/2026-10-18-fastcapture-design.md) and the plans for [M1](docs/plans/2026-10-18-m1-capture-and-raw-sources.md), [M2](docs/plans/2026-10-18-m2-notes-from-models.md) and [M3](docs/plans/2026-10-19-m3-extraction.md).
+**Status:** milestone M4, index, links and filing. Everything you capture is saved, the pages it links to and the documents attached to it are read, and the model you choose writes it up as a note that links the notes it relates to and suggests where it belongs; one key files it there. See the [design](docs/specs/2026-10-18-fastcapture-design.md) and the plans for [M1](docs/plans/2026-10-18-m1-capture-and-raw-sources.md), [M2](docs/plans/2026-10-18-m2-notes-from-models.md), [M3](docs/plans/2026-10-19-m3-extraction.md) and [M4](docs/plans/2026-10-19-m4-index-links-filing.md).
 
 ## Capturing
 
@@ -50,17 +50,39 @@ It prints the raw source's path. Exit codes: 0 saved, 1 saving failed, 2 bad arg
 
 ### The review window
 
-Lists your captures, newest first: what each became (Queued, Writing, Note, Failed…) with the note, or the raw source, beside it. A capture that failed shows why.
+Lists the notes waiting in your inbox, newest first, each with the home the model suggested (`→ Payments incidents`), and the captures still queued, being written or failed. A capture that failed shows why. The note, or the raw source, is shown beside the list. Notes you file, keep or discard leave the list.
 
 | Key | |
 |---|---|
+| **Enter** | Files the note in its suggested home (see [Filing](#filing)); with no suggestion, opens the folder |
+| **H** | Picks another home: folders and home notes, filtered as you type, the suggestion first. **Enter** files there, **Esc** closes. |
+| **I** | Keeps the note in the inbox (`status: kept`) and takes it off the list |
+| **Ctrl+Z** | Undoes the last file, keep or discard in this window, unless the files changed since |
 | **E** or double-click | Opens the note, or the raw source when there is no note, in FastPad when it is installed, else in your default `.md` editor |
 | **R** | Writes the note again with the current settings. If you edited the note since, it asks first. |
 | **Del** | Sends the note to the Recycle Bin and keeps the capture; with no note, the capture goes too |
 | **Shift+Del** | Sends the note, the capture and the attachments only it links to, to the Recycle Bin |
-| **Enter** | Opens the folder |
 | **F5** | Refreshes |
 | **Esc** | Closes |
+
+The footer shows the keys that apply to the selected row. The tray icon's tooltip counts the notes waiting in the inbox.
+
+## Links and homes
+
+FastCapture keeps a keyword index of the notebook (on this PC, kept current as notes change). For each capture it looks up the notes your text, the pages' titles and the start of the material share the most words with, and offers the 30 best to the model as candidates. The model links the ones the capture really relates to under `## Related`, in the form FastPad's link completion uses, and may link a clearly new subject as a new note. Links to notes that weren't offered are dropped.
+
+The model also suggests a **home**, kept in `suggested_home:`: a **home note** among the candidates, one whose `type:` is in `capture.ini`'s `home_types` (`topic`, `project` and `moc` by default), or a **folder** holding candidates. Search matches words, not meaning: a note that says the same thing in other words won't be found.
+
+### Filing
+
+- **Into a folder:** the note moves there, under a free name (` 2`, ` 3`… when the name is taken). Its links to its attachments are rewritten so they keep working.
+- **Under a home note:** the note moves into the home note's folder, and a line is added at the end of the home note, in its list when it ends with one:
+
+  ```markdown
+  - 2026-10-19 [[Consumer lag spikes during ledger batch]]: Kafka consumer lag on payments jumps to ~40k…
+  ```
+
+- Either way, `status:` becomes `filed` and `suggested_home:` goes; nothing else in the note's front matter changes. A home note that can't be written (it's locked, or gone) leaves the note in the inbox with the reason. Files are written atomically and read again if they change meanwhile, so an open FastPad tab takes the change as an outside edit.
 
 ## What is read
 
@@ -82,17 +104,18 @@ Limits, so one capture can't cost much: 60,000 characters of material (your text
 
 In the notebook (FastPad's conventions, read from `.fastpad\notebook.ini` and Obsidian's `.obsidian\app.json` when they exist; FastCapture never writes them):
 
-- `inbox\<title>.md` (`notebook.ini`'s `capture_folder`): the note the model wrote, with the capture's facts in front matter (`captured`, `capture_id`, `source` linking the raw source, `kind`, `url` and `site` for a capture of one link, `tags`, `summary`, `truncated` when something was cut, `status: inbox`, `model`), then the title, summary, body, key points, tasks, the links captured (`## Source`) and attachments.
+- `inbox\<title>.md` (`notebook.ini`'s `capture_folder`): the note the model wrote, with the capture's facts in front matter (`captured`, `capture_id`, `source` linking the raw source, `kind`, `url` and `site` for a capture of one link, `tags`, `summary`, `suggested_home`, `truncated` when something was cut, `status: inbox`, `model`), then the title, summary, body, key points, tasks, related notes (`## Related`), the links captured (`## Source`) and attachments. FastPad's own quick captures may share this folder; FastCapture's notes are the ones with `type: capture`. Filed notes move to their home.
 - `raw\YYYY-MM-DD HHmm <first words>.md`: each capture's raw source, never changed after it is written. Its front matter holds `type: raw`, `captured`, `kind`, `capture_id`, any `urls`, `source_url` for pasted web text and, when enabled, `source_window`.
 - `raw\<raw source's name>.page.md` (`.page 2.md`, …): each link's page as it was fetched, kept beside its raw source so the note can be written again without fetching it. A failed fetch is recorded there too, and replaced when **R** fetches it again.
 - `attachments\`: pasted images (as PNG) and copied files, linked from the raw source.
-- `.fastcapture\capture.ini` (optional): `raw_folder` (default `raw`) and `home_types`.
+- `.fastcapture\capture.ini` (optional): `raw_folder` (default `raw`) and `home_types` (default `topic, project, moc`): the `type:` values that make a note a home.
 
 On this PC:
 
 - `%AppData%\FastCapture\fastcapture.ini`: settings (below).
 - `%LocalAppData%\FastCapture\queue\`: one file per capture waiting to be processed.
 - `%LocalAppData%\FastCapture\draft\`: the capture box's draft.
+- `%LocalAppData%\FastCapture\index\<folder key>.cache`: the notebook's index, so it doesn't read every note at each start. It can be deleted at any time.
 - `%LocalAppData%\FastCapture\log\fastcapture.log`: diagnostics. It never holds what you captured.
 
 ## Settings
@@ -110,7 +133,7 @@ Notes are written by one model, never both:
 
 ### What is sent
 
-For each capture: the writing rules, what you typed, what was read from its links and files (see [What is read](#what-is-read)), today's date, the notebook's name, the page pasted text came from and, when `capture_source` is on, the window title. Screenshots, images and scanned PDF pages go too, up to 8 per capture. In Local mode all of this stays on this PC.
+For each capture: the writing rules, what you typed, what was read from its links and files (see [What is read](#what-is-read)), today's date, the notebook's name, the page pasted text came from and, when `capture_source` is on, the window title. Screenshots, images and scanned PDF pages go too, up to 8 per capture. So do the candidate notes: for each of up to 30, its name, folder, aliases, tags, type and the first 300 characters of its text; the folders they are in; and the notebook's 50 most used tags. Nothing else from your notebook is sent. In Local mode all of this stays on this PC.
 
 ### What Cloud costs
 
@@ -122,9 +145,9 @@ You pay Anthropic per token. A capture is the rules (about 1,500 tokens, read fr
 | Claude Opus 5.5 | about 0.8 cents | about 1.5 cents |
 | Claude Haiku 5.5 | under 0.05 cents | under 0.1 cents |
 
-A link or a document adds its text: about one token per four characters, so a typical article (6,000 characters) adds about 1,500 tokens and the 60,000-character limit about 15,000.
+A link or a document adds its text: about one token per four characters, so a typical article (6,000 characters) adds about 1,500 tokens and the 60,000-character limit about 15,000. Candidate notes add about 100 tokens each, so 30 of them about 3,000.
 
-Measured on Haiku 5.5, besides the cached rules: a short text capture used 103 input and 225 output tokens; the same with a 1200×600 chart, 1,037 and 345; a Wikipedia article, 2,475 and 504; a 2-page PDF guide, 1,504 and 648. Prices change; see Anthropic's pricing page.
+Measured on Haiku 5.5, besides the cached rules: a short text capture used 103 input and 225 output tokens; the same with a 1200×600 chart, 1,037 and 345; a Wikipedia article, 2,475 and 504; a 2-page PDF guide, 1,504 and 648; a short capture with 7 candidate notes, 900 and 391. Prices change; see Anthropic's pricing page.
 
 ### The settings file
 
@@ -145,7 +168,7 @@ If a hotkey is already taken by another app, a notification says so; pick anothe
 
 ## Privacy
 
-In both modes, FastCapture fetches the pages of links you capture: one GET each, with no cookies, so it sees what anyone signed out sees. In Local mode those fetches are its only connections beyond this PC. In Cloud mode it also sends what is listed under [What is sent](#what-is-sent) to Anthropic's API over HTTPS, one request per capture, and nothing else. Page content and file text are given to the model as material to summarise, never as instructions. The log records token counts, fetch failures and errors, never what you captured or your key.
+In both modes, FastCapture fetches the pages of links you capture: one GET each, with no cookies, so it sees what anyone signed out sees. In Local mode those fetches are its only connections beyond this PC. In Cloud mode it also sends what is listed under [What is sent](#what-is-sent) to Anthropic's API over HTTPS, one request per capture, and nothing else; the notebook's index stays on this PC, and only the candidates' short descriptions go with a capture. Page content, file text and candidate notes are given to the model as material, never as instructions. The log records token counts, fetch failures and errors, never what you captured or your key.
 
 ## Building
 
@@ -157,9 +180,9 @@ cargo test -- --test-threads=1
 cargo run --release --example bench
 ```
 
-`examples/bench.rs` times the box opening, a 4K screenshot's encoding, Ctrl+Enter, building a model request, an article page and a 20-page PDF against their budgets. `examples/review_window.rs <queue folder> [<notebook>]` and `examples/settings_window.rs` open those windows on their own.
+`examples/bench.rs` times the box opening, a 4K screenshot's encoding, Ctrl+Enter, building a model request, an article page, a 20-page PDF, and the index of 10,000 notes (built, rebuilt from its cache, searched) against their budgets. `examples/review_window.rs <queue folder> [<notebook>]` and `examples/settings_window.rs` open those windows on their own.
 
-`cargo run --release --example live_note -- [--dry-run] [--effort low|medium|high] [--attach PATH]… ["text"]` writes one real note with your settings into a scratch notebook and prints it with the time and the tokens used; links in the text are fetched. **In Cloud mode it costs money**, except with `--dry-run`, which prints what would be sent and stops. The tests never reach the internet.
+`cargo run --release --example live_note -- [--dry-run] [--effort low|medium|high] [--notebook PATH] [--attach PATH]… ["text"]` writes one real note with your settings into a scratch notebook and prints it with the time and the tokens used; links in the text are fetched, and `--notebook` offers that notebook's notes as candidates (it is only read). **In Cloud mode it costs money**, except with `--dry-run`, which prints what would be sent and stops. The tests never reach the internet.
 
 Third-party crates and their licenses are listed in [LICENSES.md](LICENSES.md).
 

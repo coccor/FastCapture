@@ -111,8 +111,8 @@ src/
 
 ### Part 8: Polish and docs
 
-- [ ] README: candidates, links and homes, filing and the review keys, `home_types`, what is sent (candidate snippets).
-- [ ] Spec: §19 notes for M4; open questions 4, 5 and 6 updated.
+- [x] README: candidates, links and homes, filing and the review keys, `home_types`, what is sent (candidate snippets). Also the index cache, what candidates cost, and `live_note --notebook`.
+- [x] Spec: §19 notes for M4; open questions 4, 5 and 6 updated.
 
 ## Testing approach
 
