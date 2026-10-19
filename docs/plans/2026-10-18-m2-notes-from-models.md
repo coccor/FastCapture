@@ -153,7 +153,12 @@ src/
 
 - [x] A test that runs the real pieces (submit, worker, Claude backend against the test server, note writer) for a capture with text and a screenshot, and checks the request (the image as it was, the user turn) and the note file byte for byte (`runner/end_to_end.rs`). Text-only captures are covered by the runner's tests.
 - [x] `examples/live_note.rs`: one real request with the current settings and a sample capture (or your own text and `--image`), in a scratch notebook, printing the note, the time and the token counts; `--effort` overrides Claude's effort. The Claude backend now keeps the last request's `Usage`. **It costs money in Cloud mode**: it runs only when asked, never in `cargo test` or CI.
-- [ ] Measure with `examples/live_note.rs` (with your approval): a short text capture and a screenshot capture at effort `low` and `medium`, comparing the notes and the token counts, before keeping `low`.
+- [x] Measure with `examples/live_note.rs` (with your approval): a short text capture and a screenshot capture at effort `low` and `medium`, comparing the notes and the token counts, before keeping `low`.
+  - Measured 2026-10-19 on `claude-haiku-5-5` (the model chosen in Settings), with the sample text and a synthetic 1200×600 lag chart plus a line of text.
+  - Text: low and medium both used 103 input and about 225 output tokens, in 2.4–3.0 s.
+  - Chart: low and medium both used 1,037 input and 332–345 output tokens, in 2.7–3.4 s.
+  - The 1,458-token rules were read from the cache on every request after the first. The notes differ only in wording: both efforts read the peak, the times and the batch start off the chart, and neither invented links.
+  - `low` stays.
 
 ### Part 9: Polish and docs
 
