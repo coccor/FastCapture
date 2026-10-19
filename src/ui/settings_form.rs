@@ -1,29 +1,45 @@
 //! What the Settings window edits, apart from the window: the form's values, checking them, and
-//! writing them to `fastcapture.ini`. The API key never goes in the file.
+//! writing them to `fastcapture.ini`. API keys never go in the file.
 
-use crate::config::settings::{CloudBackend, Mode, Settings, SettingsFile};
+use crate::config::settings::{CloudBackend, Mode, Settings, SettingsFile, parse_token_cap};
 use crate::model::local::is_on_this_pc;
+use crate::model::openai;
 use std::path::PathBuf;
 
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct Form {
     pub notebook: String,
     pub mode: Option<Mode>,
-    /// Cloud mode's backend, kept as the file has it.
+    /// Cloud mode's provider.
     pub backend: CloudBackend,
     pub local_endpoint: String,
     pub local_model: String,
     pub claude_model: String,
-    /// A key typed into the form; empty keeps the saved one.
+    /// The OpenAI-compatible API's base URL and model.
+    pub openai_endpoint: String,
+    pub openai_model: String,
+    /// A key typed into the form for the chosen provider; empty keeps the saved one.
     pub new_key: String,
-    /// A key is already saved in Credential Manager.
+    /// A key for the chosen provider is already saved in Credential Manager.
     pub key_saved: bool,
+    /// The monthly token cap as typed: empty for none, `2000000`, `2M`, `500k`.
+    pub token_cap: String,
     pub start_at_sign_in: bool,
     pub capture_source: bool,
 }
 
+/// A cap as the form shows it: `2M`, `500k`, or the plain count.
+fn cap_text(cap: Option<u64>) -> String {
+    match cap {
+        None => String::new(),
+        Some(cap) if cap.is_multiple_of(1_000_000) => format!("{}M", cap / 1_000_000),
+        Some(cap) if cap.is_multiple_of(1_000) => format!("{}k", cap / 1_000),
+        Some(cap) => cap.to_string(),
+    }
+}
+
 impl Form {
-    /// The form for `settings`.
+    /// The form for `settings`. `key_saved` is for the provider the settings choose.
     pub fn from_settings(settings: &Settings, key_saved: bool) -> Self {
         Self {
             notebook: settings
@@ -36,11 +52,19 @@ impl Form {
             local_endpoint: settings.local_endpoint.clone().unwrap_or_default(),
             local_model: settings.local_model.clone().unwrap_or_default(),
             claude_model: settings.claude_model.clone(),
+            openai_endpoint: settings.openai_endpoint.clone().unwrap_or_default(),
+            openai_model: settings.openai_model.clone().unwrap_or_default(),
             new_key: String::new(),
             key_saved,
+            token_cap: cap_text(settings.token_cap),
             start_at_sign_in: settings.start_at_sign_in,
             capture_source: settings.capture_source,
         }
+    }
+
+    /// The OpenAI-compatible API's host, lowercase.
+    pub fn openai_host(&self) -> String {
+        openai::host(self.openai_endpoint.trim()).unwrap_or_default()
     }
 
     /// What's wrong with the form, said for the user, or nothing.
@@ -48,6 +72,12 @@ impl Form {
         let notebook = self.notebook.trim();
         if notebook.is_empty() || !PathBuf::from(notebook).is_absolute() {
             return Some("Choose the notebook folder.".to_owned());
+        }
+        if parse_token_cap(&self.token_cap).is_none() {
+            return Some(
+                "The token cap is a number of tokens, like 2000000 or 2M. Leave it empty for none."
+                    .to_owned(),
+            );
         }
         match self.mode {
             None => Some("Choose Local or Cloud.".to_owned()),
@@ -69,25 +99,56 @@ impl Form {
                 }
                 None
             }
-            Some(Mode::Cloud) => {
-                if self.claude_model.trim().is_empty() {
-                    return Some("Choose a Claude model.".to_owned());
+            Some(Mode::Cloud) => match self.backend {
+                CloudBackend::Claude => {
+                    if self.claude_model.trim().is_empty() {
+                        return Some("Choose a Claude model.".to_owned());
+                    }
+                    if self.new_key.trim().is_empty() && !self.key_saved {
+                        return Some("Enter your Claude API key.".to_owned());
+                    }
+                    None
                 }
-                if self.new_key.trim().is_empty() && !self.key_saved {
-                    return Some("Enter your Claude API key.".to_owned());
+                CloudBackend::OpenAi => {
+                    let endpoint = self.openai_endpoint.trim();
+                    if endpoint.is_empty() {
+                        return Some(
+                            "Enter the API's address, like https://api.openai.com/v1.".to_owned(),
+                        );
+                    }
+                    if !crate::net::http::parse_url(endpoint).is_ok_and(|target| target.secure) {
+                        return Some(format!(
+                            "\"{endpoint}\" isn't an https:// address. The key is only sent over https."
+                        ));
+                    }
+                    if self.openai_model.trim().is_empty() {
+                        return Some("Choose or type the model.".to_owned());
+                    }
+                    if self.new_key.trim().is_empty() && !self.key_saved {
+                        return Some(format!("Enter your API key for {}.", self.openai_host()));
+                    }
+                    None
                 }
-                None
-            }
+            },
         }
     }
 
     /// Whether saving needs the first-use screen for Cloud mode: what is sent, and to whom.
+    /// Asked once for Anthropic, and again whenever the OpenAI-compatible host changes.
     pub fn needs_cloud_consent(&self, settings: &Settings) -> bool {
-        self.mode == Some(Mode::Cloud) && !settings.cloud_accepted
+        if self.mode != Some(Mode::Cloud) {
+            return false;
+        }
+        match self.backend {
+            CloudBackend::Claude => !settings.cloud_accepted,
+            CloudBackend::OpenAi => {
+                settings.openai_accepted.as_deref() != Some(self.openai_host().as_str())
+            }
+        }
     }
 
-    /// Writes the form into `file`. `cloud_accepted` is set when the first-use screen was
-    /// accepted now.
+    /// Writes the form into `file`. `cloud_accepted_now` is set when the first-use screen was
+    /// accepted now, for the chosen provider.
     pub fn apply(&self, file: &mut SettingsFile, cloud_accepted_now: bool) {
         let notebook = PathBuf::from(self.notebook.trim());
         if file.settings().0.notebook.as_ref() != Some(&notebook) {
@@ -105,11 +166,45 @@ impl Form {
         file.set("local_endpoint", self.local_endpoint.trim());
         file.set("local_model", self.local_model.trim());
         file.set("claude_model", self.claude_model.trim());
+        file.set("openai_endpoint", self.openai_endpoint.trim());
+        file.set("openai_model", self.openai_model.trim());
         if cloud_accepted_now {
-            file.set("cloud_accepted", "true");
+            match self.backend {
+                CloudBackend::Claude => file.set("cloud_accepted", "true"),
+                CloudBackend::OpenAi => file.set("openai_accepted", &self.openai_host()),
+            }
         }
+        file.set(
+            "token_cap",
+            &cap_text(parse_token_cap(&self.token_cap).flatten()),
+        );
         file.set("start_at_sign_in", bool_text(self.start_at_sign_in));
         file.set("capture_source", bool_text(self.capture_source));
+    }
+
+    /// The first-use screen's title and text, naming the chosen provider.
+    pub fn consent(&self) -> (String, String) {
+        match self.backend {
+            CloudBackend::Claude => (
+                "Send captures to Anthropic?".to_owned(),
+                cloud_consent_text(
+                    &format!("Anthropic's Claude API ({})", self.claude_model.trim()),
+                    "your Anthropic account",
+                    "Anthropic",
+                ),
+            ),
+            CloudBackend::OpenAi => {
+                let host = self.openai_host();
+                (
+                    format!("Send captures to {host}?"),
+                    cloud_consent_text(
+                        &format!("the API at {host} ({})", self.openai_model.trim()),
+                        "your account with that provider",
+                        &host,
+                    ),
+                )
+            }
+        }
     }
 }
 
@@ -117,15 +212,16 @@ fn bool_text(on: bool) -> &'static str {
     if on { "true" } else { "false" }
 }
 
-/// What the first-use screen for Cloud mode says.
-pub fn cloud_consent_text(model: &str) -> String {
+/// What the first-use screen for Cloud mode says: `api` names where captures go, `billed` whose
+/// account pays, and `to` who receives them.
+fn cloud_consent_text(api: &str, billed: &str, to: &str) -> String {
     format!(
-        "In Cloud mode, FastCapture sends each capture to Anthropic's Claude API ({model}) to write \
-         its note: what you typed, the text of links and files you capture, your screenshots and \
-         images, and, later, the titles of related notes in your notebook.\n\n\
+        "In Cloud mode, FastCapture sends each capture to {api} to write its note: what you \
+         typed, the text of links and files you capture, your screenshots and images, and short \
+         descriptions of related notes in your notebook.\n\n\
          Nothing is sent before you save a capture, and nothing you didn't capture is sent. \
-         API use is billed to your Anthropic account.\n\n\
-         Send your captures to Anthropic?"
+         API use is billed to {billed}.\n\n\
+         Send your captures to {to}?"
     )
 }
 
@@ -143,6 +239,17 @@ mod tests {
             local_model: "gemma3".into(),
             claude_model: "claude-sonnet-5-5".into(),
             ..Form::default()
+        }
+    }
+
+    fn openai() -> Form {
+        Form {
+            mode: Some(Mode::Cloud),
+            backend: CloudBackend::OpenAi,
+            openai_endpoint: "https://openrouter.ai/api/v1".into(),
+            openai_model: "openai/gpt-5-mini".into(),
+            key_saved: true,
+            ..form()
         }
     }
 
@@ -187,6 +294,47 @@ mod tests {
             }),
             None
         );
+        assert!(
+            with(|form| form.token_cap = "lots".into())
+                .unwrap()
+                .starts_with("The token cap is a number")
+        );
+        assert_eq!(with(|form| form.token_cap = "2M".into()), None);
+    }
+
+    #[test]
+    fn the_openai_compatible_api_needs_an_https_address_a_model_and_a_key() {
+        assert_eq!(openai().problem(), None);
+        let with = |change: fn(&mut Form)| {
+            let mut form = openai();
+            change(&mut form);
+            form.problem()
+        };
+        assert!(
+            with(|form| form.openai_endpoint.clear())
+                .unwrap()
+                .starts_with("Enter the API's address")
+        );
+        assert!(
+            with(|form| form.openai_endpoint = "http://api.openai.com/v1".into())
+                .unwrap()
+                .contains("isn't an https:// address")
+        );
+        assert_eq!(
+            with(|form| form.openai_model.clear()).as_deref(),
+            Some("Choose or type the model.")
+        );
+        assert_eq!(
+            with(|form| form.key_saved = false).as_deref(),
+            Some("Enter your API key for openrouter.ai.")
+        );
+        assert_eq!(
+            with(|form| {
+                form.key_saved = false;
+                form.new_key = "sk-or".into();
+            }),
+            None
+        );
     }
 
     #[test]
@@ -196,6 +344,7 @@ mod tests {
         cloud.mode = Some(Mode::Cloud);
         cloud.new_key = "sk-ant-secret".into();
         cloud.claude_model = "claude-opus-5-5".into();
+        cloud.token_cap = "500k".into();
         cloud.capture_source = true;
         cloud.apply(&mut file, true);
         let text = file.text();
@@ -206,6 +355,7 @@ mod tests {
         assert_eq!(settings.mode, Some(Mode::Cloud));
         assert_eq!(settings.notebook, Some(PathBuf::from(r"D:\Notes")));
         assert_eq!(settings.claude_model, "claude-opus-5-5");
+        assert_eq!(settings.token_cap, Some(500_000));
         assert!(settings.cloud_accepted && settings.capture_source);
         assert_eq!(
             Form::from_settings(&settings, true),
@@ -215,17 +365,46 @@ mod tests {
                 ..cloud
             }
         );
+
+        let mut file = SettingsFile::from_text("");
+        let mut cloud = openai();
+        cloud.token_cap = "1234567".into();
+        cloud.apply(&mut file, true);
+        let (settings, warnings) = parse(&file.text());
+        assert!(warnings.is_empty(), "{warnings:?}");
+        assert_eq!(settings.backend, CloudBackend::OpenAi);
+        assert_eq!(
+            settings.openai_endpoint.as_deref(),
+            Some("https://openrouter.ai/api/v1")
+        );
+        assert_eq!(settings.openai_model.as_deref(), Some("openai/gpt-5-mini"));
+        assert_eq!(settings.openai_accepted.as_deref(), Some("openrouter.ai"));
+        assert!(!settings.cloud_accepted, "accepted for that host only");
+        assert_eq!(Form::from_settings(&settings, true), cloud);
     }
 
     #[test]
-    fn cloud_needs_consent_once() {
+    fn cloud_needs_consent_once_per_provider_and_host() {
         let mut cloud = form();
         cloud.mode = Some(Mode::Cloud);
         assert!(cloud.needs_cloud_consent(&parse("").0));
         assert!(!cloud.needs_cloud_consent(&parse("cloud_accepted=true").0));
         assert!(!form().needs_cloud_consent(&parse("").0));
+        let (title, text) = cloud.consent();
+        assert_eq!(title, "Send captures to Anthropic?");
+        assert!(text.contains("Anthropic's Claude API (claude-sonnet-5-5)"));
+
+        let mut other = openai();
+        assert!(other.needs_cloud_consent(&parse("cloud_accepted=true").0));
+        assert!(!other.needs_cloud_consent(&parse("openai_accepted=openrouter.ai").0));
+        other.openai_endpoint = "https://api.openai.com/v1".into();
         assert!(
-            cloud_consent_text("claude-sonnet-5-5").contains("Send your captures to Anthropic?")
+            other.needs_cloud_consent(&parse("openai_accepted=openrouter.ai").0),
+            "another host asks again"
         );
+        let (title, text) = other.consent();
+        assert_eq!(title, "Send captures to api.openai.com?");
+        assert!(text.contains("the API at api.openai.com (openai/gpt-5-mini)"));
+        assert!(text.ends_with("Send your captures to api.openai.com?"));
     }
 }

@@ -71,9 +71,9 @@ src/
 
 ### Part 5: Settings
 
-- [ ] `ui/settings.rs`, `ui/settings_form.rs`: "Notes by" becomes **A model on this PC (Local)** / **A cloud API (Cloud)**. Cloud has a provider combo, **Claude API** or **OpenAI-compatible**: Claude shows its model list and key as now; OpenAI-compatible shows **Address** (base URL), **Model** (a combo you can type into, filled by **List models**) and its own **API key**, saved as `FastCapture/openai`. **Test** sends the usual tiny note request to whichever is chosen.
-- [ ] Below them: "Tokens used: 12,400 today, 210,000 this month, as the APIs reported them." and **Monthly token cap** (a box; empty for none), with the line saying when the cap is reached.
-- [ ] The first-use screen names the provider: Anthropic's Claude API, or the OpenAI-compatible host. It is asked again when that host changes.
+- [x] `ui/settings.rs`, `ui/settings_form.rs`: "Notes by" becomes **A model on this PC (Local)** / **A cloud API (Cloud)**. Cloud has a provider combo, **Claude API** or **OpenAI-compatible**: Claude shows its model list and key as now; OpenAI-compatible shows **Address** (base URL), **Model** (a combo you can type into, filled by **List models**) and its own **API key**, saved as `FastCapture/openai`. **Test** sends the usual tiny note request to whichever is chosen. The two providers share the Address, Model and API key rows; only the chosen one's fields show, Claude's address is shown read-only, and a key typed for one provider is cleared when you switch to the other.
+- [x] Below them: "Tokens used: 12,400 today, 210,000 this month, as the APIs reported them." and **Monthly token cap** (a box; empty for none), with the line saying when the cap is reached.
+- [x] The first-use screen names the provider: Anthropic's Claude API, or the OpenAI-compatible host. It is asked again when that host changes. It now says "short descriptions of related notes" rather than "later, the titles of related notes", since M4 sends them.
 - **Tests:** the form's checks (no address, not https, no model, no key); the round trip through the file, never the key; consent asked once per host; the window driven through messages saves an OpenAI-compatible setup with its key in Credential Manager (a test credential name), and shows the ledger's numbers.
 
 ### Part 6: End to end

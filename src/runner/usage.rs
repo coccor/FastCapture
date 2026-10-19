@@ -20,6 +20,12 @@ pub fn path() -> Option<PathBuf> {
     crate::paths::local().map(|local| local.join(FILE))
 }
 
+/// Today's date, `YYYY-MM-DD`, as the ledger's days are written.
+pub fn today() -> String {
+    let (date, _) = crate::platform::clock::local_now();
+    crate::notebook::dates::format(date, "YYYY-MM-DD")
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 enum Line {
     Day {

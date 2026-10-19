@@ -5,6 +5,7 @@
 //! ledger.
 
 use super::process::{self, Outcome};
+use super::usage::today;
 use crate::index::service::Indexes;
 use crate::model::Backend;
 use crate::queue::{State, Store};
@@ -201,11 +202,6 @@ fn sleep(shared: &Shared, timeout: Option<Duration>) -> bool {
     }
     signals.woken = false;
     !signals.stop
-}
-
-fn today() -> String {
-    let (date, _) = crate::platform::clock::local_now();
-    crate::notebook::dates::format(date, "YYYY-MM-DD")
 }
 
 fn run(

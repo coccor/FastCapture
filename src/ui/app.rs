@@ -511,7 +511,9 @@ fn open_settings_window(window: HWND) {
     let file = path.clone();
     let opened = settings_window::open(settings_window::Open {
         settings: path,
-        key_target: crate::secrets::target("claude"),
+        claude_key: crate::secrets::target(crate::config::settings::CloudBackend::Claude.key()),
+        openai_key: crate::secrets::target(crate::config::settings::CloudBackend::OpenAi.key()),
+        usage: crate::runner::usage::path(),
         saved: Box::new(move || unsafe {
             PostMessageW(target.get(), WM_APP_SETTINGS, 0, 0);
         }),

@@ -1,19 +1,22 @@
-//! The Settings window: the notebook, Local or Cloud, the local server and model, the Claude
-//! model and API key, and two switches. Built from standard controls, so the keyboard and
+//! The Settings window: the notebook, Local or Cloud, the local server and model, the cloud
+//! provider (the Claude API or an OpenAI-compatible API) with its model and API key, the tokens
+//! used and the monthly cap, and two switches. Built from standard controls, so the keyboard and
 //! screen readers work through Windows; Tab, Enter (Save) and Esc (Cancel) come from
 //! `IsDialogMessageW` in the app's message loop. Finding servers, listing models, the vision
-//! check and Test run on threads of their own and report back with `WM_SETTINGS_RESULT`.
+//! check and Test run on threads of their own and report back with `WM_SETTINGS_RESULT`. The
+//! two providers' fields share rows; only the chosen provider's are shown.
 //! Hotkeys and the rest stay in `fastcapture.ini` (Open settings file).
 
 use super::settings_form::Form;
 use super::theme::{self, scale};
-use crate::config::settings::{Mode, Settings, SettingsFile};
+use crate::config::settings::{CloudBackend, Mode, Settings, SettingsFile};
 use crate::model::claude::{self, Claude};
 use crate::model::local::{self, Found};
 use crate::model::openai::{self, OpenAi};
 use crate::model::request::{CaptureFacts, NoteRequest};
 use crate::model::{Backend, prompt};
-use std::path::PathBuf;
+use crate::runner::usage::{self, Ledger, thousands};
+use std::path::{Path, PathBuf};
 use std::time::Duration;
 use windows_sys::Win32::Foundation::{
     ERROR_CLASS_ALREADY_EXISTS, GetLastError, HWND, LPARAM, LRESULT, RECT, WPARAM,
@@ -32,10 +35,10 @@ use windows_sys::Win32::UI::WindowsAndMessaging::{
     CBS_DROPDOWNLIST, CW_USEDEFAULT, CreateWindowExW, DefWindowProcW, DestroyWindow,
     ES_AUTOHSCROLL, ES_PASSWORD, FindWindowW, GWLP_USERDATA, GetWindowLongPtrW,
     GetWindowTextLengthW, GetWindowTextW, IDC_ARROW, IDCANCEL, IDOK, IsDialogMessageW, LoadCursorW,
-    MSG, PostMessageW, RegisterClassW, SW_SHOWNORMAL, SendMessageW, SetForegroundWindow,
-    SetWindowLongPtrW, SetWindowTextW, ShowWindow, WM_APP, WM_CLOSE, WM_COMMAND, WM_NCDESTROY,
-    WM_SETFONT, WNDCLASSW, WS_CAPTION, WS_CHILD, WS_EX_CLIENTEDGE, WS_GROUP, WS_MINIMIZEBOX,
-    WS_SYSMENU, WS_TABSTOP, WS_VISIBLE, WS_VSCROLL,
+    MSG, PostMessageW, RegisterClassW, SW_HIDE, SW_SHOW, SW_SHOWNORMAL, SendMessageW,
+    SetForegroundWindow, SetWindowLongPtrW, SetWindowTextW, ShowWindow, WM_APP, WM_CLOSE,
+    WM_COMMAND, WM_NCDESTROY, WM_SETFONT, WNDCLASSW, WS_CAPTION, WS_CHILD, WS_EX_CLIENTEDGE,
+    WS_GROUP, WS_MINIMIZEBOX, WS_SYSMENU, WS_TABSTOP, WS_VISIBLE, WS_VSCROLL,
 };
 
 /// A background job finished: a boxed `Event` in lparam.
@@ -58,14 +61,28 @@ const ID_SIGN_IN: i32 = 115;
 const ID_SOURCE: i32 = 116;
 const ID_OPEN_FILE: i32 = 117;
 const ID_PROBLEM: i32 = 118;
+const ID_PROVIDER: i32 = 119;
+const ID_ADDRESS: i32 = 120;
+const ID_OPENAI_MODEL: i32 = 121;
+const ID_LIST_MODELS: i32 = 122;
+const ID_USAGE: i32 = 123;
+const ID_CAP: i32 = 124;
 
 const WIDTH: i32 = 560;
-const HEIGHT: i32 = 500;
+const HEIGHT: i32 = 636;
+
+/// The provider combo's items, in `CloudBackend` order.
+const PROVIDERS: [(CloudBackend, &str); 2] = [
+    (CloudBackend::Claude, "Claude API (Anthropic)"),
+    (CloudBackend::OpenAi, "OpenAI-compatible API"),
+];
 
 /// What a background job found.
 enum Event {
     Servers(Vec<Found>),
     Models(String, Result<Vec<String>, String>),
+    /// The OpenAI-compatible API's models.
+    CloudModels(String, Result<Vec<String>, String>),
     Vision(String, String, Option<bool>),
     Tested(Result<String, String>),
 }
@@ -73,8 +90,11 @@ enum Event {
 /// What the window opens with.
 pub struct Open {
     pub settings: PathBuf,
-    /// The Credential Manager name the Claude key is saved under.
-    pub key_target: String,
+    /// The Credential Manager names the Claude and OpenAI-compatible keys are saved under.
+    pub claude_key: String,
+    pub openai_key: String,
+    /// The usage ledger, for the tokens used.
+    pub usage: Option<PathBuf>,
     /// The settings were saved: apply them now.
     pub saved: Box<dyn Fn()>,
     /// Open `fastcapture.ini` itself.
@@ -88,26 +108,61 @@ struct Controls {
     endpoint: HWND,
     local_model: HWND,
     vision: HWND,
+    provider: HWND,
     cloud_model: HWND,
+    openai_address: HWND,
+    claude_address: HWND,
+    openai_model: HWND,
     key: HWND,
     key_status: HWND,
     test_status: HWND,
+    usage: HWND,
+    cap: HWND,
     sign_in: HWND,
     source: HWND,
     problem: HWND,
     /// Everything that only applies to Local mode, and to Cloud mode.
     local_group: Vec<HWND>,
     cloud_group: Vec<HWND>,
+    /// Shown only for one provider.
+    claude_only: Vec<HWND>,
+    openai_only: Vec<HWND>,
 }
 
 struct SettingsWindow {
     open: Open,
     settings: Settings,
-    key_saved: bool,
+    claude_key_saved: bool,
+    openai_key_saved: bool,
     font: HFONT,
     controls: Controls,
     /// The Claude models listed in the combo, in order.
     claude_models: Vec<String>,
+}
+
+impl SettingsWindow {
+    fn key_target(&self, backend: CloudBackend) -> &str {
+        match backend {
+            CloudBackend::Claude => &self.open.claude_key,
+            CloudBackend::OpenAi => &self.open.openai_key,
+        }
+    }
+
+    fn key_saved(&self, backend: CloudBackend) -> bool {
+        match backend {
+            CloudBackend::Claude => self.claude_key_saved,
+            CloudBackend::OpenAi => self.openai_key_saved,
+        }
+    }
+
+    /// The provider the combo shows.
+    fn provider(&self) -> CloudBackend {
+        let index = unsafe { SendMessageW(self.controls.provider, CB_GETCURSEL, 0, 0) };
+        usize::try_from(index)
+            .ok()
+            .and_then(|index| PROVIDERS.get(index))
+            .map_or(CloudBackend::Claude, |(backend, _)| *backend)
+    }
 }
 
 fn wide(text: &str) -> Vec<u16> {
@@ -273,7 +328,8 @@ pub fn open(options: Open) -> Option<HWND> {
     };
     let font = theme::font(9, false, dpi);
     let (settings, _) = SettingsFile::load(&options.settings).settings();
-    let key_saved = crate::secrets::load(&options.key_target).is_some();
+    let claude_key_saved = crate::secrets::load(&options.claude_key).is_some();
+    let openai_key_saved = crate::secrets::load(&options.openai_key).is_some();
     let controls = create_controls(hwnd, dpi, font);
     let mut claude_models: Vec<String> = claude::MODELS
         .iter()
@@ -285,7 +341,8 @@ pub fn open(options: Open) -> Option<HWND> {
     let window = Box::new(SettingsWindow {
         open: options,
         settings,
-        key_saved,
+        claude_key_saved,
+        openai_key_saved,
         font,
         controls,
         claude_models,
@@ -372,7 +429,7 @@ fn create_controls(hwnd: HWND, dpi: u32, font: HFONT) -> Controls {
     );
     let cloud = make(
         "BUTTON",
-        "Claude (Cloud)",
+        "A cloud API (Cloud)",
         BS_AUTORADIOBUTTON as u32,
         0,
         field_x + 216,
@@ -429,26 +486,83 @@ fn create_controls(hwnd: HWND, dpi: u32, font: HFONT) -> Controls {
         ID_VISION,
     );
 
-    let cloud_label = label("Claude model", 200);
+    let provider_label = label("Provider", 200);
+    let provider = make(
+        "COMBOBOX",
+        "",
+        WS_TABSTOP | WS_GROUP | WS_VSCROLL | CBS_DROPDOWNLIST as u32,
+        0,
+        field_x,
+        200,
+        field_w,
+        200,
+        ID_PROVIDER,
+    );
+    let address_label = label("Address", 236);
+    let claude_address = make(
+        "EDIT",
+        claude::API_BASE,
+        ES_AUTOHSCROLL as u32,
+        WS_EX_CLIENTEDGE,
+        field_x,
+        236,
+        field_w,
+        24,
+        -1,
+    );
+    let openai_address = make(
+        "EDIT",
+        "",
+        edit,
+        WS_EX_CLIENTEDGE,
+        field_x,
+        236,
+        field_w,
+        24,
+        ID_ADDRESS,
+    );
+    let cloud_label = label("Model", 272);
     let cloud_model = make(
         "COMBOBOX",
         "",
         WS_TABSTOP | WS_VSCROLL | CBS_DROPDOWNLIST as u32,
         0,
         field_x,
-        200,
+        272,
         field_w,
         200,
         ID_CLOUD_MODEL,
     );
-    let key_label = label("API key", 236);
+    let openai_model = make(
+        "COMBOBOX",
+        "",
+        WS_TABSTOP | WS_VSCROLL | CBS_DROPDOWN as u32,
+        0,
+        field_x,
+        272,
+        field_w,
+        200,
+        ID_OPENAI_MODEL,
+    );
+    let list_models = make(
+        "BUTTON",
+        "List models",
+        WS_TABSTOP | BS_PUSHBUTTON as u32,
+        0,
+        button_x,
+        271,
+        button_w,
+        26,
+        ID_LIST_MODELS,
+    );
+    let key_label = label("API key", 308);
     let key = make(
         "EDIT",
         "",
         edit | ES_PASSWORD as u32,
         WS_EX_CLIENTEDGE,
         field_x,
-        236,
+        308,
         field_w,
         24,
         ID_KEY,
@@ -459,7 +573,7 @@ fn create_controls(hwnd: HWND, dpi: u32, font: HFONT) -> Controls {
         0,
         0,
         field_x,
-        266,
+        338,
         field_w + button_w,
         20,
         ID_KEY_STATUS,
@@ -471,7 +585,7 @@ fn create_controls(hwnd: HWND, dpi: u32, font: HFONT) -> Controls {
         WS_TABSTOP | BS_PUSHBUTTON as u32,
         0,
         field_x,
-        300,
+        372,
         96,
         26,
         ID_TEST,
@@ -482,10 +596,45 @@ fn create_controls(hwnd: HWND, dpi: u32, font: HFONT) -> Controls {
         0,
         0,
         field_x + 106,
-        304,
+        376,
         field_w + button_w - 106,
         40,
         ID_TEST_STATUS,
+    );
+
+    let usage = make(
+        "STATIC",
+        "",
+        0,
+        0,
+        field_x,
+        422,
+        field_w + button_w,
+        20,
+        ID_USAGE,
+    );
+    label("Token cap", 450);
+    let cap = make(
+        "EDIT",
+        "",
+        edit,
+        WS_EX_CLIENTEDGE,
+        field_x,
+        450,
+        96,
+        24,
+        ID_CAP,
+    );
+    make(
+        "STATIC",
+        "tokens a month, like 2M or 500k; empty for none",
+        0,
+        0,
+        field_x + 106,
+        454,
+        field_w + button_w - 106,
+        20,
+        -1,
     );
 
     let sign_in = make(
@@ -494,7 +643,7 @@ fn create_controls(hwnd: HWND, dpi: u32, font: HFONT) -> Controls {
         WS_TABSTOP | BS_AUTOCHECKBOX as u32,
         0,
         field_x,
-        356,
+        492,
         360,
         22,
         ID_SIGN_IN,
@@ -505,20 +654,20 @@ fn create_controls(hwnd: HWND, dpi: u32, font: HFONT) -> Controls {
         WS_TABSTOP | BS_AUTOCHECKBOX as u32,
         0,
         field_x,
-        382,
+        518,
         360,
         22,
         ID_SOURCE,
     );
 
-    let problem = make("STATIC", "", 0, 0, 16, 418, WIDTH - 32, 20, ID_PROBLEM);
+    let problem = make("STATIC", "", 0, 0, 16, 554, WIDTH - 32, 20, ID_PROBLEM);
     make(
         "BUTTON",
         "Open settings file",
         WS_TABSTOP | BS_PUSHBUTTON as u32,
         0,
         16,
-        452,
+        588,
         140,
         28,
         ID_OPEN_FILE,
@@ -529,7 +678,7 @@ fn create_controls(hwnd: HWND, dpi: u32, font: HFONT) -> Controls {
         WS_TABSTOP | BS_DEFPUSHBUTTON as u32,
         0,
         WIDTH - 16 - 2 * 96 - 8,
-        452,
+        588,
         96,
         28,
         IDOK,
@@ -540,7 +689,7 @@ fn create_controls(hwnd: HWND, dpi: u32, font: HFONT) -> Controls {
         WS_TABSTOP | BS_PUSHBUTTON as u32,
         0,
         WIDTH - 16 - 96,
-        452,
+        588,
         96,
         28,
         IDCANCEL,
@@ -553,10 +702,16 @@ fn create_controls(hwnd: HWND, dpi: u32, font: HFONT) -> Controls {
         endpoint,
         local_model,
         vision,
+        provider,
         cloud_model,
+        openai_address,
+        claude_address,
+        openai_model,
         key,
         key_status,
         test_status,
+        usage,
+        cap,
         sign_in,
         source,
         problem,
@@ -568,7 +723,21 @@ fn create_controls(hwnd: HWND, dpi: u32, font: HFONT) -> Controls {
             local_model,
             vision,
         ],
-        cloud_group: vec![cloud_label, cloud_model, key_label, key, key_status],
+        cloud_group: vec![
+            provider_label,
+            provider,
+            address_label,
+            openai_address,
+            cloud_label,
+            cloud_model,
+            openai_model,
+            list_models,
+            key_label,
+            key,
+            key_status,
+        ],
+        claude_only: vec![claude_address, cloud_model],
+        openai_only: vec![openai_address, openai_model, list_models],
     }
 }
 
@@ -577,7 +746,7 @@ fn load(hwnd: HWND) {
     let Some(window) = state(hwnd) else {
         return;
     };
-    let form = Form::from_settings(&window.settings, window.key_saved);
+    let form = Form::from_settings(&window.settings, window.key_saved(window.settings.backend));
     let controls = &window.controls;
     set_text(controls.notebook, &form.notebook);
     set_checked(controls.local, form.mode == Some(Mode::Local));
@@ -601,13 +770,22 @@ fn load(hwnd: HWND) {
         .position(|id| *id == form.claude_model)
         .unwrap_or(0);
     unsafe { SendMessageW(controls.cloud_model, CB_SETCURSEL, index, 0) };
+    let providers: Vec<String> = PROVIDERS
+        .iter()
+        .map(|(_, name)| (*name).to_owned())
+        .collect();
+    combo_fill(controls.provider, &providers);
+    let provider = PROVIDERS
+        .iter()
+        .position(|(backend, _)| *backend == form.backend)
+        .unwrap_or(0);
+    unsafe { SendMessageW(controls.provider, CB_SETCURSEL, provider, 0) };
+    set_text(controls.openai_address, &form.openai_endpoint);
+    set_text(controls.openai_model, &form.openai_model);
+    set_text(controls.cap, &form.token_cap);
     set_text(
-        controls.key_status,
-        if form.key_saved {
-            "A key is saved in Windows Credential Manager. Type a new one to replace it."
-        } else {
-            "Saved in Windows Credential Manager, never in a file."
-        },
+        controls.usage,
+        &usage_text(window.open.usage.as_deref(), window.settings.token_cap),
     );
     set_checked(controls.sign_in, form.start_at_sign_in);
     set_checked(controls.source, form.capture_source);
@@ -635,12 +813,15 @@ fn read_form(window: &SettingsWindow) -> Form {
     Form {
         notebook: text_of(controls.notebook).trim().to_owned(),
         mode,
-        backend: window.settings.backend,
+        backend: window.provider(),
         local_endpoint: combo_text(controls.endpoint).trim().to_owned(),
         local_model: combo_text(controls.local_model).trim().to_owned(),
         claude_model,
+        openai_endpoint: text_of(controls.openai_address).trim().to_owned(),
+        openai_model: combo_text(controls.openai_model).trim().to_owned(),
         new_key: text_of(controls.key).trim().to_owned(),
-        key_saved: window.key_saved,
+        key_saved: window.key_saved(window.provider()),
+        token_cap: text_of(controls.cap).trim().to_owned(),
         start_at_sign_in: checked(controls.sign_in),
         capture_source: checked(controls.source),
     }
@@ -658,6 +839,48 @@ fn enable_for_mode(hwnd: HWND) {
     for control in &window.controls.cloud_group {
         unsafe { EnableWindow(*control, i32::from(cloud)) };
     }
+    // Anthropic's address is shown, not edited.
+    unsafe { EnableWindow(window.controls.claude_address, 0) };
+    let provider = window.provider();
+    let show = |controls: &[HWND], on: bool| {
+        for control in controls {
+            unsafe { ShowWindow(*control, if on { SW_SHOW } else { SW_HIDE }) };
+        }
+    };
+    show(
+        &window.controls.claude_only,
+        provider == CloudBackend::Claude,
+    );
+    show(
+        &window.controls.openai_only,
+        provider == CloudBackend::OpenAi,
+    );
+    set_text(
+        window.controls.key_status,
+        if window.key_saved(provider) {
+            "A key is saved in Windows Credential Manager. Type a new one to replace it."
+        } else {
+            "Saved in Windows Credential Manager, never in a file."
+        },
+    );
+}
+
+/// "Tokens used: 12,400 today, 210,000 this month…", from the ledger at `ledger`.
+fn usage_text(ledger: Option<&Path>, cap: Option<u64>) -> String {
+    let Some(ledger) = ledger.map(Ledger::load) else {
+        return String::new();
+    };
+    let day = usage::today();
+    let month = ledger.month(&day).total();
+    let mut text = format!(
+        "Tokens used: {} today, {} this month, as the cloud APIs reported them.",
+        thousands(ledger.day(&day).total()),
+        thousands(month)
+    );
+    if cap.is_some_and(|cap| month >= cap) {
+        text.push_str(" The cap is reached.");
+    }
+    text
 }
 
 /// Runs `job` on a thread and posts its event back to the window.
@@ -686,6 +909,36 @@ fn list_models(hwnd: HWND, endpoint: String) {
         let models = openai::list_models(&endpoint, None, Duration::from_secs(5))
             .map_err(|error| error.to_string());
         Event::Models(endpoint, models)
+    });
+}
+
+/// The OpenAI-compatible API's models, with the typed or saved key.
+fn list_cloud_models(hwnd: HWND) {
+    let Some(window) = state(hwnd) else {
+        return;
+    };
+    let endpoint = text_of(window.controls.openai_address).trim().to_owned();
+    if !crate::net::http::parse_url(&endpoint).is_ok_and(|target| target.secure) {
+        set_text(
+            window.controls.test_status,
+            "Enter the API's https:// address first.",
+        );
+        return;
+    }
+    let typed = text_of(window.controls.key).trim().to_owned();
+    let key = if typed.is_empty() {
+        crate::secrets::load(&window.open.openai_key)
+    } else {
+        Some(typed)
+    };
+    set_text(
+        window.controls.test_status,
+        "Asking the API for its models…",
+    );
+    in_background(hwnd, move || {
+        let models = openai::list_models(&endpoint, key.as_deref(), Duration::from_secs(15))
+            .map_err(|error| error.to_string());
+        Event::CloudModels(endpoint, models)
     });
 }
 
@@ -751,8 +1004,8 @@ fn test(hwnd: HWND) {
         return;
     }
     let saved_key = window
-        .key_saved
-        .then(|| crate::secrets::load(&window.open.key_target))
+        .key_saved(form.backend)
+        .then(|| crate::secrets::load(window.key_target(form.backend)))
         .flatten();
     set_text(
         window.controls.test_status,
@@ -769,9 +1022,15 @@ fn test(hwnd: HWND) {
                 } else {
                     form.new_key.clone()
                 };
-                Claude::new(&form.claude_model, key)
-                    .map(|backend| Box::new(backend) as Box<dyn Backend>)
-                    .map_err(|error| error.to_string())
+                match form.backend {
+                    CloudBackend::Claude => Claude::new(&form.claude_model, key)
+                        .map(|backend| Box::new(backend) as Box<dyn Backend>),
+                    CloudBackend::OpenAi => {
+                        OpenAi::cloud(&form.openai_endpoint, &form.openai_model, key)
+                            .map(|backend| Box::new(backend) as Box<dyn Backend>)
+                    }
+                }
+                .map_err(|error| error.to_string())
             }
         };
         Event::Tested(backend.and_then(|backend| {
@@ -789,10 +1048,10 @@ thread_local! {
     static CONSENT: std::cell::Cell<bool> = const { std::cell::Cell::new(true) };
 }
 
-fn confirm_cloud(hwnd: HWND, model: &str) -> bool {
+fn confirm_cloud(hwnd: HWND, form: &Form) -> bool {
     #[cfg(test)]
     {
-        let _ = (hwnd, model);
+        let _ = (hwnd, form);
         CONSENT.with(std::cell::Cell::get)
     }
     #[cfg(not(test))]
@@ -800,11 +1059,12 @@ fn confirm_cloud(hwnd: HWND, model: &str) -> bool {
         use windows_sys::Win32::UI::WindowsAndMessaging::{
             IDYES, MB_DEFBUTTON2, MB_ICONINFORMATION, MB_YESNO, MessageBoxW,
         };
+        let (title, text) = form.consent();
         unsafe {
             MessageBoxW(
                 hwnd,
-                wide(&super::settings_form::cloud_consent_text(model)).as_ptr(),
-                wide("Send captures to Anthropic?").as_ptr(),
+                wide(&text).as_ptr(),
+                wide(&title).as_ptr(),
                 MB_YESNO | MB_ICONINFORMATION | MB_DEFBUTTON2,
             ) == IDYES
         }
@@ -823,7 +1083,7 @@ fn save(hwnd: HWND) {
         return;
     }
     let consent = form.needs_cloud_consent(&window.settings);
-    if consent && !confirm_cloud(hwnd, &form.claude_model) {
+    if consent && !confirm_cloud(hwnd, &form) {
         set_text(
             window.controls.problem,
             "Cloud mode wasn't confirmed, so nothing was saved.",
@@ -834,7 +1094,7 @@ fn save(hwnd: HWND) {
         return;
     };
     if !form.new_key.is_empty()
-        && let Err(error) = crate::secrets::save(&window.open.key_target, &form.new_key)
+        && let Err(error) = crate::secrets::save(window.key_target(form.backend), &form.new_key)
     {
         set_text(
             window.controls.problem,
@@ -926,6 +1186,27 @@ fn on_event(hwnd: HWND, event: Event) {
                 ),
             }
         }
+        Event::CloudModels(endpoint, models) => {
+            if text_of(controls.openai_address).trim() != endpoint {
+                return;
+            }
+            match models {
+                Ok(models) => {
+                    let current = combo_text(controls.openai_model);
+                    combo_fill(controls.openai_model, &models);
+                    set_text(controls.openai_model, &current);
+                    set_text(
+                        controls.test_status,
+                        &match models.len() {
+                            0 => "The API lists no models; type the model's name.".to_owned(),
+                            1 => "The API lists 1 model.".to_owned(),
+                            count => format!("The API lists {count} models."),
+                        },
+                    );
+                }
+                Err(error) => set_text(controls.test_status, &error),
+            }
+        }
         Event::Vision(endpoint, model, reads) => {
             if combo_text(controls.endpoint).trim() != endpoint
                 || combo_text(controls.local_model).trim() != model
@@ -988,6 +1269,15 @@ unsafe extern "system" fn settings_proc(
                     }
                 }
                 (ID_LOCAL_MODEL, CBN_SELCHANGE | CBN_KILLFOCUS) => check_vision(hwnd),
+                (ID_PROVIDER, CBN_SELCHANGE) => {
+                    // A key typed for one provider isn't saved as the other's.
+                    if let Some(window) = state(hwnd) {
+                        set_text(window.controls.key, "");
+                        set_text(window.controls.problem, "");
+                    }
+                    enable_for_mode(hwnd);
+                }
+                (ID_LIST_MODELS, _) => list_cloud_models(hwnd),
                 (ID_TEST, _) => test(hwnd),
                 (ID_OPEN_FILE, _) => {
                     if let Some(window) = state(hwnd) {
@@ -1041,7 +1331,8 @@ mod tests {
     use std::rc::Rc;
     use windows_sys::Win32::UI::WindowsAndMessaging::IsWindow;
 
-    struct Temp(PathBuf, String);
+    /// A scratch folder, and test credential names for the Claude and OpenAI-compatible keys.
+    struct Temp(PathBuf, String, String);
 
     impl Temp {
         fn new(name: &str) -> Self {
@@ -1051,16 +1342,21 @@ mod tests {
             ));
             let _ = std::fs::remove_dir_all(&dir);
             std::fs::create_dir_all(&dir).unwrap();
-            Self(
-                dir,
-                crate::secrets::target(&format!("test-window-{name}-{}", std::process::id())),
-            )
+            let key = |backend: &str| {
+                crate::secrets::target(&format!(
+                    "test-window-{name}-{backend}-{}",
+                    std::process::id()
+                ))
+            };
+            Self(dir, key("claude"), key("openai"))
         }
 
         fn open(&self, saved: Rc<Cell<bool>>) -> HWND {
             open(Open {
                 settings: self.0.join("fastcapture.ini"),
-                key_target: self.1.clone(),
+                claude_key: self.1.clone(),
+                openai_key: self.2.clone(),
+                usage: Some(self.0.join(usage::FILE)),
                 saved: Box::new(move || saved.set(true)),
                 open_file: Box::new(|| {}),
             })
@@ -1071,12 +1367,104 @@ mod tests {
     impl Drop for Temp {
         fn drop(&mut self) {
             crate::secrets::delete(&self.1);
+            crate::secrets::delete(&self.2);
             let _ = std::fs::remove_dir_all(&self.0);
         }
     }
 
     fn command(hwnd: HWND, id: i32) {
         unsafe { SendMessageW(hwnd, WM_COMMAND, id as usize, 0) };
+    }
+
+    fn notify(hwnd: HWND, id: i32, code: u32) {
+        unsafe { SendMessageW(hwnd, WM_COMMAND, ((code as usize) << 16) | id as usize, 0) };
+    }
+
+    fn visible(control: HWND) -> bool {
+        unsafe { windows_sys::Win32::UI::WindowsAndMessaging::IsWindowVisible(control) != 0 }
+    }
+
+    #[test]
+    fn an_openai_compatible_api_is_saved_with_its_own_key_and_the_tokens_used_are_shown() {
+        let temp = Temp::new("openai");
+        std::fs::write(
+            temp.0.join("fastcapture.ini"),
+            format!(
+                "notebook={}\r\nmode=cloud\r\ncloud_accepted=true\r\ntoken_cap=1k\r\n",
+                temp.0.display()
+            ),
+        )
+        .unwrap();
+        usage::record(
+            &temp.0.join(usage::FILE),
+            &usage::today(),
+            "cloud/claude-haiku-5-5",
+            crate::model::Usage {
+                input: 1200,
+                cache_read: 300,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        let saved = Rc::new(Cell::new(false));
+        let hwnd = temp.open(saved.clone());
+        let window = state(hwnd).unwrap();
+        assert_eq!(
+            text_of(window.controls.usage),
+            "Tokens used: 1,500 today, 1,500 this month, as the cloud APIs reported them. The cap is reached."
+        );
+        assert_eq!(text_of(window.controls.cap), "1k");
+        assert!(visible(window.controls.cloud_model) && !visible(window.controls.openai_address));
+
+        unsafe { SendMessageW(window.controls.provider, CB_SETCURSEL, 1, 0) };
+        set_text(window.controls.key, "typed for Claude");
+        notify(hwnd, ID_PROVIDER, CBN_SELCHANGE);
+        let window = state(hwnd).unwrap();
+        assert!(!visible(window.controls.cloud_model) && visible(window.controls.openai_address));
+        assert_eq!(
+            text_of(window.controls.key),
+            "",
+            "the other provider's key is cleared"
+        );
+        command(hwnd, IDOK);
+        assert!(
+            text_of(state(hwnd).unwrap().controls.problem).starts_with("Enter the API's address")
+        );
+
+        let window = state(hwnd).unwrap();
+        set_text(
+            window.controls.openai_address,
+            "https://api.example.test/v1",
+        );
+        set_text(window.controls.openai_model, "gpt-test");
+        set_text(window.controls.key, "sk-openai-window-test");
+        set_text(window.controls.cap, "2M");
+        command(hwnd, IDOK);
+        assert!(
+            saved.get(),
+            "{}",
+            text_of(state(hwnd).map_or(hwnd, |w| w.controls.problem))
+        );
+
+        let text = std::fs::read_to_string(temp.0.join("fastcapture.ini")).unwrap();
+        assert!(!text.contains("sk-openai"), "{text}");
+        let (settings, _) = crate::config::settings::parse(&text);
+        assert_eq!(settings.backend, CloudBackend::OpenAi);
+        assert_eq!(
+            settings.openai_endpoint.as_deref(),
+            Some("https://api.example.test/v1")
+        );
+        assert_eq!(settings.openai_model.as_deref(), Some("gpt-test"));
+        assert_eq!(
+            settings.openai_accepted.as_deref(),
+            Some("api.example.test")
+        );
+        assert_eq!(settings.token_cap, Some(2_000_000));
+        assert_eq!(
+            crate::secrets::load(&temp.2).as_deref(),
+            Some("sk-openai-window-test")
+        );
+        assert_eq!(crate::secrets::load(&temp.1), None, "no Claude key saved");
     }
 
     #[test]

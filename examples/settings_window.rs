@@ -13,7 +13,9 @@ fn main() {
     let path = PathBuf::from(std::env::args_os().nth(1).expect("a settings file path"));
     if settings::open(settings::Open {
         settings: path,
-        key_target: fastcapture::secrets::target("example"),
+        claude_key: fastcapture::secrets::target("example-claude"),
+        openai_key: fastcapture::secrets::target("example-openai"),
+        usage: fastcapture::runner::usage::path(),
         saved: Box::new(|| {}),
         open_file: Box::new(|| {}),
     })
