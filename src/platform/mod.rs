@@ -6,6 +6,7 @@ pub mod clock;
 pub mod console;
 pub mod hotkey;
 pub mod instance;
+pub mod job;
 pub mod png;
 pub mod random;
 pub mod saver;

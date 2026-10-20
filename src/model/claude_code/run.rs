@@ -3,21 +3,14 @@
 //! variables removed, and a time limit. The program and anything it starts run in a job object,
 //! so a timeout or a finished run leaves nothing behind.
 
+use crate::platform::job::{CREATE_NO_WINDOW, Job};
 use std::ffi::OsString;
 use std::io::{Read, Write};
-use std::os::windows::io::AsRawHandle;
 use std::os::windows::process::CommandExt;
 use std::path::Path;
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
-use windows_sys::Win32::Foundation::{CloseHandle, HANDLE};
-use windows_sys::Win32::System::JobObjects::{
-    AssignProcessToJobObject, CreateJobObjectW, JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
-    JOBOBJECT_EXTENDED_LIMIT_INFORMATION, JobObjectExtendedLimitInformation,
-    SetInformationJobObject, TerminateJobObject,
-};
 
-const CREATE_NO_WINDOW: u32 = 0x0800_0000;
 /// How much of stderr is kept.
 const STDERR_KEPT: usize = 4096;
 
@@ -36,44 +29,6 @@ pub enum RunError {
     Start(String),
     /// It ran past the time limit and was stopped.
     TimedOut,
-}
-
-/// A job object that ends every process in it when it is closed.
-struct Job(HANDLE);
-
-impl Job {
-    fn new() -> Option<Self> {
-        let handle = unsafe { CreateJobObjectW(std::ptr::null(), std::ptr::null()) };
-        if handle.is_null() {
-            return None;
-        }
-        let job = Self(handle);
-        let mut limits: JOBOBJECT_EXTENDED_LIMIT_INFORMATION = unsafe { std::mem::zeroed() };
-        limits.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
-        let ok = unsafe {
-            SetInformationJobObject(
-                job.0,
-                JobObjectExtendedLimitInformation,
-                (&limits as *const JOBOBJECT_EXTENDED_LIMIT_INFORMATION).cast(),
-                std::mem::size_of::<JOBOBJECT_EXTENDED_LIMIT_INFORMATION>() as u32,
-            )
-        };
-        (ok != 0).then_some(job)
-    }
-
-    fn add(&self, child: &std::process::Child) -> bool {
-        unsafe { AssignProcessToJobObject(self.0, child.as_raw_handle() as HANDLE) != 0 }
-    }
-
-    fn end(&self) {
-        unsafe { TerminateJobObject(self.0, 1) };
-    }
-}
-
-impl Drop for Job {
-    fn drop(&mut self) {
-        unsafe { CloseHandle(self.0) };
-    }
 }
 
 /// Runs `program` with `args` in `dir`, writes `stdin` to it, and waits up to `timeout`. A

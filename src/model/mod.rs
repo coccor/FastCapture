@@ -4,6 +4,7 @@
 pub mod backend;
 pub mod claude;
 pub mod claude_code;
+pub mod copilot;
 pub mod images;
 pub mod local;
 pub mod openai;

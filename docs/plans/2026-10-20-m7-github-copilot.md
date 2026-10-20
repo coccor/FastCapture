@@ -93,10 +93,10 @@ These need the Copilot CLI installed (`winget install GitHub.Copilot`) and signe
 
 ### Part 2: The protocol and the CLI
 
-- [ ] `model/copilot/rpc.rs`: `Content-Length` framing both ways; numbered requests and their replies; notifications handed to the caller; a reader thread so the CLI can't block on a full pipe; a timeout per request.
-- [ ] `model/copilot/cli.rs`: finding `copilot` (above), its version, `copilot --headless --no-auto-update --stdio` in the scratch folder, the cleaned environment, and the protocol version check.
-- [ ] `model/claude_code/run.rs`: the job object and no-window start pulled out so both CLIs use them.
-- **Tests:** framing (split and joined messages, a multi-byte body), a fake CLI (a small test program speaking the protocol from a script of replies), a timeout, the CLI ending early.
+- [x] `model/copilot/rpc.rs`: `Content-Length` framing both ways; numbered requests and their replies; notifications handed to the caller; a reader thread so the CLI can't block on a full pipe; a timeout per request. Requests from the CLI are refused with JSON-RPC's "method not found", as the real CLI refuses an unknown one; a call made after the CLI has ended fails at once.
+- [x] `model/copilot/cli.rs`: finding `copilot` (above), its version, `copilot --headless --no-auto-update --stdio --log-level none` in the scratch folder (`%LocalAppData%\FastCapture\copilot\`), and the protocol version check. The version comes from `connect`'s answer, so `copilot --version` isn't run; `ping` stands in for a CLI without `connect`; any protocol but 3 is refused, naming both. The environment is left as it is (Part 1). Checked once against the real CLI, free: found through npm's shim, connected in 1.7 s, signed in, `auto` listed.
+- [x] `model/claude_code/run.rs`: the job object and no-window start pulled out into `platform/job.rs` so both CLIs use them.
+- **Tests:** framing (split and joined messages, a multi-byte body), a fake CLI (a small test program speaking the protocol from a script of replies), a timeout, the CLI ending early. The fake is a PowerShell script behind a `copilot.cmd`, answering each method from a file of canned replies and keeping what it was sent; the connection itself is tested over in-memory pipes.
 
 ### Part 3: The backend
 
