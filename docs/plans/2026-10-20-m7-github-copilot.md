@@ -116,7 +116,7 @@ These need the Copilot CLI installed (`winget install GitHub.Copilot`) and signe
 - [x] `examples/live_note.rs`: `--copilot <model>`, whatever the settings say. A dry run found the real CLI and built the request, sending nothing.
 - [x] Measure (with your approval): a text capture, a screenshot and a link on two models your plan offers; time per note, tokens and AI credits, against Claude Code's 4–8 s.
 
-  **Measured 2026-10-20** with `live_note --copilot auto` on Copilot CLI 1.0.100, signed in with Copilot Free, which offers only Auto; Auto chose GPT-6 Luna each time. 3 of the plan's 200 monthly chat requests. Times include starting the CLI; input counts what the CLI reported, cache writes included.
+  **Measured 2026-10-20** with `live_note --copilot auto` on Copilot CLI 1.0.100, signed in with Copilot Free, which offers only Auto; Auto chose GPT-6 Luna each time. Times include starting the CLI; input counts what the CLI reported, cache writes included.
 
   | Capture | Time | Input (written to the cache) | Output | AI units |
   | --- | --- | --- | --- | --- |
@@ -124,7 +124,7 @@ These need the Copilot CLI installed (`winget install GitHub.Copilot`) and signe
   | The M2 chart screenshot | 9.3 s | 1,789 (1,786) | 427 | 0.044 |
   | A Wikipedia link (6,138 characters read) | 9.8 s | 2,237 (2,234) | 383 | 0.047 |
 
-  All three wrote good notes: the chart was read exactly (`ledger-events`, the 0.8k baseline, the batch at 02:05, the 39.8k peak at 02:12, back by about 02:30), and the link note is drawn from the article. A note takes 2–3 s longer than through Claude Code (4.4–7.5 s), mostly the CLI starting (0.6–1.7 s) and GPT-6 Luna's reasoning at medium effort (68–121 reasoning tokens); no reads from the cache were seen, since each note is a new session. FastCapture counts these tokens in the ledger and toward the cap; on Free each note is one chat request whatever its size.
+  All three wrote good notes: the chart was read exactly (`ledger-events`, the 0.8k baseline, the batch at 02:05, the 39.8k peak at 02:12, back by about 02:30), and the link note is drawn from the article. A note takes 2–3 s longer than through Claude Code (4.4–7.5 s), mostly the CLI starting (0.6–1.7 s) and GPT-6 Luna's reasoning at medium effort (68–121 reasoning tokens); no reads from the cache were seen, since each note is a new session. FastCapture counts these tokens in the ledger and toward the cap. How Free counts a note against its 200 chat requests couldn't be seen: the quota still showed 2 used after the Part 1 checks, so it is either refreshed later or counts by tokens.
 
 ### Part 6: Polish and docs
 
