@@ -69,6 +69,8 @@ impl Corners {
     pub const BOTTOM_LEFT: Self = Self(4);
     pub const BOTTOM_RIGHT: Self = Self(8);
     pub const TOP: Self = Self(3);
+    pub const LEFT: Self = Self(5);
+    pub const RIGHT: Self = Self(10);
     pub const BOTTOM: Self = Self(12);
     pub const ALL: Self = Self(15);
 
@@ -201,9 +203,22 @@ pub fn fill_rounded(dc: HDC, area: RECT, radius: i32, corners: Corners, color: u
 /// A rounded box with a 1 px `border`: the border's shape, then the fill inset by a pixel with a
 /// radius a pixel smaller, so the border keeps its width around the corners.
 pub fn fill_bordered(dc: HDC, area: RECT, radius: i32, color: u32, border: u32, behind: u32) {
-    fill_rounded(dc, area, radius, Corners::ALL, border, behind);
+    fill_bordered_corners(dc, area, radius, Corners::ALL, color, border, behind);
+}
+
+/// `fill_bordered` with only `corners` rounded.
+pub fn fill_bordered_corners(
+    dc: HDC,
+    area: RECT,
+    radius: i32,
+    corners: Corners,
+    color: u32,
+    border: u32,
+    behind: u32,
+) {
+    fill_rounded(dc, area, radius, corners, border, behind);
     let inner = rect(area.left + 1, area.top + 1, area.right - 1, area.bottom - 1);
-    fill_rounded(dc, inner, (radius - 1).max(0), Corners::ALL, color, border);
+    fill_rounded(dc, inner, (radius - 1).max(0), corners, color, border);
 }
 
 /// A ring `width` wide just inside `area`, rounded by `radius`. Its corner pixels blend over

@@ -1,10 +1,11 @@
-//! Opens a window drawn with FastCapture's look, for checking it by eye: the frame, and the
-//! painting kit's shapes and text in the theme.
+//! Opens a window drawn with FastCapture's look, for checking it by eye: the frame, the painting
+//! kit's shapes and text, and real standard controls painted in the theme.
 //! `cargo run --example look -- [system|light|dark]`. It follows Windows when it says System.
 
 #![windows_subsystem = "windows"]
 
 use fastcapture::config::settings::ThemePreference;
+use fastcapture::ui::controls::{self, Look, Segment, Surface};
 use fastcapture::ui::frame::{self, Buttons, Frame};
 use fastcapture::ui::paint::{self, Align, Corners, rect};
 use fastcapture::ui::theme::metrics::{CONTROL_RADIUS, ROW, scale};
@@ -18,9 +19,13 @@ use windows_sys::Win32::UI::HiDpi::{
     DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2, GetDpiForWindow, SetProcessDpiAwarenessContext,
 };
 use windows_sys::Win32::UI::WindowsAndMessaging::{
-    CW_USEDEFAULT, CreateWindowExW, DefWindowProcW, DispatchMessageW, GetMessageW, IsZoomed, MSG,
-    PostQuitMessage, RegisterClassW, SW_SHOW, ShowWindow, TranslateMessage, WM_DESTROY,
-    WM_ERASEBKGND, WM_PAINT, WM_SETTINGCHANGE, WNDCLASSW, WS_OVERLAPPEDWINDOW,
+    BM_SETCHECK, BS_AUTOCHECKBOX, BS_AUTORADIOBUTTON, BS_DEFPUSHBUTTON, BS_PUSHBUTTON,
+    CB_ADDSTRING, CB_SETCURSEL, CBS_DROPDOWN, CBS_DROPDOWNLIST, CW_USEDEFAULT, CreateWindowExW,
+    DefWindowProcW, DispatchMessageW, GetMessageW, IsDialogMessageW, IsZoomed, MSG,
+    PostQuitMessage, RegisterClassW, SW_SHOW, SendMessageW, ShowWindow, TranslateMessage,
+    WM_DESTROY, WM_ERASEBKGND, WM_NOTIFY, WM_PAINT, WM_SETFONT, WM_SETTINGCHANGE, WNDCLASSW,
+    WS_CHILD, WS_CLIPCHILDREN, WS_EX_CLIENTEDGE, WS_GROUP, WS_OVERLAPPEDWINDOW, WS_TABSTOP,
+    WS_VISIBLE, WS_VSCROLL,
 };
 
 thread_local! {
@@ -232,6 +237,14 @@ extern "system" fn window_proc(
     if let Some(answer) = handled {
         return answer;
     }
+    if let Some(answer) = controls::colors(message, wparam, lparam, Surface::Content) {
+        return answer;
+    }
+    if message == WM_NOTIFY
+        && let Some(answer) = controls::list_rows(lparam, |_, _| None)
+    {
+        return answer;
+    }
     match message {
         WM_ERASEBKGND => 1,
         WM_PAINT => {
@@ -251,6 +264,7 @@ extern "system" fn window_proc(
         WM_SETTINGCHANGE => {
             if theme::refresh() {
                 frame::apply_theme(window, &theme::current());
+                controls::retheme(window);
                 unsafe { InvalidateRect(window, std::ptr::null(), 0) };
             }
             0
@@ -261,6 +275,158 @@ extern "system" fn window_proc(
         }
         _ => unsafe { DefWindowProcW(window, message, wparam, lparam) },
     }
+}
+
+/// Real controls on the right, each painted by `controls`.
+fn add_controls(window: HWND, dpi: u32) {
+    let s = |value| scale(value, dpi);
+    let instance = unsafe { GetModuleHandleW(std::ptr::null()) };
+    let font = ramp::font(TextStyle::Body, dpi);
+    let make = |class: &str, text: &str, style: u32, extended: u32, x, y, width, height| {
+        let class: Vec<u16> = class.encode_utf16().chain(std::iter::once(0)).collect();
+        let text: Vec<u16> = text.encode_utf16().chain(std::iter::once(0)).collect();
+        let control = unsafe {
+            CreateWindowExW(
+                extended,
+                class.as_ptr(),
+                text.as_ptr(),
+                WS_CHILD | WS_VISIBLE | style,
+                s(x),
+                s(y),
+                s(width),
+                s(height),
+                window,
+                std::ptr::null_mut(),
+                instance,
+                std::ptr::null(),
+            )
+        };
+        unsafe { SendMessageW(control, WM_SETFONT, font as usize, 0) };
+        control
+    };
+    let local = make(
+        "BUTTON",
+        "A model on this PC",
+        WS_TABSTOP | WS_GROUP | BS_AUTORADIOBUTTON as u32,
+        0,
+        460,
+        60,
+        190,
+        26,
+    );
+    let cloud = make(
+        "BUTTON",
+        "A cloud API",
+        BS_AUTORADIOBUTTON as u32,
+        0,
+        650,
+        60,
+        190,
+        26,
+    );
+    controls::paint_as(local, Look::Segment(Segment::First), Surface::Content);
+    controls::paint_as(cloud, Look::Segment(Segment::Last), Surface::Content);
+    unsafe { SendMessageW(cloud, BM_SETCHECK, 1, 0) };
+    let provider = make(
+        "COMBOBOX",
+        "",
+        WS_TABSTOP | WS_GROUP | WS_VSCROLL | CBS_DROPDOWNLIST as u32,
+        0,
+        460,
+        100,
+        380,
+        200,
+    );
+    for item in [
+        "Claude API (Anthropic)",
+        "OpenAI-compatible API",
+        "GitHub Copilot (your Copilot plan)",
+    ] {
+        let item: Vec<u16> = item.encode_utf16().chain(std::iter::once(0)).collect();
+        unsafe { SendMessageW(provider, CB_ADDSTRING, 0, item.as_ptr() as isize) };
+    }
+    unsafe { SendMessageW(provider, CB_SETCURSEL, 0, 0) };
+    controls::paint_as(provider, Look::Combo, Surface::Content);
+    let model = make(
+        "COMBOBOX",
+        "claude-sonnet-5-5",
+        WS_TABSTOP | WS_VSCROLL | CBS_DROPDOWN as u32,
+        0,
+        460,
+        140,
+        380,
+        200,
+    );
+    let typed: Vec<u16> = "claude-sonnet-5-5\0".encode_utf16().collect();
+    unsafe { windows_sys::Win32::UI::WindowsAndMessaging::SetWindowTextW(model, typed.as_ptr()) };
+    controls::paint_as(model, Look::Combo, Surface::Content);
+    let field = make(
+        "EDIT",
+        "C:\\Notes",
+        WS_TABSTOP,
+        WS_EX_CLIENTEDGE,
+        460,
+        180,
+        380,
+        26,
+    );
+    controls::paint_as(field, Look::Field, Surface::Content);
+    let toggle = make(
+        "BUTTON",
+        "Start FastCapture when I sign in",
+        WS_TABSTOP | BS_AUTOCHECKBOX as u32,
+        0,
+        460,
+        220,
+        380,
+        28,
+    );
+    controls::paint_as(toggle, Look::Toggle, Surface::Content);
+    unsafe { SendMessageW(toggle, BM_SETCHECK, 1, 0) };
+    let off = make(
+        "BUTTON",
+        "Record the window I capture from",
+        WS_TABSTOP | BS_AUTOCHECKBOX as u32,
+        0,
+        460,
+        252,
+        380,
+        28,
+    );
+    controls::paint_as(off, Look::Toggle, Surface::Content);
+    let test = make(
+        "BUTTON",
+        "Test",
+        WS_TABSTOP | BS_PUSHBUTTON as u32,
+        0,
+        460,
+        296,
+        88,
+        26,
+    );
+    controls::paint_as(test, Look::Button, Surface::Content);
+    let save = make(
+        "BUTTON",
+        "Save",
+        WS_TABSTOP | BS_DEFPUSHBUTTON as u32,
+        0,
+        656,
+        296,
+        88,
+        26,
+    );
+    controls::paint_as(save, Look::Button, Surface::Content);
+    let cancel = make(
+        "BUTTON",
+        "Cancel",
+        WS_TABSTOP | BS_PUSHBUTTON as u32,
+        0,
+        752,
+        296,
+        88,
+        26,
+    );
+    controls::paint_as(cancel, Look::Button, Surface::Content);
 }
 
 fn main() {
@@ -286,11 +452,11 @@ fn main() {
             0,
             class.as_ptr(),
             title.as_ptr(),
-            WS_OVERLAPPEDWINDOW,
+            WS_OVERLAPPEDWINDOW | WS_CLIPCHILDREN,
             CW_USEDEFAULT,
             CW_USEDEFAULT,
-            640,
-            480,
+            900,
+            520,
             std::ptr::null_mut(),
             std::ptr::null_mut(),
             instance,
@@ -310,9 +476,25 @@ fn main() {
         ))
     });
     frame::attach(window, &theme::current());
+    unsafe {
+        windows_sys::Win32::UI::WindowsAndMessaging::SetWindowPos(
+            window,
+            std::ptr::null_mut(),
+            0,
+            0,
+            scale(900, dpi),
+            scale(520, dpi),
+            windows_sys::Win32::UI::WindowsAndMessaging::SWP_NOMOVE
+                | windows_sys::Win32::UI::WindowsAndMessaging::SWP_NOZORDER,
+        )
+    };
+    add_controls(window, dpi);
     unsafe { ShowWindow(window, SW_SHOW) };
     let mut message: MSG = unsafe { std::mem::zeroed() };
     while unsafe { GetMessageW(&mut message, std::ptr::null_mut(), 0, 0) } > 0 {
+        if unsafe { IsDialogMessageW(window, &message) } != 0 {
+            continue;
+        }
         unsafe {
             TranslateMessage(&message);
             DispatchMessageW(&message);
