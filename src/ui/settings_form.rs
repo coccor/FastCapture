@@ -1,7 +1,9 @@
 //! What the Settings window edits, apart from the window: the form's values, checking them, and
 //! writing them to `fastcapture.ini`. API keys never go in the file.
 
-use crate::config::settings::{CloudBackend, Mode, Settings, SettingsFile, parse_token_cap};
+use crate::config::settings::{
+    CloudBackend, Mode, Settings, SettingsFile, ThemePreference, parse_token_cap,
+};
 use crate::model::local::is_on_this_pc;
 use crate::model::openai;
 use std::path::PathBuf;
@@ -30,6 +32,7 @@ pub struct Form {
     pub token_cap: String,
     pub start_at_sign_in: bool,
     pub capture_source: bool,
+    pub theme: ThemePreference,
 }
 
 /// A cap as the form shows it: `2M`, `500k`, or the plain count.
@@ -65,6 +68,7 @@ impl Form {
             token_cap: cap_text(settings.token_cap),
             start_at_sign_in: settings.start_at_sign_in,
             capture_source: settings.capture_source,
+            theme: settings.theme,
         }
     }
 
@@ -210,6 +214,7 @@ impl Form {
         );
         file.set("start_at_sign_in", bool_text(self.start_at_sign_in));
         file.set("capture_source", bool_text(self.capture_source));
+        file.set("theme", self.theme.key());
     }
 
     /// The first-use screen's title and text, naming the chosen provider.
@@ -522,6 +527,22 @@ mod tests {
         assert_eq!(settings.backend, CloudBackend::Copilot);
         assert_eq!(settings.copilot_model, "gpt-5.4");
         assert!(settings.copilot_accepted && !settings.claude_code_accepted);
+    }
+
+    #[test]
+    fn the_theme_is_saved_with_the_rest() {
+        let mut file = SettingsFile::from_text("");
+        Form {
+            theme: ThemePreference::Dark,
+            ..form()
+        }
+        .apply(&mut file, false);
+        let (settings, _) = parse(&file.text());
+        assert_eq!(settings.theme, ThemePreference::Dark);
+        assert_eq!(
+            Form::from_settings(&settings, false).theme,
+            ThemePreference::Dark
+        );
     }
 
     #[test]

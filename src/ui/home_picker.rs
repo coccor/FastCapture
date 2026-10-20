@@ -1,8 +1,14 @@
 //! The home picker (H in the review window): a box to type in above the homes that match, the
 //! suggested one first. **Enter** files the note in the selected home (the first match when none
 //! is selected), **Up** and **Down** move through the list from the box, **Esc** closes. A
-//! standard edit and list box give keyboard and screen-reader support from Windows.
+//! standard edit and list box give keyboard and screen-reader support from Windows; they are
+//! painted in the theme, under FastPad's title strip, and the list's rows are FastPad's.
 
+use super::controls::{self, Look, Surface};
+use super::frame::{self, Buttons, Frame};
+use super::paint;
+use super::theme::metrics::ROW;
+use super::theme::ramp::{self, TextStyle, scale_text};
 use super::theme::{self, scale};
 use crate::file::Target;
 use crate::file::home::{self, HomeOption};
@@ -10,19 +16,21 @@ use crate::platform::window::SendHwnd;
 use windows_sys::Win32::Foundation::{
     ERROR_CLASS_ALREADY_EXISTS, GetLastError, HWND, LPARAM, LRESULT, RECT, WPARAM,
 };
-use windows_sys::Win32::Graphics::Gdi::{DeleteObject, HFONT};
+use windows_sys::Win32::Graphics::Gdi::{DeleteObject, HFONT, InvalidateRect};
 use windows_sys::Win32::System::LibraryLoader::GetModuleHandleW;
+use windows_sys::Win32::UI::Controls::DRAWITEMSTRUCT;
 use windows_sys::Win32::UI::HiDpi::GetDpiForWindow;
 use windows_sys::Win32::UI::Input::KeyboardAndMouse::{SetFocus, VK_DOWN, VK_UP};
 use windows_sys::Win32::UI::WindowsAndMessaging::{
     CreateWindowExW, DefWindowProcW, DestroyWindow, ES_AUTOHSCROLL, FindWindowW, GWLP_USERDATA,
     GetClientRect, GetWindowLongPtrW, GetWindowRect, GetWindowTextLengthW, GetWindowTextW,
     IDC_ARROW, IDCANCEL, IDOK, IsDialogMessageW, LB_ADDSTRING, LB_ERR, LB_GETCURSEL,
-    LB_RESETCONTENT, LB_SETCURSEL, LBN_DBLCLK, LBS_NOINTEGRALHEIGHT, LBS_NOTIFY, LoadCursorW, MSG,
-    RegisterClassW, SW_SHOWNORMAL, SWP_NOZORDER, SendMessageW, SetWindowLongPtrW, SetWindowPos,
-    ShowWindow, WM_CLOSE, WM_COMMAND, WM_KEYDOWN, WM_NCDESTROY, WM_SETFONT, WM_SIZE, WNDCLASSW,
-    WS_BORDER, WS_CAPTION, WS_CHILD, WS_EX_CLIENTEDGE, WS_EX_DLGMODALFRAME, WS_POPUP, WS_SYSMENU,
-    WS_TABSTOP, WS_THICKFRAME, WS_VISIBLE, WS_VSCROLL,
+    LB_RESETCONTENT, LB_SETCURSEL, LB_SETITEMHEIGHT, LBN_DBLCLK, LBS_HASSTRINGS,
+    LBS_NOINTEGRALHEIGHT, LBS_NOTIFY, LBS_OWNERDRAWFIXED, LoadCursorW, MSG, RegisterClassW,
+    SW_SHOWNORMAL, SWP_NOZORDER, SendMessageW, SetWindowLongPtrW, SetWindowPos, ShowWindow,
+    WM_CLOSE, WM_COMMAND, WM_DRAWITEM, WM_ERASEBKGND, WM_KEYDOWN, WM_NCDESTROY, WM_PAINT,
+    WM_SETFONT, WM_SIZE, WNDCLASSW, WS_CAPTION, WS_CHILD, WS_CLIPCHILDREN, WS_EX_CLIENTEDGE,
+    WS_POPUP, WS_SYSMENU, WS_TABSTOP, WS_THICKFRAME, WS_VISIBLE, WS_VSCROLL,
 };
 
 const EDIT_ID: usize = 100;
@@ -30,7 +38,7 @@ const LIST_ID: usize = 101;
 const EN_CHANGE: u32 = 0x0300;
 const WIDTH_AT_96_DPI: i32 = 420;
 const HEIGHT_AT_96_DPI: i32 = 360;
-const PAD_AT_96_DPI: i32 = 8;
+const PAD_AT_96_DPI: i32 = 12;
 const EDIT_AT_96_DPI: i32 = 26;
 
 /// What the picker does with the home chosen.
@@ -45,6 +53,7 @@ struct Picker {
     font: HFONT,
     dpi: u32,
     on_pick: Option<OnPick>,
+    frame: Frame,
 }
 
 fn wide(text: &str) -> Vec<u16> {
@@ -64,8 +73,6 @@ fn register_class() -> bool {
             hInstance: unsafe { GetModuleHandleW(std::ptr::null()) },
             hCursor: unsafe { LoadCursorW(std::ptr::null_mut(), IDC_ARROW) },
             lpszClassName: class_name().as_ptr(),
-            // The dialog colour, as the edit and list box expect.
-            hbrBackground: (windows_sys::Win32::Graphics::Gdi::COLOR_BTNFACE + 1) as _,
             ..unsafe { std::mem::zeroed() }
         };
         unsafe { RegisterClassW(&class) != 0 || GetLastError() == ERROR_CLASS_ALREADY_EXISTS }
@@ -117,10 +124,10 @@ pub fn open(owner: SendHwnd, options: Vec<HomeOption>, on_pick: OnPick) -> Optio
     let (width, height) = (scale(WIDTH_AT_96_DPI, dpi), scale(HEIGHT_AT_96_DPI, dpi));
     let hwnd = unsafe {
         CreateWindowExW(
-            WS_EX_DLGMODALFRAME,
+            0,
             class_name().as_ptr(),
             wide("Choose a home").as_ptr(),
-            WS_POPUP | WS_CAPTION | WS_SYSMENU | WS_THICKFRAME,
+            WS_POPUP | WS_CAPTION | WS_SYSMENU | WS_THICKFRAME | WS_CLIPCHILDREN,
             place.left + ((place.right - place.left) - width) / 2,
             place.top + ((place.bottom - place.top) - height) / 3,
             width,
@@ -153,14 +160,18 @@ pub fn open(owner: SendHwnd, options: Vec<HomeOption>, on_pick: OnPick) -> Optio
     let edit = child("EDIT", ES_AUTOHSCROLL as u32, EDIT_ID);
     let list = child(
         "LISTBOX",
-        WS_VSCROLL | WS_BORDER | (LBS_NOTIFY | LBS_NOINTEGRALHEIGHT) as u32,
+        WS_VSCROLL
+            | (LBS_NOTIFY | LBS_NOINTEGRALHEIGHT | LBS_OWNERDRAWFIXED | LBS_HASSTRINGS) as u32,
         LIST_ID,
     );
-    let font = theme::font(10, false, dpi);
+    let font = ramp::font(TextStyle::Body, dpi);
     unsafe {
         SendMessageW(edit, WM_SETFONT, font as usize, 0);
         SendMessageW(list, WM_SETFONT, font as usize, 0);
+        SendMessageW(list, LB_SETITEMHEIGHT, 0, scale_text(ROW, dpi) as isize);
     }
+    controls::paint_as(edit, Look::Field, Surface::Content);
+    controls::paint_as(list, Look::Field, Surface::Content);
     let shown = (0..options.len()).collect();
     let picker = Box::new(Picker {
         options,
@@ -170,8 +181,10 @@ pub fn open(owner: SendHwnd, options: Vec<HomeOption>, on_pick: OnPick) -> Optio
         font,
         dpi,
         on_pick: Some(on_pick),
+        frame: Frame::new("Choose a home", Buttons::default(), true, dpi),
     });
     unsafe { SetWindowLongPtrW(hwnd, GWLP_USERDATA, Box::into_raw(picker) as isize) };
+    frame::attach(hwnd, &theme::current());
     lay_out(hwnd);
     if let Some(picker) = state(hwnd) {
         fill(picker);
@@ -192,12 +205,13 @@ fn lay_out(hwnd: HWND) {
     let pad = scale(PAD_AT_96_DPI, picker.dpi);
     let edit = scale(EDIT_AT_96_DPI, picker.dpi);
     let width = (client.right - 2 * pad).max(0);
+    let top = picker.frame.height() + scale(4, picker.dpi);
     unsafe {
         SetWindowPos(
             picker.edit,
             std::ptr::null_mut(),
             pad,
-            pad,
+            top,
             width,
             edit,
             SWP_NOZORDER,
@@ -206,9 +220,9 @@ fn lay_out(hwnd: HWND) {
             picker.list,
             std::ptr::null_mut(),
             pad,
-            2 * pad + edit,
+            top + pad + edit,
             width,
-            (client.bottom - 3 * pad - edit).max(0),
+            (client.bottom - top - 2 * pad - edit).max(0),
             SWP_NOZORDER,
         );
     }
@@ -294,7 +308,37 @@ unsafe extern "system" fn picker_proc(
     if unsafe { GetWindowLongPtrW(hwnd, GWLP_USERDATA) } == 0 {
         return unsafe { DefWindowProcW(hwnd, message, wparam, lparam) };
     }
+    if let Some(picker) = state(hwnd)
+        && let Some(answer) = picker.frame.handle(hwnd, message, wparam, lparam)
+    {
+        return answer;
+    }
+    if let Some(answer) = controls::colors(message, wparam, lparam, Surface::Content) {
+        return answer;
+    }
     match message {
+        WM_ERASEBKGND => 1,
+        WM_PAINT => {
+            let palette = theme::current();
+            if let Some(picker) = state(hwnd) {
+                paint::buffered(hwnd, |dc, area| {
+                    paint::fill(dc, area, palette.content_background);
+                    picker.frame.paint(dc, area.right, &palette, false);
+                });
+            }
+            0
+        }
+        WM_DRAWITEM => {
+            let item = unsafe { &*(lparam as *const DRAWITEMSTRUCT) };
+            controls::draw_list_item(item);
+            1
+        }
+        _ if message == theme::changed_message() => {
+            frame::apply_theme(hwnd, &theme::current());
+            controls::retheme(hwnd);
+            unsafe { InvalidateRect(hwnd, std::ptr::null(), 0) };
+            0
+        }
         WM_SIZE => {
             lay_out(hwnd);
             0

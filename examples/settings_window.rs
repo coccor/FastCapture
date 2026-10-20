@@ -11,6 +11,9 @@ use windows_sys::Win32::UI::WindowsAndMessaging::{
 
 fn main() {
     let path = PathBuf::from(std::env::args_os().nth(1).expect("a settings file path"));
+    // As the tray app does: the file's theme, and Windows' changes followed.
+    let (chosen, _) = fastcapture::config::settings::SettingsFile::load(&path).settings();
+    fastcapture::ui::theme::set_preference(chosen.theme);
     if settings::open(settings::Open {
         settings: path,
         claude_key: fastcapture::secrets::target("example-claude"),

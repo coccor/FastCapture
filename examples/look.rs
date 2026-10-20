@@ -1,6 +1,7 @@
 //! Opens a window drawn with FastCapture's look, for checking it by eye: the frame, the painting
 //! kit's shapes and text, and real standard controls painted in the theme.
-//! `cargo run --example look -- [system|light|dark]`. It follows Windows when it says System.
+//! `cargo run --example look -- [system|light|dark] [home]`. It follows Windows when it says
+//! System; `home` opens the home picker on its own instead.
 
 #![windows_subsystem = "windows"]
 
@@ -489,10 +490,30 @@ fn main() {
         )
     };
     add_controls(window, dpi);
-    unsafe { ShowWindow(window, SW_SHOW) };
+    if std::env::args().nth(2).as_deref() == Some("home") {
+        let option = |label: &str, detail: &str| fastcapture::file::home::HomeOption {
+            label: label.to_owned(),
+            detail: detail.to_owned(),
+            target: fastcapture::file::Target::Folder(std::path::PathBuf::from(label)),
+        };
+        fastcapture::ui::home_picker::open(
+            fastcapture::platform::window::SendHwnd::new(window),
+            vec![
+                option("Payments incidents", "topic in Payments/"),
+                option("Payments/", "folder"),
+                option("Ledger batch", "project in Payments/"),
+                option("Learning/Rust/", "folder"),
+            ],
+            Box::new(|_| unsafe { PostQuitMessage(0) }),
+        );
+    } else {
+        unsafe { ShowWindow(window, SW_SHOW) };
+    }
     let mut message: MSG = unsafe { std::mem::zeroed() };
     while unsafe { GetMessageW(&mut message, std::ptr::null_mut(), 0, 0) } > 0 {
-        if unsafe { IsDialogMessageW(window, &message) } != 0 {
+        if fastcapture::ui::home_picker::dialog_message(&message)
+            || unsafe { IsDialogMessageW(window, &message) } != 0
+        {
             continue;
         }
         unsafe {

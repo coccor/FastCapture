@@ -138,7 +138,8 @@ pub fn paint_as(control: HWND, look: Look, behind: Surface) {
     unsafe { InvalidateRect(control, std::ptr::null(), 1) };
 }
 
-fn class_of(window: HWND) -> String {
+/// A window's class name (`Button`, `Edit`, `SysListView32`…).
+pub fn class_of(window: HWND) -> String {
     let mut name = [0u16; 64];
     let length = unsafe { GetClassNameW(window, name.as_mut_ptr(), name.len() as i32) };
     String::from_utf16_lossy(&name[..length.max(0) as usize])

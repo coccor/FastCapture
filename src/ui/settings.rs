@@ -1,15 +1,21 @@
 //! The Settings window: the notebook, Local or Cloud, the local server and model, the cloud
 //! provider (the Claude API, an OpenAI-compatible API, or the user's own Claude Code or Copilot
-//! CLI) with its model and API key, the tokens used and the monthly cap, and two switches. Built
-//! from standard controls, so the keyboard and
-//! screen readers work through Windows; Tab, Enter (Save) and Esc (Cancel) come from
+//! CLI) with its model and API key, the tokens used and the monthly cap, two switches, and the
+//! theme. Built from standard controls painted in the theme (`controls`), under FastPad's title
+//! strip (`frame`), so the keyboard and screen readers work through Windows; choosing a theme
+//! shows it at once, and Cancel puts the saved one back. Tab, Enter (Save) and Esc (Cancel) come from
 //! `IsDialogMessageW` in the app's message loop. Finding servers, listing models, the vision
 //! check and Test run on threads of their own and report back with `WM_SETTINGS_RESULT`. The
 //! two providers' fields share rows; only the chosen provider's are shown.
 //! Hotkeys and the rest stay in `fastcapture.ini` (Open settings file).
 
+use super::controls::{self, Look, Segment, Surface};
+use super::frame::{self, Buttons, Frame};
+use super::paint;
 use super::settings_form::Form;
-use super::theme::{self, scale};
+use super::theme::metrics::TITLE_STRIP;
+use super::theme::ramp::{self, TextStyle};
+use super::theme::{self, ThemePreference, scale};
 use crate::config::settings::{CloudBackend, Mode, Settings, SettingsFile};
 use crate::model::claude::{self, Claude};
 use crate::model::claude_code::{self, ClaudeCode};
@@ -22,26 +28,25 @@ use crate::runner::usage::{self, Ledger, thousands};
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 use windows_sys::Win32::Foundation::{
-    ERROR_CLASS_ALREADY_EXISTS, GetLastError, HWND, LPARAM, LRESULT, RECT, WPARAM,
+    ERROR_CLASS_ALREADY_EXISTS, GetLastError, HWND, LPARAM, LRESULT, WPARAM,
 };
-use windows_sys::Win32::Graphics::Gdi::{
-    COLOR_WINDOW, DeleteObject, GetSysColorBrush, HBRUSH, HDC, HFONT, SetBkColor,
-};
+use windows_sys::Win32::Graphics::Gdi::{DeleteObject, HDC, HFONT, InvalidateRect, SetTextColor};
 use windows_sys::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows_sys::Win32::UI::Controls::{BST_CHECKED, BST_UNCHECKED};
 use windows_sys::Win32::UI::HiDpi::GetDpiForWindow;
 use windows_sys::Win32::UI::Input::KeyboardAndMouse::EnableWindow;
 use windows_sys::Win32::UI::WindowsAndMessaging::{
-    AdjustWindowRectEx, BM_GETCHECK, BM_SETCHECK, BS_AUTOCHECKBOX, BS_AUTORADIOBUTTON,
-    BS_DEFPUSHBUTTON, BS_PUSHBUTTON, CB_ADDSTRING, CB_ERR, CB_GETCURSEL, CB_GETLBTEXT,
-    CB_GETLBTEXTLEN, CB_RESETCONTENT, CB_SETCURSEL, CBN_KILLFOCUS, CBN_SELCHANGE, CBS_DROPDOWN,
-    CBS_DROPDOWNLIST, CW_USEDEFAULT, CreateWindowExW, DefWindowProcW, DestroyWindow,
-    ES_AUTOHSCROLL, ES_PASSWORD, FindWindowW, GWLP_USERDATA, GetWindowLongPtrW,
-    GetWindowTextLengthW, GetWindowTextW, IDC_ARROW, IDCANCEL, IDOK, IsDialogMessageW, LoadCursorW,
-    MSG, PostMessageW, RegisterClassW, SW_HIDE, SW_SHOW, SW_SHOWNORMAL, SendMessageW,
-    SetForegroundWindow, SetWindowLongPtrW, SetWindowTextW, ShowWindow, WM_APP, WM_CLOSE,
-    WM_COMMAND, WM_NCDESTROY, WM_SETFONT, WNDCLASSW, WS_CAPTION, WS_CHILD, WS_EX_CLIENTEDGE,
-    WS_GROUP, WS_MINIMIZEBOX, WS_SYSMENU, WS_TABSTOP, WS_VISIBLE, WS_VSCROLL,
+    BM_GETCHECK, BM_SETCHECK, BS_AUTOCHECKBOX, BS_AUTORADIOBUTTON, BS_DEFPUSHBUTTON, BS_PUSHBUTTON,
+    CB_ADDSTRING, CB_ERR, CB_GETCURSEL, CB_GETLBTEXT, CB_GETLBTEXTLEN, CB_RESETCONTENT,
+    CB_SETCURSEL, CBN_KILLFOCUS, CBN_SELCHANGE, CBS_DROPDOWN, CBS_DROPDOWNLIST, CW_USEDEFAULT,
+    CreateWindowExW, DefWindowProcW, DestroyWindow, ES_AUTOHSCROLL, ES_PASSWORD, FindWindowW,
+    GWLP_USERDATA, GetWindowLongPtrW, GetWindowTextLengthW, GetWindowTextW, IDC_ARROW, IDCANCEL,
+    IDOK, IsDialogMessageW, LoadCursorW, MSG, PostMessageW, RegisterClassW, SW_HIDE, SW_SHOW,
+    SW_SHOWNORMAL, SendMessageW, SetForegroundWindow, SetWindowLongPtrW, SetWindowTextW,
+    ShowWindow, WM_APP, WM_CLOSE, WM_COMMAND, WM_CTLCOLORBTN, WM_CTLCOLOREDIT, WM_CTLCOLORLISTBOX,
+    WM_CTLCOLORSTATIC, WM_ERASEBKGND, WM_NCDESTROY, WM_PAINT, WM_SETFONT, WNDCLASSW, WS_CAPTION,
+    WS_CHILD, WS_CLIPCHILDREN, WS_EX_CLIENTEDGE, WS_GROUP, WS_MINIMIZEBOX, WS_SYSMENU, WS_TABSTOP,
+    WS_VISIBLE, WS_VSCROLL,
 };
 
 /// A background job finished: a boxed `Event` in lparam.
@@ -74,9 +79,20 @@ const ID_CLAUDE_CODE_MODEL: i32 = 125;
 const ID_CLAUDE_CODE_STATUS: i32 = 126;
 const ID_COPILOT_MODEL: i32 = 127;
 const ID_COPILOT_STATUS: i32 = 128;
+const ID_THEME_SYSTEM: i32 = 129;
+const ID_THEME_LIGHT: i32 = 130;
+const ID_THEME_DARK: i32 = 131;
 
 const WIDTH: i32 = 560;
-const HEIGHT: i32 = 636;
+/// The title strip, the Theme row, then the form.
+const THEME_ROW: i32 = 40;
+const HEIGHT: i32 = TITLE_STRIP + THEME_ROW + 636;
+/// The theme choice's buttons, in order.
+const THEMES: [(i32, ThemePreference); 3] = [
+    (ID_THEME_SYSTEM, ThemePreference::System),
+    (ID_THEME_LIGHT, ThemePreference::Light),
+    (ID_THEME_DARK, ThemePreference::Dark),
+];
 
 /// The provider combo's items, in `CloudBackend` order.
 const PROVIDERS: [(CloudBackend, &str); 4] = [
@@ -121,6 +137,8 @@ pub struct Open {
 }
 
 struct Controls {
+    /// System, Light and Dark, in `THEMES` order.
+    themes: [HWND; 3],
     notebook: HWND,
     local: HWND,
     cloud: HWND,
@@ -144,6 +162,8 @@ struct Controls {
     sign_in: HWND,
     source: HWND,
     problem: HWND,
+    /// Status and hint lines, in muted text.
+    muted: Vec<HWND>,
     /// Everything that only applies to Local mode, and to Cloud mode.
     local_group: Vec<HWND>,
     cloud_group: Vec<HWND>,
@@ -165,6 +185,9 @@ struct SettingsWindow {
     controls: Controls,
     /// The Claude models listed in the combo, in order.
     claude_models: Vec<String>,
+    frame: Frame,
+    /// Labels of the mode that isn't chosen, shown dimmed.
+    dimmed: Vec<HWND>,
 }
 
 impl SettingsWindow {
@@ -215,7 +238,6 @@ fn register_class() -> bool {
             hIcon: unsafe {
                 windows_sys::Win32::UI::WindowsAndMessaging::LoadIconW(instance, 1 as _)
             },
-            hbrBackground: (COLOR_WINDOW + 1) as usize as HBRUSH,
             lpszClassName: class_name().as_ptr(),
             ..unsafe { std::mem::zeroed() }
         };
@@ -316,7 +338,7 @@ pub fn open(options: Open) -> Option<HWND> {
         return None;
     }
     let instance = unsafe { GetModuleHandleW(std::ptr::null()) };
-    let style = WS_CAPTION | WS_SYSMENU | WS_MINIMIZEBOX;
+    let style = WS_CAPTION | WS_SYSMENU | WS_MINIMIZEBOX | WS_CLIPCHILDREN;
     let hwnd = unsafe {
         CreateWindowExW(
             0,
@@ -337,26 +359,20 @@ pub fn open(options: Open) -> Option<HWND> {
         return None;
     }
     let dpi = unsafe { GetDpiForWindow(hwnd) }.max(96);
-    let mut frame = RECT {
-        left: 0,
-        top: 0,
-        right: scale(WIDTH, dpi),
-        bottom: scale(HEIGHT, dpi),
-    };
+    // The frame gives up the native caption and border: the client area is the whole window.
     unsafe {
-        AdjustWindowRectEx(&mut frame, style, 0, 0);
         windows_sys::Win32::UI::WindowsAndMessaging::SetWindowPos(
             hwnd,
             std::ptr::null_mut(),
             0,
             0,
-            frame.right - frame.left,
-            frame.bottom - frame.top,
+            scale(WIDTH, dpi),
+            scale(HEIGHT, dpi),
             windows_sys::Win32::UI::WindowsAndMessaging::SWP_NOMOVE
                 | windows_sys::Win32::UI::WindowsAndMessaging::SWP_NOZORDER,
         )
     };
-    let font = theme::font(9, false, dpi);
+    let font = ramp::font(TextStyle::Body, dpi);
     let (settings, _) = SettingsFile::load(&options.settings).settings();
     let claude_key_saved = crate::secrets::load(&options.claude_key).is_some();
     let openai_key_saved = crate::secrets::load(&options.openai_key).is_some();
@@ -376,8 +392,19 @@ pub fn open(options: Open) -> Option<HWND> {
         font,
         controls,
         claude_models,
+        frame: Frame::new(
+            "FastCapture Settings",
+            Buttons {
+                minimize: true,
+                maximize: false,
+            },
+            false,
+            dpi,
+        ),
+        dimmed: Vec::new(),
     });
     unsafe { SetWindowLongPtrW(hwnd, GWLP_USERDATA, Box::into_raw(window) as isize) };
+    frame::attach(hwnd, &theme::current());
     load(hwnd);
     unsafe {
         ShowWindow(hwnd, SW_SHOWNORMAL);
@@ -396,8 +423,10 @@ pub fn open(options: Open) -> Option<HWND> {
 fn create_controls(hwnd: HWND, dpi: u32, font: HFONT) -> Controls {
     let s = |value: i32| scale(value, dpi);
     let instance = unsafe { GetModuleHandleW(std::ptr::null()) };
+    // Rows are placed below the title strip and the Theme row.
     let make =
         |class: &str, text: &str, style: u32, ex: u32, x: i32, y: i32, w: i32, h: i32, id: i32| {
+            let y = y + TITLE_STRIP + THEME_ROW;
             let control = unsafe {
                 CreateWindowExW(
                     ex,
@@ -415,11 +444,43 @@ fn create_controls(hwnd: HWND, dpi: u32, font: HFONT) -> Controls {
                 )
             };
             unsafe { SendMessageW(control, WM_SETFONT, font as usize, 1) };
+            paint(control, class, style);
             control
         };
     let label = |text: &str, y: i32| make("STATIC", text, 0, 0, 16, y + 4, 92, 20, -1);
     let (field_x, field_w, button_x, button_w) = (112, 320, 440, 104);
     let edit = WS_TABSTOP | ES_AUTOHSCROLL as u32;
+
+    let theme_label = make("STATIC", "Theme", 0, 0, 16, 20 - THEME_ROW, 92, 20, -1);
+    let _ = theme_label;
+    let themes = [
+        (
+            "System",
+            WS_TABSTOP | WS_GROUP,
+            ID_THEME_SYSTEM,
+            Segment::First,
+        ),
+        ("Light", 0, ID_THEME_LIGHT, Segment::Middle),
+        ("Dark", 0, ID_THEME_DARK, Segment::Last),
+    ]
+    .iter()
+    .enumerate()
+    .map(|(n, (text, flags, id, segment))| {
+        let button = make(
+            "BUTTON",
+            text,
+            flags | BS_AUTORADIOBUTTON as u32,
+            0,
+            field_x + 104 * n as i32,
+            16 - THEME_ROW,
+            104,
+            26,
+            *id,
+        );
+        controls::paint_as(button, Look::Segment(*segment), Surface::Content);
+        button
+    })
+    .collect::<Vec<_>>();
 
     label("Notebook", 16);
     let notebook = make(
@@ -430,7 +491,7 @@ fn create_controls(hwnd: HWND, dpi: u32, font: HFONT) -> Controls {
         field_x,
         16,
         field_w,
-        24,
+        26,
         ID_NOTEBOOK,
     );
     make(
@@ -452,22 +513,24 @@ fn create_controls(hwnd: HWND, dpi: u32, font: HFONT) -> Controls {
         WS_TABSTOP | WS_GROUP | BS_AUTORADIOBUTTON as u32,
         0,
         field_x,
-        58,
-        210,
-        22,
+        56,
+        216,
+        26,
         ID_LOCAL,
     );
+    controls::paint_as(local, Look::Segment(Segment::First), Surface::Content);
     let cloud = make(
         "BUTTON",
         "A cloud API (Cloud)",
         BS_AUTORADIOBUTTON as u32,
         0,
         field_x + 216,
-        58,
-        150,
-        22,
+        56,
+        216,
+        26,
         ID_CLOUD,
     );
+    controls::paint_as(cloud, Look::Segment(Segment::Last), Surface::Content);
 
     let server_label = label("Server", 96);
     let endpoint = make(
@@ -537,7 +600,7 @@ fn create_controls(hwnd: HWND, dpi: u32, font: HFONT) -> Controls {
         field_x,
         236,
         field_w,
-        24,
+        26,
         -1,
     );
     let openai_address = make(
@@ -548,7 +611,7 @@ fn create_controls(hwnd: HWND, dpi: u32, font: HFONT) -> Controls {
         field_x,
         236,
         field_w,
-        24,
+        26,
         ID_ADDRESS,
     );
     let cloud_label = label("Model", 272);
@@ -640,7 +703,7 @@ fn create_controls(hwnd: HWND, dpi: u32, font: HFONT) -> Controls {
         field_x,
         308,
         field_w,
-        24,
+        26,
         ID_KEY,
     );
     let key_status = make(
@@ -678,17 +741,7 @@ fn create_controls(hwnd: HWND, dpi: u32, font: HFONT) -> Controls {
         ID_TEST_STATUS,
     );
 
-    let usage = make(
-        "STATIC",
-        "",
-        0,
-        0,
-        field_x,
-        422,
-        field_w + button_w,
-        20,
-        ID_USAGE,
-    );
+    let usage = make("STATIC", "", 0, 0, 16, 422, WIDTH - 32, 20, ID_USAGE);
     label("Token cap", 450);
     let cap = make(
         "EDIT",
@@ -698,10 +751,10 @@ fn create_controls(hwnd: HWND, dpi: u32, font: HFONT) -> Controls {
         field_x,
         450,
         96,
-        24,
+        26,
         ID_CAP,
     );
-    make(
+    let cap_hint = make(
         "STATIC",
         "tokens a month, like 2M or 500k; empty for none",
         0,
@@ -719,9 +772,9 @@ fn create_controls(hwnd: HWND, dpi: u32, font: HFONT) -> Controls {
         WS_TABSTOP | BS_AUTOCHECKBOX as u32,
         0,
         field_x,
-        492,
+        490,
         360,
-        22,
+        28,
         ID_SIGN_IN,
     );
     let source = make(
@@ -730,13 +783,13 @@ fn create_controls(hwnd: HWND, dpi: u32, font: HFONT) -> Controls {
         WS_TABSTOP | BS_AUTOCHECKBOX as u32,
         0,
         field_x,
-        518,
+        522,
         360,
-        22,
+        28,
         ID_SOURCE,
     );
 
-    let problem = make("STATIC", "", 0, 0, 16, 554, WIDTH - 32, 20, ID_PROBLEM);
+    let problem = make("STATIC", "", 0, 0, 16, 558, WIDTH - 32, 20, ID_PROBLEM);
     make(
         "BUTTON",
         "Open settings file",
@@ -772,6 +825,7 @@ fn create_controls(hwnd: HWND, dpi: u32, font: HFONT) -> Controls {
     );
 
     Controls {
+        themes: [themes[0], themes[1], themes[2]],
         notebook,
         local,
         cloud,
@@ -795,6 +849,15 @@ fn create_controls(hwnd: HWND, dpi: u32, font: HFONT) -> Controls {
         sign_in,
         source,
         problem,
+        muted: vec![
+            vision,
+            claude_code_status,
+            copilot_status,
+            key_status,
+            test_status,
+            usage,
+            cap_hint,
+        ],
         local_group: vec![
             server_label,
             endpoint,
@@ -830,6 +893,24 @@ fn create_controls(hwnd: HWND, dpi: u32, font: HFONT) -> Controls {
     }
 }
 
+/// Paints a control in the theme by its kind; radio buttons are painted where they are made,
+/// since each knows its place in its choice.
+fn paint(control: HWND, class: &str, style: u32) {
+    let look = match class {
+        "BUTTON" => match style & 0xF {
+            kind if kind == BS_AUTOCHECKBOX as u32 => Some(Look::Toggle),
+            kind if kind == BS_AUTORADIOBUTTON as u32 => None,
+            _ => Some(Look::Button),
+        },
+        "COMBOBOX" => Some(Look::Combo),
+        "EDIT" => Some(Look::Field),
+        _ => None,
+    };
+    if let Some(look) = look {
+        controls::paint_as(control, look, Surface::Content);
+    }
+}
+
 /// Fills the controls from the settings.
 fn load(hwnd: HWND) {
     let Some(window) = state(hwnd) else {
@@ -840,6 +921,9 @@ fn load(hwnd: HWND) {
     set_text(controls.notebook, &form.notebook);
     set_checked(controls.local, form.mode == Some(Mode::Local));
     set_checked(controls.cloud, form.mode == Some(Mode::Cloud));
+    for (button, (_, theme)) in controls.themes.iter().zip(THEMES) {
+        set_checked(*button, form.theme == theme);
+    }
     set_text(controls.endpoint, &form.local_endpoint);
     set_text(controls.local_model, &form.local_model);
     let labels: Vec<String> = window
@@ -923,6 +1007,12 @@ fn read_form(window: &SettingsWindow) -> Form {
         token_cap: text_of(controls.cap).trim().to_owned(),
         start_at_sign_in: checked(controls.sign_in),
         capture_source: checked(controls.source),
+        theme: controls
+            .themes
+            .iter()
+            .zip(THEMES)
+            .find(|(button, _)| checked(**button))
+            .map_or(ThemePreference::System, |(_, (_, theme))| theme),
     }
 }
 
@@ -932,11 +1022,23 @@ fn enable_for_mode(hwnd: HWND) {
     };
     let local = checked(window.controls.local);
     let cloud = checked(window.controls.cloud);
-    for control in &window.controls.local_group {
-        unsafe { EnableWindow(*control, i32::from(local)) };
-    }
-    for control in &window.controls.cloud_group {
-        unsafe { EnableWindow(*control, i32::from(cloud)) };
+    // A disabled label draws its own embossed grey, whatever the theme: labels stay enabled
+    // and are dimmed through their color instead.
+    window.dimmed.clear();
+    for (group, on) in [
+        (&window.controls.local_group, local),
+        (&window.controls.cloud_group, cloud),
+    ] {
+        for control in group {
+            if controls::class_of(*control).eq_ignore_ascii_case("Static") {
+                if !on {
+                    window.dimmed.push(*control);
+                }
+                unsafe { InvalidateRect(*control, std::ptr::null(), 1) };
+            } else {
+                unsafe { EnableWindow(*control, i32::from(on)) };
+            }
+        }
     }
     // Anthropic's address is shown, not edited.
     unsafe { EnableWindow(window.controls.claude_address, 0) };
@@ -1417,6 +1519,11 @@ unsafe extern "system" fn settings_proc(
     if unsafe { GetWindowLongPtrW(hwnd, GWLP_USERDATA) } == 0 {
         return unsafe { DefWindowProcW(hwnd, message, wparam, lparam) };
     }
+    if let Some(window) = state(hwnd)
+        && let Some(answer) = window.frame.handle(hwnd, message, wparam, lparam)
+    {
+        return answer;
+    }
     match message {
         WM_COMMAND => {
             let id = (wparam & 0xFFFF) as i32;
@@ -1427,6 +1534,14 @@ unsafe extern "system" fn settings_proc(
                     DestroyWindow(hwnd);
                 },
                 (ID_BROWSE, _) => browse(hwnd),
+                // The theme is shown at once; it is saved with the rest.
+                (ID_THEME_SYSTEM | ID_THEME_LIGHT | ID_THEME_DARK, _) => {
+                    if let Some((_, chosen)) = THEMES.iter().find(|(theme, _)| *theme == id)
+                        && theme::set_preference(*chosen)
+                    {
+                        theme::tell_windows();
+                    }
+                }
                 (ID_LOCAL | ID_CLOUD, _) => {
                     enable_for_mode(hwnd);
                     if let Some(window) = state(hwnd) {
@@ -1462,17 +1577,39 @@ unsafe extern "system" fn settings_proc(
             }
             0
         }
-        // Labels, check boxes and radio buttons paint on the window's own background, not
-        // the dialog grey.
-        windows_sys::Win32::UI::WindowsAndMessaging::WM_CTLCOLORSTATIC => {
-            let dc = wparam as HDC;
-            unsafe {
-                SetBkColor(
-                    dc,
-                    windows_sys::Win32::Graphics::Gdi::GetSysColor(COLOR_WINDOW),
-                );
-                GetSysColorBrush(COLOR_WINDOW) as LRESULT
+        // Fields and labels in the theme; problems in the error color, statuses muted.
+        WM_CTLCOLOREDIT | WM_CTLCOLORSTATIC | WM_CTLCOLORLISTBOX | WM_CTLCOLORBTN => {
+            let answer = controls::colors(message, wparam, lparam, Surface::Content).unwrap_or(0);
+            if message == WM_CTLCOLORSTATIC
+                && let Some(window) = state(hwnd)
+            {
+                let palette = theme::current();
+                let child = lparam as HWND;
+                let color = if window.dimmed.contains(&child) {
+                    Some(palette.disabled_foreground)
+                } else if child == window.controls.problem {
+                    Some(palette.error_foreground)
+                } else if window.controls.muted.contains(&child) {
+                    Some(palette.muted_foreground)
+                } else {
+                    None
+                };
+                if let Some(color) = color {
+                    unsafe { SetTextColor(wparam as HDC, color) };
+                }
             }
+            answer
+        }
+        WM_ERASEBKGND => 1,
+        WM_PAINT => {
+            let palette = theme::current();
+            if let Some(window) = state(hwnd) {
+                paint::buffered(hwnd, |dc, area| {
+                    paint::fill(dc, area, palette.content_background);
+                    window.frame.paint(dc, area.right, &palette, false);
+                });
+            }
+            0
         }
         WM_SETTINGS_RESULT => {
             if lparam != 0 {
@@ -1491,8 +1628,19 @@ unsafe extern "system" fn settings_proc(
             if !pointer.is_null() {
                 let window = unsafe { Box::from_raw(pointer) };
                 unsafe { DeleteObject(window.font) };
+                // A theme chosen but not saved was only shown: the saved one comes back.
+                let (saved, _) = SettingsFile::load(&window.open.settings).settings();
+                if theme::set_preference(saved.theme) {
+                    theme::tell_windows();
+                }
             }
             unsafe { DefWindowProcW(hwnd, message, wparam, lparam) }
+        }
+        _ if message == theme::changed_message() => {
+            frame::apply_theme(hwnd, &theme::current());
+            controls::retheme(hwnd);
+            unsafe { InvalidateRect(hwnd, std::ptr::null(), 0) };
+            0
         }
         _ => unsafe { DefWindowProcW(hwnd, message, wparam, lparam) },
     }
@@ -1846,6 +1994,49 @@ mod tests {
             crate::secrets::load(&temp.1).as_deref(),
             Some("sk-ant-window-test")
         );
+    }
+
+    #[test]
+    fn a_theme_is_shown_when_chosen_put_back_on_cancel_and_kept_on_save() {
+        use crate::ui::theme::{DARK, LIGHT};
+        theme::set_system_for_test(theme::System::default());
+        theme::set_preference(ThemePreference::System);
+        let temp = Temp::new("theme");
+        let saved = Rc::new(Cell::new(false));
+        let hwnd = temp.open(saved.clone());
+        let window = state(hwnd).unwrap();
+        assert!(checked(window.controls.themes[0]), "System");
+        set_checked(window.controls.themes[0], false);
+        set_checked(window.controls.themes[2], true);
+        command(hwnd, ID_THEME_DARK);
+        assert_eq!(theme::current(), DARK, "shown at once");
+        command(hwnd, IDCANCEL);
+        assert_eq!(theme::current(), LIGHT, "put back");
+
+        std::fs::write(
+            temp.0.join("fastcapture.ini"),
+            format!(
+                "notebook={}\r\nmode=cloud\r\nbackend=claude_code\r\nclaude_code_accepted=true\r\n",
+                temp.0.display()
+            ),
+        )
+        .unwrap();
+        let hwnd = temp.open(saved.clone());
+        let window = state(hwnd).unwrap();
+        set_checked(window.controls.themes[0], false);
+        set_checked(window.controls.themes[2], true);
+        command(hwnd, ID_THEME_DARK);
+        unsafe { SendMessageW(window.controls.provider, CB_SETCURSEL, 2, 0) };
+        notify(hwnd, ID_PROVIDER, CBN_SELCHANGE);
+        command(hwnd, IDOK);
+        assert!(saved.get());
+        let text = std::fs::read_to_string(temp.0.join("fastcapture.ini")).unwrap();
+        assert_eq!(
+            crate::config::settings::parse(&text).0.theme,
+            ThemePreference::Dark
+        );
+        assert_eq!(theme::current(), DARK, "kept");
+        theme::set_preference(ThemePreference::System);
     }
 
     #[test]
