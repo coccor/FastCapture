@@ -100,8 +100,8 @@ These need the Copilot CLI installed (`winget install GitHub.Copilot`) and signe
 
 ### Part 3: The backend
 
-- [ ] `model/copilot/mod.rs`: create the session, send the message with images and schema, collect events until `session.idle`, read the note from the last `assistant.message` (structured or parsed with `reply::parse`), take usage from `assistant.usage`, delete the session, stop the CLI. Errors as decided above; a reply that isn't a note is asked for once more, as now.
-- **Tests:** replies and errors from fixtures (success, each `errorType`, a reply that isn't JSON, the CLI ending mid-session); usage returned by `take_usage`.
+- [x] `model/copilot/mod.rs`: create the session, send the message with images and schema, collect events until `session.idle`, read the note from the last `assistant.message` (structured or parsed with `reply::parse`), take usage from `assistant.usage`, delete the session, stop the CLI. Errors as decided above; a reply that isn't a note is asked for once more, as now. Before the session, `auth.getStatus` is asked, so a signed-out CLI pauses before anything is sent. A CLI that refuses `responseFormat` gets the message again with the schema after the text. A `session.error` has no reset time, so a used-up allowance or an account-wide rate limit (`user_weekly_rate_limited`, `user_global_rate_limited`) pauses for 30 minutes; other rate limits retry. A session.create error naming the model pauses asking for another. The CLI ending mid-note, or the 5-minute limit (the session is aborted), retries the job. The session is deleted however it ended. Each note's model, tokens, AI units and time go in the log.
+- **Tests:** replies and errors from fixtures (success, each `errorType`, a reply that isn't JSON, the CLI ending mid-session); usage returned by `take_usage`. Whole notes through the fake CLI: a note with an image, a signed-out CLI, a used-up allowance. The CLI ending mid-session is covered by the connection's own tests.
 
 ### Part 4: Settings and choosing the backend
 

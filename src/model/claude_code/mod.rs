@@ -227,7 +227,7 @@ fn reset_in_text(text: &str) -> Option<u64> {
 }
 
 /// "at 17:00", or "on 2026-10-21 at 09:00" when it isn't today.
-fn when(unix_seconds: u64) -> String {
+pub(crate) fn when(unix_seconds: u64) -> String {
     let Some((date, time)) = crate::platform::clock::local_at(unix_seconds) else {
         return "later".to_owned();
     };
