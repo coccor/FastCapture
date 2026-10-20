@@ -28,6 +28,8 @@ pub struct Settings {
     pub clipboard_hotkey: Option<KeyStroke>,
     pub capture_source: bool,
     pub start_at_sign_in: bool,
+    /// Light, dark, or as Windows says.
+    pub theme: ThemePreference,
     /// Where notes are written: `None` until chosen in Settings.
     pub mode: Option<Mode>,
     /// Cloud mode's backend.
@@ -55,6 +57,29 @@ pub struct Settings {
     pub copilot_model: String,
     pub copilot_path: Option<PathBuf>,
     pub copilot_accepted: bool,
+}
+
+/// How FastCapture's windows look: as Windows' app setting says (and following it), or always
+/// light or dark.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub enum ThemePreference {
+    #[default]
+    System,
+    Light,
+    Dark,
+}
+
+impl ThemePreference {
+    pub const ALL: [Self; 3] = [Self::System, Self::Light, Self::Dark];
+
+    /// The value `theme=` takes.
+    pub fn key(self) -> &'static str {
+        match self {
+            Self::System => "system",
+            Self::Light => "light",
+            Self::Dark => "dark",
+        }
+    }
 }
 
 /// One model provider at a time: on this PC, or in the cloud.
@@ -98,6 +123,7 @@ impl Default for Settings {
             clipboard_hotkey: None,
             capture_source: false,
             start_at_sign_in: true,
+            theme: ThemePreference::System,
             mode: None,
             backend: CloudBackend::Claude,
             local_endpoint: None,
@@ -199,6 +225,10 @@ pub fn parse(text: &str) -> (Settings, Vec<Warning>) {
             }
             "capture_source" => parse_bool(value).map(|on| settings.capture_source = on),
             "start_at_sign_in" => parse_bool(value).map(|on| settings.start_at_sign_in = on),
+            "theme" => ThemePreference::ALL
+                .into_iter()
+                .find(|theme| value.eq_ignore_ascii_case(theme.key()))
+                .map(|theme| settings.theme = theme),
             "mode" => match value.to_ascii_lowercase().as_str() {
                 "local" => Some(Some(Mode::Local)),
                 "cloud" => Some(Some(Mode::Cloud)),
@@ -499,6 +529,19 @@ mod tests {
         assert_eq!(warnings.len(), 2, "a relative path, an empty model");
         assert_eq!(settings.claude_code_path, None);
         assert_eq!(settings.claude_code_model, "sonnet");
+    }
+
+    #[test]
+    fn the_theme_is_system_light_or_dark() {
+        assert_eq!(parse("").0.theme, ThemePreference::System);
+        assert_eq!(parse("theme=Dark\n").0.theme, ThemePreference::Dark);
+        assert_eq!(parse("theme=light\n").0.theme, ThemePreference::Light);
+        let (settings, warnings) = parse("theme=mocha\n");
+        assert_eq!(settings.theme, ThemePreference::System);
+        assert_eq!(warnings.len(), 1, "a theme FastCapture doesn't have");
+        let mut file = SettingsFile::from_text("");
+        file.set("theme", ThemePreference::Dark.key());
+        assert_eq!(parse(&file.text()).0.theme, ThemePreference::Dark);
     }
 
     #[test]

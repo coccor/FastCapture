@@ -396,7 +396,7 @@ pub fn open(options: Open) -> Option<HWND> {
     unsafe {
         SendMessageW(edit, WM_SETFONT, body_font as usize, 0);
         SetWindowSubclass(edit, Some(edit_proc), EDIT_HOOK, hwnd as usize);
-        if colors.dark {
+        if colors.dark_frame {
             SetWindowTheme(edit, wide("DarkMode_Explorer").as_ptr(), std::ptr::null());
         }
         DragAcceptFiles(hwnd, 1);
@@ -411,7 +411,7 @@ pub fn open(options: Open) -> Option<HWND> {
         colors,
         dpi,
         edit,
-        edit_brush: unsafe { CreateSolidBrush(colors.surface) },
+        edit_brush: unsafe { CreateSolidBrush(colors.content_background) },
         title_font,
         body_font,
         items: restored.attachments,
@@ -439,7 +439,7 @@ pub fn open(options: Open) -> Option<HWND> {
             (&raw const corners).cast(),
             size_of_val(&corners) as u32,
         );
-        let dark: i32 = colors.dark.into();
+        let dark: i32 = colors.dark_frame.into();
         DwmSetWindowAttribute(
             hwnd,
             DWMWA_USE_IMMERSIVE_DARK_MODE as u32,
@@ -1051,11 +1051,11 @@ fn paint(hwnd: HWND) {
         bottom: layout.height,
     };
     let strip_focused = unsafe { GetFocus() } == hwnd;
-    fill(dc, &client, colors.background);
+    fill(dc, &client, colors.strip_background);
     unsafe { SetBkMode(dc, TRANSPARENT as i32) };
     let pad = scale(PAD_AT_96_DPI, capture.dpi);
     let old = unsafe { SelectObject(dc, capture.title_font) };
-    unsafe { SetTextColor(dc, colors.text) };
+    unsafe { SetTextColor(dc, colors.content_foreground) };
     draw_text(
         dc,
         &title_text(&notebook_name(&capture.notebook)),
@@ -1067,7 +1067,7 @@ fn paint(hwnd: HWND) {
         DT_LEFT | DT_END_ELLIPSIS,
     );
     unsafe { SelectObject(dc, capture.body_font) };
-    unsafe { SetTextColor(dc, colors.muted) };
+    unsafe { SetTextColor(dc, colors.muted_foreground) };
     draw_text(dc, "\u{2715}", &layout.close, DT_CENTER);
     for (index, chip) in layout.chips.iter().enumerate() {
         let selected = strip_focused && capture.selected == index;
@@ -1075,9 +1075,9 @@ fn paint(hwnd: HWND) {
             dc,
             chip,
             if selected {
-                colors.selection
+                colors.selection_background
             } else {
-                colors.surface
+                colors.content_background
             },
         );
         frame(
@@ -1090,10 +1090,10 @@ fn paint(hwnd: HWND) {
             },
         );
         let remove = scale(CHIP_REMOVE_AT_96_DPI, capture.dpi);
-        unsafe { SetTextColor(dc, colors.text) };
+        unsafe { SetTextColor(dc, colors.content_foreground) };
         let Some(item) = capture.items.get(index) else {
             // An image still being prepared: no remove button yet.
-            unsafe { SetTextColor(dc, colors.muted) };
+            unsafe { SetTextColor(dc, colors.muted_foreground) };
             draw_text(
                 dc,
                 PREPARING_LABEL,
@@ -1115,7 +1115,7 @@ fn paint(hwnd: HWND) {
             },
             DT_LEFT | DT_END_ELLIPSIS,
         );
-        unsafe { SetTextColor(dc, colors.muted) };
+        unsafe { SetTextColor(dc, colors.muted_foreground) };
         draw_text(
             dc,
             "\u{2715}",
@@ -1127,7 +1127,7 @@ fn paint(hwnd: HWND) {
         );
     }
     if let (Some(rect), Some(error)) = (layout.error, capture.error.as_deref()) {
-        unsafe { SetTextColor(dc, colors.error) };
+        unsafe { SetTextColor(dc, colors.error_foreground) };
         draw_text(dc, error, &rect, DT_LEFT | DT_END_ELLIPSIS);
     }
     if strip_focused && capture.selected == capture.items.len() {
@@ -1143,7 +1143,7 @@ fn paint(hwnd: HWND) {
         },
         DT_LEFT,
     );
-    unsafe { SetTextColor(dc, colors.muted) };
+    unsafe { SetTextColor(dc, colors.muted_foreground) };
     draw_text(
         dc,
         &footer_text(&current_capture(capture)),
@@ -1277,8 +1277,8 @@ unsafe extern "system" fn box_proc(
             };
             let dc = wparam as HDC;
             unsafe {
-                SetTextColor(dc, capture.colors.text);
-                SetBkColor(dc, capture.colors.surface);
+                SetTextColor(dc, capture.colors.content_foreground);
+                SetBkColor(dc, capture.colors.content_background);
             }
             capture.edit_brush as LRESULT
         }

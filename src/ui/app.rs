@@ -28,7 +28,8 @@ use windows_sys::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows_sys::Win32::UI::WindowsAndMessaging::{
     CreateWindowExW, DefWindowProcW, DestroyWindow, DispatchMessageW, GetMessageW, MSG,
     PostMessageW, PostQuitMessage, RegisterClassExW, RegisterWindowMessageW, SendMessageW,
-    TranslateMessage, WM_APP, WM_DESTROY, WM_HOTKEY, WNDCLASSEXW, WS_EX_TOOLWINDOW, WS_OVERLAPPED,
+    TranslateMessage, WM_APP, WM_DESTROY, WM_DWMCOLORIZATIONCOLORCHANGED, WM_HOTKEY,
+    WM_SETTINGCHANGE, WM_THEMECHANGED, WNDCLASSEXW, WS_EX_TOOLWINDOW, WS_OVERLAPPED,
 };
 
 const WM_APP_TRAY: u32 = WM_APP + 1;
@@ -310,6 +311,9 @@ impl App {
                 "fastcapture.ini line {}: {}",
                 warning.line, warning.message
             ));
+        }
+        if super::theme::set_preference(settings.theme) {
+            super::theme::tell_windows();
         }
         self.notebook = settings
             .notebook
@@ -780,6 +784,14 @@ extern "system" fn window_proc(
         WM_APP_SETTINGS => {
             with_app(App::apply_settings);
             0
+        }
+        // Windows' dark or light apps, high contrast or text size may have changed: the open
+        // windows follow when the theme did.
+        WM_SETTINGCHANGE | WM_THEMECHANGED | WM_DWMCOLORIZATIONCOLORCHANGED => {
+            if super::theme::refresh() {
+                super::theme::tell_windows();
+            }
+            unsafe { DefWindowProcW(window, message, wparam, lparam) }
         }
         WM_DESTROY => {
             // Changed indexes are written to their caches.

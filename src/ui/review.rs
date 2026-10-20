@@ -347,10 +347,20 @@ pub fn open(options: Open) -> Option<HWND> {
             extended as usize,
             extended as isize,
         );
-        SendMessageW(list, LVM_SETBKCOLOR, 0, colors.surface as isize);
-        SendMessageW(list, LVM_SETTEXTBKCOLOR, 0, colors.surface as isize);
-        SendMessageW(list, LVM_SETTEXTCOLOR, 0, colors.text as isize);
-        if colors.dark {
+        SendMessageW(list, LVM_SETBKCOLOR, 0, colors.content_background as isize);
+        SendMessageW(
+            list,
+            LVM_SETTEXTBKCOLOR,
+            0,
+            colors.content_background as isize,
+        );
+        SendMessageW(
+            list,
+            LVM_SETTEXTCOLOR,
+            0,
+            colors.content_foreground as isize,
+        );
+        if colors.dark_frame {
             let theme = wide("DarkMode_Explorer");
             SetWindowTheme(list, theme.as_ptr(), std::ptr::null());
             SetWindowTheme(preview, theme.as_ptr(), std::ptr::null());
@@ -385,7 +395,7 @@ pub fn open(options: Open) -> Option<HWND> {
         list,
         preview,
         font,
-        surface_brush: unsafe { CreateSolidBrush(colors.surface) },
+        surface_brush: unsafe { CreateSolidBrush(colors.content_background) },
         rows: Vec::new(),
     });
     unsafe { SetWindowLongPtrW(hwnd, GWLP_USERDATA, Box::into_raw(review) as isize) };
@@ -1057,11 +1067,11 @@ fn paint(hwnd: HWND) {
     let mut client: RECT = unsafe { std::mem::zeroed() };
     unsafe { GetClientRect(hwnd, &mut client) };
     unsafe {
-        let brush = CreateSolidBrush(review.colors.background);
+        let brush = CreateSolidBrush(review.colors.strip_background);
         FillRect(dc, &client, brush);
         DeleteObject(brush);
         SetBkMode(dc, TRANSPARENT as i32);
-        SetTextColor(dc, review.colors.muted);
+        SetTextColor(dc, review.colors.muted_foreground);
     }
     let pad = scale(PAD_AT_96_DPI, review.dpi);
     let mut footer = RECT {
@@ -1142,8 +1152,8 @@ unsafe extern "system" fn review_proc(
             };
             let dc = wparam as HDC;
             unsafe {
-                SetTextColor(dc, review.colors.text);
-                SetBkColor(dc, review.colors.surface);
+                SetTextColor(dc, review.colors.content_foreground);
+                SetBkColor(dc, review.colors.content_background);
             }
             review.surface_brush as LRESULT
         }
