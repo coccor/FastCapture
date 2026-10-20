@@ -1,6 +1,7 @@
 //! What the Settings window edits, apart from the window: the form's values, checking them, and
 //! writing them to `fastcapture.ini`. API keys never go in the file.
 
+use crate::config::keymap::KeyStroke;
 use crate::config::settings::{
     CloudBackend, Mode, Settings, SettingsFile, ThemePreference, parse_token_cap,
 };
@@ -30,6 +31,9 @@ pub struct Form {
     pub key_saved: bool,
     /// The monthly token cap as typed: empty for none, `2000000`, `2M`, `500k`.
     pub token_cap: String,
+    /// The hotkeys as typed, like `Ctrl+Alt+C`; empty turns one off.
+    pub capture_hotkey: String,
+    pub clipboard_hotkey: String,
     pub start_at_sign_in: bool,
     pub capture_source: bool,
     pub theme: ThemePreference,
@@ -43,6 +47,21 @@ fn cap_text(cap: Option<u64>) -> String {
         Some(cap) if cap.is_multiple_of(1_000) => format!("{}k", cap / 1_000),
         Some(cap) => cap.to_string(),
     }
+}
+
+/// A hotkey as typed: `Some(None)` when empty, `None` when it isn't one with a modifier.
+fn hotkey_of(text: &str) -> Option<Option<KeyStroke>> {
+    let text = text.trim();
+    if text.is_empty() {
+        return Some(None);
+    }
+    KeyStroke::parse(text)
+        .filter(|stroke| stroke.has_modifier())
+        .map(Some)
+}
+
+fn hotkey_text(stroke: Option<KeyStroke>) -> String {
+    stroke.map(|stroke| stroke.to_string()).unwrap_or_default()
 }
 
 impl Form {
@@ -66,6 +85,8 @@ impl Form {
             new_key: String::new(),
             key_saved,
             token_cap: cap_text(settings.token_cap),
+            capture_hotkey: hotkey_text(settings.capture_hotkey),
+            clipboard_hotkey: hotkey_text(settings.clipboard_hotkey),
             start_at_sign_in: settings.start_at_sign_in,
             capture_source: settings.capture_source,
             theme: settings.theme,
@@ -88,6 +109,28 @@ impl Form {
                 "The token cap is a number of tokens, like 2000000 or 2M. Leave it empty for none."
                     .to_owned(),
             );
+        }
+        let mut hotkeys = Vec::new();
+        for (name, text) in [
+            ("capture", &self.capture_hotkey),
+            ("clipboard", &self.clipboard_hotkey),
+        ] {
+            match hotkey_of(text) {
+                Some(stroke) => hotkeys.push(stroke),
+                None => {
+                    return Some(format!(
+                        "\"{}\" isn't a {name} hotkey. Use Ctrl, Shift, Alt or Win with a key,                          like Ctrl+Shift+Space. Leave it empty for none.",
+                        text.trim()
+                    ));
+                }
+            }
+        }
+        if let [Some(capture), Some(clipboard)] = hotkeys[..]
+            && capture == clipboard
+        {
+            return Some(format!(
+                "{capture} can't be both the capture and the clipboard hotkey."
+            ));
         }
         match self.mode {
             None => Some("Choose Local or Cloud.".to_owned()),
@@ -212,6 +255,12 @@ impl Form {
             "token_cap",
             &cap_text(parse_token_cap(&self.token_cap).flatten()),
         );
+        for (key, text) in [
+            ("capture_hotkey", &self.capture_hotkey),
+            ("clipboard_hotkey", &self.clipboard_hotkey),
+        ] {
+            file.set(key, &hotkey_text(hotkey_of(text).flatten()));
+        }
         file.set("start_at_sign_in", bool_text(self.start_at_sign_in));
         file.set("capture_source", bool_text(self.capture_source));
         file.set("theme", self.theme.key());
@@ -318,6 +367,7 @@ mod tests {
             claude_model: "claude-sonnet-5-5".into(),
             claude_code_model: "sonnet".into(),
             copilot_model: "auto".into(),
+            capture_hotkey: "Ctrl+Alt+C".into(),
             ..Form::default()
         }
     }
@@ -426,6 +476,7 @@ mod tests {
         cloud.claude_model = "claude-opus-5-5".into();
         cloud.token_cap = "500k".into();
         cloud.capture_source = true;
+        cloud.capture_hotkey = "Ctrl+Alt+K".into();
         cloud.apply(&mut file, true);
         let text = file.text();
         assert!(!text.contains("sk-ant"), "{text}");
@@ -527,6 +578,47 @@ mod tests {
         assert_eq!(settings.backend, CloudBackend::Copilot);
         assert_eq!(settings.copilot_model, "gpt-5.4");
         assert!(settings.copilot_accepted && !settings.claude_code_accepted);
+    }
+
+    #[test]
+    fn hotkeys_are_checked_and_saved_in_one_form() {
+        let with = |capture: &str, clipboard: &str| Form {
+            capture_hotkey: capture.into(),
+            clipboard_hotkey: clipboard.into(),
+            ..form()
+        };
+        assert_eq!(with("", "").problem(), None, "both off");
+        assert_eq!(with("ctrl + shift + space", "Win+Shift+V").problem(), None);
+        for (capture, clipboard) in [("F9", ""), ("Ctrl+Alt+Ü", ""), ("Ctrl+Alt+C", "Hyper+V")] {
+            let problem = with(capture, clipboard).problem().unwrap();
+            assert!(problem.contains("isn't a"), "{problem}");
+        }
+        assert_eq!(
+            with("Alt+Ctrl+C", "Ctrl+Alt+c").problem().as_deref(),
+            Some("Ctrl+Alt+C can't be both the capture and the clipboard hotkey.")
+        );
+
+        let mut file = SettingsFile::from_text("capture_hotkey=Ctrl+Alt+C\r\n");
+        with("ctrl + shift + space", "").apply(&mut file, false);
+        let text = file.text();
+        assert!(
+            text.lines()
+                .any(|line| line == "capture_hotkey=Ctrl+Shift+Space"),
+            "{text}"
+        );
+        let (settings, warnings) = parse(&text);
+        assert!(warnings.is_empty(), "{warnings:?}");
+        assert_eq!(settings.clipboard_hotkey, None);
+        let form = Form::from_settings(&settings, false);
+        assert_eq!(
+            (form.capture_hotkey.as_str(), form.clipboard_hotkey.as_str()),
+            ("Ctrl+Shift+Space", "")
+        );
+
+        // Empty turns the capture hotkey off rather than back to its default.
+        let mut file = SettingsFile::from_text("");
+        with("", "").apply(&mut file, false);
+        assert_eq!(parse(&file.text()).0.capture_hotkey, None);
     }
 
     #[test]
