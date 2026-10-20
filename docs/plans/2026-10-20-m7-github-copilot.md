@@ -128,8 +128,8 @@ These need the Copilot CLI installed (`winget install GitHub.Copilot`) and signe
 
 ### Part 6: Polish and docs
 
-- [ ] README: the Copilot provider, what it needs, what is sent and to whom, credits, experimental.
-- [ ] Spec: §8.5 brought in line with what was found; §18.7 answered; §19 notes for M7.
+- [x] README: the Copilot provider, what it needs, what is sent and to whom, credits, experimental. Settings' tokens line now says "as the cloud providers reported them", since Copilot's count too.
+- [x] Spec: §8.5 brought in line with what was found; §18.7 answered; §19 notes for M7.
 
 ## Testing approach
 

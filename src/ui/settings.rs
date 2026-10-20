@@ -1023,7 +1023,7 @@ fn usage_text(ledger: Option<&Path>, cap: Option<u64>) -> String {
     let day = usage::today();
     let month = ledger.month(&day).total();
     let mut text = format!(
-        "Tokens used: {} today, {} this month, as the cloud APIs reported them.",
+        "Tokens used: {} today, {} this month, as the cloud providers reported them.",
         thousands(ledger.day(&day).total()),
         thousands(month)
     );
@@ -1732,7 +1732,7 @@ mod tests {
         let window = state(hwnd).unwrap();
         assert_eq!(
             text_of(window.controls.usage),
-            "Tokens used: 1,500 today, 1,500 this month, as the cloud APIs reported them. The cap is reached."
+            "Tokens used: 1,500 today, 1,500 this month, as the cloud providers reported them. The cap is reached."
         );
         assert_eq!(text_of(window.controls.cap), "1k");
         assert!(visible(window.controls.cloud_model) && !visible(window.controls.openai_address));

@@ -4,7 +4,7 @@ A Windows tray app that captures what you come across (a thought, a screenshot, 
 
 FastCapture writes plain Markdown files with YAML front matter and attachments into a notebook folder. [FastPad](https://github.com/coccor/FastPad), Obsidian, any other editor or an AI agent reads them. Neither app needs the other.
 
-**Status:** milestone M6, the Claude Code backend. Everything you capture is saved, the pages it links to and the documents attached to it are read, and the model you choose (on this PC, the Claude API, any OpenAI-compatible API, or your own Claude Code with your Claude plan) writes it up as a note that links the notes it relates to and suggests where it belongs; one key files it there. Settings shows the tokens API notes used, and a monthly cap stops them. See the [design](docs/specs/2026-10-18-fastcapture-design.md) and the plans for [M1](docs/plans/2026-10-18-m1-capture-and-raw-sources.md), [M2](docs/plans/2026-10-18-m2-notes-from-models.md), [M3](docs/plans/2026-10-19-m3-extraction.md), [M4](docs/plans/2026-10-19-m4-index-links-filing.md), [M5](docs/plans/2026-10-19-m5-cloud-openai-usage.md) and [M6](docs/plans/2026-10-19-m6-claude-code.md).
+**Status:** milestone M7, the GitHub Copilot backend. Everything you capture is saved, the pages it links to and the documents attached to it are read, and the model you choose (on this PC, the Claude API, any OpenAI-compatible API, your own Claude Code with your Claude plan, or your own Copilot CLI with your Copilot plan) writes it up as a note that links the notes it relates to and suggests where it belongs; one key files it there. Settings shows the tokens cloud notes used, and a monthly cap stops them. See the [design](docs/specs/2026-10-18-fastcapture-design.md) and the plans for [M1](docs/plans/2026-10-18-m1-capture-and-raw-sources.md), [M2](docs/plans/2026-10-18-m2-notes-from-models.md), [M3](docs/plans/2026-10-19-m3-extraction.md), [M4](docs/plans/2026-10-19-m4-index-links-filing.md), [M5](docs/plans/2026-10-19-m5-cloud-openai-usage.md), [M6](docs/plans/2026-10-19-m6-claude-code.md) and [M7](docs/plans/2026-10-20-m7-github-copilot.md).
 
 ## Capturing
 
@@ -118,6 +118,7 @@ On this PC:
 - `%LocalAppData%\FastCapture\index\<folder key>.cache`: the notebook's index, so it doesn't read every note at each start. It can be deleted at any time.
 - `%LocalAppData%\FastCapture\usage.txt`: the tokens cloud notes used, one line per day and model, as the APIs reported them. The last 13 months are kept.
 - `%LocalAppData%\FastCapture\claude-code\`: the empty folder Claude Code runs in, with the writing rules it is given (`rules.md`).
+- `%LocalAppData%\FastCapture\copilot\`: the empty folder the Copilot CLI runs in.
 - `%LocalAppData%\FastCapture\log\fastcapture.log`: diagnostics. It never holds what you captured.
 
 ## Settings
@@ -129,13 +130,14 @@ Tray menu › **Settings…** chooses how notes are written and the everyday opt
 Notes are written by one model, never both:
 
 - **A model on this PC (Local):** an OpenAI-compatible server running here, such as Ollama, LM Studio or Foundry Local. **Find servers** looks for them; choose a model it lists. Only addresses on this PC are accepted, so nothing leaves it. If the model doesn't read images, screenshots are attached to notes unread.
-- **A cloud API (Cloud)**, from one of three providers:
+- **A cloud API (Cloud)**, from one of four providers:
   - **Claude API:** from [console.anthropic.com](https://console.anthropic.com) › API Keys; choose Sonnet, Opus or Haiku.
   - **OpenAI-compatible API:** any service that answers OpenAI's chat completions: give its base address, a model and your key. **List models** asks the service for its models; you can also type one. For example, `https://api.openai.com/v1` (OpenAI), `https://openrouter.ai/api/v1` (OpenRouter, with models such as `openai/gpt-5-mini`), or `https://<resource>.openai.azure.com/openai/v1` (Azure OpenAI, whose model is your deployment's name). The address must be `https://`. A service without structured output gets the note's schema in the prompt instead; a model that can't read images fails captures with screenshots and says so.
 
   - **Claude Code (your Claude plan, experimental):** for a Claude Pro or Max plan instead of an API key. FastCapture runs your own installed Claude Code once per note, with no tools, signed in with your plan; see [Claude Code](#claude-code) below.
+  - **GitHub Copilot (your Copilot plan, experimental):** for a GitHub Copilot plan, Free included, instead of an API key. FastCapture runs your own installed Copilot CLI once per note, with no tools, signed in with your GitHub account; see [GitHub Copilot](#github-copilot) below.
 
-  The two APIs take your own key, saved in Windows Credential Manager (`FastCapture/claude`, `FastCapture/openai`), never in a file or the log. Choosing Cloud asks you to confirm what will be sent, and to whom: once for Anthropic, once for Claude Code, and again whenever the OpenAI-compatible address moves to another host.
+  The two APIs take your own key, saved in Windows Credential Manager (`FastCapture/claude`, `FastCapture/openai`), never in a file or the log. Choosing Cloud asks you to confirm what will be sent, and to whom: once for Anthropic, once for Claude Code, once for GitHub Copilot, and again whenever the OpenAI-compatible address moves to another host.
 
 **Test** writes a note from a sample capture with what you chose. Until you choose, captures wait in the queue; nothing is lost. **Pause processing** in the tray menu holds them too. A rejected key or a billing problem pauses processing with a notification; a network error or an overloaded API is retried after 30 seconds, 2 minutes, 10 minutes, then every 30 minutes.
 
@@ -169,9 +171,19 @@ A note takes 4–8 seconds, 2–4 more than the Claude API, mostly Claude Code s
 
 It is **experimental** and for your own use: Anthropic lets you use Claude Code with your own plan, but its terms don't say whether another app may start it for you, so this may have to change. FastCapture never reads, copies or stores your Claude login. Claude Code updates itself; a version from before `--json-schema` still works, with the schema in the rules, but one installed through npm that can't read its rules from a file is refused, with a notification asking for `claude update`.
 
+### GitHub Copilot
+
+Install the Copilot CLI (`winget install GitHub.Copilot`, or `npm install -g @github/copilot` with Node 22 or later), then sign in once in a terminal with `copilot login`. A `gh` login alone isn't enough: through it the CLI offers no models. Settings shows the version found, who is signed in, the chat requests your plan has left this month when it counts them, and fills **Model** with the models your plan offers: `auto` (the default, which lets Copilot choose) is the only one on Copilot Free. **Test** writes a sample note through it; `copilot_path` in the settings file points at another `copilot.exe`. An npm install's `copilot.cmd` is followed to the program inside its package, which is started directly.
+
+For each capture FastCapture starts `copilot` as a server, as GitHub's Copilot SDKs do, in an empty folder of its own, and runs one session: no tools, none of your instructions, skills or MCP servers, its own prompt replaced by FastCapture's writing rules, the images as attachments and the note's schema as the reply's format. The session is deleted afterwards and nothing of it is saved. The capture goes to GitHub, which passes it on to the model's provider. Notes use your Copilot plan's allowance; the tokens each note used are counted in the tokens used and toward the cap, like the APIs'. A used-up allowance or an account-wide rate limit pauses processing for 30 minutes (Copilot doesn't say when it resets), then it carries on by itself; signed out, a model your plan doesn't offer, or an organization's policy pauses it with a notification.
+
+A note takes 8–10 seconds, 2–3 more than through Claude Code. Measured on Copilot Free with CLI 1.0.100, where Auto chose GPT-6 Luna: a short text capture used about 900 input and 280 output tokens; a chart screenshot about 1,800 and 430; a Wikipedia article about 2,200 and 380.
+
+It is **experimental** and for your own use: GitHub lets you use the Copilot CLI and SDK with your own plan, but its terms don't say whether another app may start the CLI for you, so this may have to change. FastCapture never reads, copies or stores your GitHub login, and starts the CLI with its updates turned off; update it yourself.
+
 ### Tokens used and the cap
 
-Settings shows the tokens API notes used today and this month, added up from what each API reported: input (cached included) and output, for both providers together. A capture asked twice (when the first reply wasn't a usable note) counts both requests. Local models are free and aren't counted, and neither is Claude Code, which has its plan's own limits.
+Settings shows the tokens cloud notes used today and this month, added up from what each provider reported: input (cached included) and output, for the APIs and Copilot together. A capture asked twice (when the first reply wasn't a usable note) counts both requests. Local models are free and aren't counted, and neither is Claude Code, which has its plan's own limits.
 
 **Token cap** (empty for none) is the most tokens cloud notes may use in a month, like `2M` or `500k`. Cached tokens count in full, so it stops early rather than late. Once the month reaches it, processing pauses with a notification and captures wait in the queue; raising the cap, or the next month, lets them run. A note already being written is finished, so a month can go over by one capture.
 
@@ -187,21 +199,24 @@ Settings shows the tokens API notes used today and this month, added up from wha
 | `recent_notebook` | | One line per notebook offered by Ctrl+N |
 | `mode` | (none) | `local` or `cloud`, set by Settings |
 | `local_endpoint`, `local_model` | | The local server's address and model |
-| `backend` | `claude` | Cloud's provider: `claude`, `openai` (any OpenAI-compatible API) or `claude_code` |
+| `backend` | `claude` | Cloud's provider: `claude`, `openai` (any OpenAI-compatible API), `claude_code` or `copilot` |
 | `claude_model` | `claude-sonnet-5-5` | `claude-opus-5-5` and `claude-haiku-5-5` work too |
 | `cloud_accepted` | `false` | Set when you confirm Cloud for Anthropic |
 | `openai_endpoint`, `openai_model` | | The OpenAI-compatible API's `https://` base address and model |
 | `openai_accepted` | | The host you confirmed Cloud for |
-| `token_cap` | (none) | The most tokens API notes may use in a month: a number, or with `k` or `M` |
+| `token_cap` | (none) | The most tokens cloud notes may use in a month (Claude Code's aside): a number, or with `k` or `M` |
 | `claude_code_model` | `sonnet` | Claude Code's model: `sonnet`, `opus`, `haiku`, or a full name |
 | `claude_code_path` | (found) | Where `claude.exe` is, when it isn't on `PATH` or in `%USERPROFILE%\.local\bin` |
 | `claude_code_accepted` | `false` | Set when you confirm Cloud for Claude Code |
+| `copilot_model` | `auto` | Copilot's model: `auto`, or one your plan offers |
+| `copilot_path` | (found) | Where `copilot.exe` (or npm's `copilot.cmd`) is, when it isn't on `PATH` |
+| `copilot_accepted` | `false` | Set when you confirm Cloud for GitHub Copilot |
 
 If a hotkey is already taken by another app, a notification says so; pick another key here.
 
 ## Privacy
 
-In both modes, FastCapture fetches the pages of links you capture: one GET each, with no cookies, so it sees what anyone signed out sees. In Local mode those fetches are its only connections beyond this PC. In Cloud mode it also sends what is listed under [What is sent](#what-is-sent) to the provider you chose (Anthropic's API, the OpenAI-compatible one, or Anthropic through your Claude Code) over HTTPS, one request per capture, and nothing else; the notebook's index stays on this PC, and only the candidates' short descriptions go with a capture. Page content, file text and candidate notes are given to the model as material, never as instructions. The log records token counts, fetch failures and errors, never what you captured or your key.
+In both modes, FastCapture fetches the pages of links you capture: one GET each, with no cookies, so it sees what anyone signed out sees. In Local mode those fetches are its only connections beyond this PC. In Cloud mode it also sends what is listed under [What is sent](#what-is-sent) to the provider you chose (Anthropic's API, the OpenAI-compatible one, Anthropic through your Claude Code, or GitHub and the model's provider through your Copilot CLI) over HTTPS, one request per capture, and nothing else; the notebook's index stays on this PC, and only the candidates' short descriptions go with a capture. Page content, file text and candidate notes are given to the model as material, never as instructions. The log records token counts, fetch failures and errors, never what you captured or your key.
 
 ## Building
 
@@ -215,7 +230,7 @@ cargo run --release --example bench
 
 `examples/bench.rs` times the box opening, a 4K screenshot's encoding, Ctrl+Enter, building a model request, an article page, a 20-page PDF, and the index of 10,000 notes (built, rebuilt from its cache, searched) against their budgets. `examples/review_window.rs <queue folder> [<notebook>]` and `examples/settings_window.rs` open those windows on their own.
 
-`cargo run --release --example live_note -- [--dry-run] [--effort low|medium|high] [--claude-code MODEL] [--notebook PATH] [--attach PATH]… ["text"]` writes one real note with your settings (any cloud provider; `--effort` is for the Claude API only, and `--claude-code` uses your Claude Code whatever the settings say) into a scratch notebook and prints it with the time and the tokens used; links in the text are fetched, and `--notebook` offers that notebook's notes as candidates (it is only read). **In Cloud mode it costs money**, except with `--dry-run`, which prints what would be sent and stops. The tests never reach the internet.
+`cargo run --release --example live_note -- [--dry-run] [--effort low|medium|high] [--claude-code MODEL] [--copilot MODEL] [--notebook PATH] [--attach PATH]… ["text"]` writes one real note with your settings (any cloud provider; `--effort` is for the Claude API only, and `--claude-code` and `--copilot` use your Claude Code or Copilot CLI whatever the settings say) into a scratch notebook and prints it with the time and the tokens used; links in the text are fetched, and `--notebook` offers that notebook's notes as candidates (it is only read). **In Cloud mode it costs money**, except with `--dry-run`, which prints what would be sent and stops. The tests never reach the internet.
 
 Third-party crates and their licenses are listed in [LICENSES.md](LICENSES.md).
 
