@@ -22,10 +22,11 @@
 - **FastCapture speaks the SDK's protocol itself**, over the CLI's stdio, with plain threads like the rest of FastCapture: no crate, no async runtime. `copilot -p` can't take the writing rules as a system prompt or a reply schema, and the crate would bring tokio and a dozen crates for one request per note. The wire names are taken from the SDK's generated types and checked live in Part 1; the protocol version the CLI reports is checked on every start, and an unknown one pauses the queue asking to update FastCapture.
 - **One CLI process per note at first**, started in an empty folder of FastCapture's (`%LocalAppData%\FastCapture\copilot\`) inside a job object, with no window and a 5-minute timeout, as for Claude Code. If Part 1 finds start-up slow, the process is kept for a few minutes between notes instead.
 - **Each note is one session:** the model from Settings, `systemMessage` replacing Copilot's own prompt with the writing rules, `availableTools: []` (or every tool excluded, whichever Part 1 shows really leaves none), custom instructions off, images as base64 blobs, the schema as `responseSchema` when the CLI takes it and in the rules otherwise. The reply is parsed and checked as any other. The session is deleted afterwards.
-- **The environment** loses `COPILOT_GITHUB_TOKEN`, `GH_TOKEN` and `GITHUB_TOKEN` only if Part 1 shows they'd override the user's own `copilot login`; FastCapture never sets a token itself.
-- **Usage is counted:** Copilot charges per token, so `assistant.usage`'s tokens go in the usage ledger and count toward the token cap (`metered()` is true). The log also has each note's AI credits (from `totalNanoAiu`). The note's `model:` is `cloud/copilot/<model>`.
+- **The environment is left as it is:** Part 1 found a `GH_TOKEN` doesn't override `copilot login` in headless mode. FastCapture never sets a token itself.
+- **Usage is counted:** Copilot charges per token, so `assistant.usage`'s tokens go in the usage ledger and count toward the token cap (`metered()` is true). The log also has each note's AI credits (from `totalNanoAiu`). The note's `model:` is `cloud/copilot/<model>`. (Part 1: on Copilot Free the allowance is counted in requests, 200 chat requests a month, so the tokens are FastCapture's own count and the cap is a soft guard there; Settings also shows the requests left, from `account.getQuota`.)
 - **Limits and sign-in:** `quota` and `rate_limit` errors pause until the reset time when one is given, else for 30 minutes; `authentication` pauses naming `copilot login`; `authorization` and `policy` pause saying the plan or the organization doesn't allow it; a model the plan doesn't offer pauses asking to choose another in Settings.
-- **The CLI is found** at `copilot_path` when set, else `copilot.exe` then `copilot.cmd` on `PATH`, else where WinGet puts it (found in Part 1).
+- **The CLI is found** at `copilot_path` when set, else `copilot.exe` then `copilot.cmd` on `PATH`. A `copilot.cmd` from npm is followed to the `copilot.exe` in its package (`node_modules@githubcopilot
+ode_modules@githubcopilot-win32-x64`), which is started directly. WinGet's location wasn't seen (Part 1 had an npm install), so it is looked for on `PATH` only.
 
 ## What M7 does not do
 
@@ -59,16 +60,28 @@ src/
 
 These need the Copilot CLI installed (`winget install GitHub.Copilot`) and signed in (`copilot login`), both by you. The checks that send a prompt use your Copilot allowance: a few short requests, likely under 20 AI credits ($0.20) on Pro. Each finding is written here before the code depends on it.
 
-- [ ] Where WinGet put `copilot.exe`, `copilot --version`, `copilot --help`, and that `--headless --stdio` answers `ping` and `status.get` (the protocol version).
-- [ ] `auth.getStatus` and `models.list`, free: what they return signed in, and whether the list is only the models your plan allows.
+- [x] Where `copilot.exe` is, `copilot --version`, `copilot --help`, and that `--headless --stdio` answers `ping` and `status.get` (the protocol version).
+
+  **Found (2026-10-20, free):** you installed it with npm (`@github/copilot` 1.0.100, on Node 22.16), not WinGet. npm's `%AppData%\npm\copilot.cmd` only runs a Node launcher, which starts the real program: `%AppData%\npm\node_modules\@github\copilot\node_modules\@github\copilot-win32-x64\copilot.exe` (170 MB). FastCapture starts that `copilot.exe` directly when it finds the `.cmd`, so there is no `cmd.exe` or Node in between. `copilot --version` prints "GitHub Copilot CLI 1.0.100." `--headless` and `--stdio` aren't in `--help` but work. The handshake is `connect` (the SDK's own first call; `ping` is the fallback for older CLIs), which answers `{"ok":true,"protocolVersion":3,"version":"1.0.100"}` about 0.9–1.7 s after start. `ping` and `status.get` give the same protocol version. A whole start, handshake, session and stop took 2–4 s.
+- [x] `auth.getStatus` and `models.list`, free: what they return signed in, and whether the list is only the models your plan allows.
+
+  **Found:** `auth.getStatus` gives `{"isAuthenticated":true,"authType":"user","login":"coccor","statusMessage":"coccor"}`. Your plan is **Copilot Free** (`account.getCurrentAuth`: `access_type_sku: "free_limited_copilot"`). `account.getQuota` counts **requests**, not credits: `chat` 200 a month (2 used), `completions` 2,000, `premium_interactions` 0, each with `remainingPercentage`, `hasQuota` and `tokenBasedBilling: true`; it resets on 2026-11-01. `models.list` is only the plan's models: here just `{"id":"auto","name":"Auto"}`. So on Free the model row offers only **Auto**, and a note costs one chat request whatever its size.
 - [ ] A text request through `session.create` and the message call: the wire names, the events in order, `assistant.usage`, the time from start to note, and whether a `gh` login alone is enough.
-- [ ] With `availableTools: []` (and with every tool in `excludedTools`): the tools the session reports. No request is needed if the session lists them.
+- [x] With `availableTools: []` (and with every tool in `excludedTools`): the tools the session reports. No request is needed if the session lists them.
+
+  **Found:** `session.create` with `availableTools: []` and then `session.tools.initializeAndValidate`: `session.tools.getCurrentMetadata` reports `{"tools":[]}`. The same session with the defaults reports `powershell` and the rest of the coding agent's tools, so the empty list really turns them off. `excludedTools` isn't needed. Creating a session sends no prompt and costs nothing. Also set: `enableConfigDiscovery: false`, `enableSkills: false`, `enableSessionStore: false`, `infiniteSessions: {enabled: false}`, `requestPermission: false`, `streaming: false` and `workingDirectory` (the scratch folder). The CLI may send requests of its own (`userInput.request`, `hooks.invoke` and others), which FastCapture refuses; none came.
 - [ ] `systemMessage` with `mode: "replace"`: whether the rules are followed and Copilot's own prompt is gone (input tokens tell).
 - [ ] `responseSchema`: whether the CLI takes it and where the structured reply appears.
 - [ ] The M2 chart screenshot as a base64 blob: whether the model sees it.
-- [ ] Signed out (by starting it with `COPILOT_HOME` pointed at an empty folder, so your login isn't touched): the error it gives. A used-up allowance can't be reached on purpose; it is taken from the SDK's error types.
-- [ ] Whether `GH_TOKEN` or `GITHUB_TOKEN` in the environment wins over `copilot login`.
-- [ ] Whether the CLI saves the session anywhere under `~/.copilot` after `session.delete`.
+- [x] Signed out (by starting it with `COPILOT_HOME` pointed at an empty folder, so your login isn't touched): the error it gives. A used-up allowance can't be reached on purpose; it is taken from the SDK's error types.
+
+  **Found:** an empty `COPILOT_HOME` isn't signed out: the CLI falls back to the `gh` login (`authType: "gh-cli"`, "coccor (via gh)"), even with `GH_CONFIG_DIR` pointed at an empty folder, since `gh` keeps its token in Windows Credential Manager. **Through `gh` alone, `models.list` is empty**, so a `gh` login isn't enough. A truly signed-out CLI wasn't reached without signing `gh` out, which wasn't done. So FastCapture counts the CLI usable only when `isAuthenticated` is true **and** `models.list` isn't empty; otherwise Settings and the pause say "run copilot login". An empty `COPILOT_HOME` gets a new `config.json` and `logs`, so FastCapture never points it anywhere but the user's own.
+- [x] Whether `GH_TOKEN` or `GITHUB_TOKEN` in the environment wins over `copilot login`.
+
+  **Found:** in headless mode it doesn't: with a made-up `GH_TOKEN`, `auth.getStatus` was still your `copilot login` (`authType: "user"`) and `models.list` still offered `auto`. FastCapture leaves the environment as it is, so a user who has only a token keeps it working. `COPILOT_GITHUB_TOKEN` wasn't tried.
+- [x] Whether the CLI saves the session anywhere under `~/.copilot` after `session.delete`.
+
+  **Found:** with `enableSessionStore: false` there is no `workspacePath` and nothing in `session-state`. After `session.delete` (and `session.list` empty) only an empty lock file per session is left in `session-state\.session-operation-locks`, and an empty log per process in `logs` with `--log-level none`. They hold names, not content, and FastCapture leaves them. With the defaults the CLI makes a `session-state\<id>` folder.
 
 ### Part 2: The protocol and the CLI
 
