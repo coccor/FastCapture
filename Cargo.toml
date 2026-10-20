@@ -1,6 +1,6 @@
 [package]
 name = "fastcapture"
-version = "0.1.0"
+version = "0.1.1"
 edition = "2024"
 description = "Capture anything on Windows and turn it into well-written Markdown notes."
 license = "MIT"

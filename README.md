@@ -4,7 +4,7 @@ A Windows tray app that captures what you come across (a thought, a screenshot, 
 
 FastCapture writes plain Markdown files with YAML front matter and attachments into a notebook folder. [FastPad](https://github.com/coccor/FastPad), Obsidian, any other editor or an AI agent reads them. Neither app needs the other.
 
-**Status:** 0.1.0, the first release. Every window follows FastPad's design, with light, dark and System themes. Everything you capture is saved, the pages it links to and the documents attached to it are read, and the model you choose (on this PC, the Claude API, any OpenAI-compatible API, your own Claude Code with your Claude plan, or your own Copilot CLI with your Copilot plan) writes it up as a note that links the notes it relates to and suggests where it belongs; one key files it there. Settings shows the tokens cloud notes used, and a monthly cap stops them.
+**Status:** 0.1.1. Every window follows FastPad's design, with light, dark and System themes. Everything you capture is saved, the pages it links to and the documents attached to it are read, and the model you choose (on this PC, the Claude API, any OpenAI-compatible API, your own Claude Code with your Claude plan, or your own Copilot CLI with your Copilot plan) writes it up as a note that links the notes it relates to and suggests where it belongs; one key files it there. Settings shows the tokens cloud notes used, and a monthly cap stops them.
 
 ## Capturing
 
