@@ -9,7 +9,10 @@
 //! refreshes; **Esc** closes. A standard ListView and a read-only edit give keyboard and
 //! screen-reader support from Windows.
 
+use super::controls::{self, Look, Surface};
+use super::frame::{self, Buttons, Frame};
 use super::review_list::{self, Row};
+use super::theme::ramp::{self, TextStyle};
 use super::theme::{self, Palette, scale};
 use crate::capture::read::{self, RawInfo};
 use crate::config::settings::SettingsFile;
@@ -28,21 +31,18 @@ use std::time::Duration;
 use windows_sys::Win32::Foundation::{
     ERROR_CLASS_ALREADY_EXISTS, GetLastError, HWND, LPARAM, LRESULT, RECT, WPARAM,
 };
-use windows_sys::Win32::Graphics::Dwm::{DWMWA_USE_IMMERSIVE_DARK_MODE, DwmSetWindowAttribute};
+
 use windows_sys::Win32::Graphics::Gdi::{
-    BeginPaint, CreateSolidBrush, DT_END_ELLIPSIS, DT_LEFT, DT_NOPREFIX, DT_SINGLELINE, DT_VCENTER,
-    DeleteObject, DrawTextW, EndPaint, FillRect, HBRUSH, HDC, HFONT, InvalidateRect, PAINTSTRUCT,
-    SelectObject, SetBkColor, SetBkMode, SetTextColor, TRANSPARENT,
+    CreateSolidBrush, DeleteObject, HBRUSH, HFONT, InvalidateRect,
 };
 use windows_sys::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows_sys::Win32::UI::Controls::{
     ICC_LISTVIEW_CLASSES, INITCOMMONCONTROLSEX, InitCommonControlsEx, LVCF_TEXT, LVCF_WIDTH,
     LVCOLUMNW, LVIF_PARAM, LVIF_TEXT, LVIS_FOCUSED, LVIS_SELECTED, LVITEMW, LVM_DELETEALLITEMS,
-    LVM_GETNEXTITEM, LVM_INSERTCOLUMNW, LVM_INSERTITEMW, LVM_SETBKCOLOR, LVM_SETCOLUMNWIDTH,
-    LVM_SETEXTENDEDLISTVIEWSTYLE, LVM_SETITEMSTATE, LVM_SETITEMTEXTW, LVM_SETTEXTBKCOLOR,
-    LVM_SETTEXTCOLOR, LVN_ITEMCHANGED, LVN_KEYDOWN, LVNI_SELECTED, LVS_EX_DOUBLEBUFFER,
-    LVS_EX_FULLROWSELECT, LVS_REPORT, LVS_SHOWSELALWAYS, LVS_SINGLESEL, NM_DBLCLK, NMHDR,
-    NMLISTVIEW, NMLVKEYDOWN, SetWindowTheme,
+    LVM_GETNEXTITEM, LVM_INSERTCOLUMNW, LVM_INSERTITEMW, LVM_SETCOLUMNWIDTH,
+    LVM_SETEXTENDEDLISTVIEWSTYLE, LVM_SETITEMSTATE, LVM_SETITEMTEXTW, LVN_ITEMCHANGED, LVN_KEYDOWN,
+    LVNI_SELECTED, LVS_EX_DOUBLEBUFFER, LVS_EX_FULLROWSELECT, LVS_REPORT, LVS_SHOWSELALWAYS,
+    LVS_SINGLESEL, NM_DBLCLK, NMHDR, NMLISTVIEW, NMLVKEYDOWN,
 };
 use windows_sys::Win32::UI::HiDpi::GetDpiForWindow;
 use windows_sys::Win32::UI::Input::KeyboardAndMouse::{SetFocus, VK_DELETE, VK_F5};
@@ -53,8 +53,8 @@ use windows_sys::Win32::UI::WindowsAndMessaging::{
     SW_SHOWNORMAL, SWP_NOACTIVATE, SWP_NOZORDER, SendMessageW, SetForegroundWindow,
     SetWindowLongPtrW, SetWindowPos, SetWindowTextW, ShowWindow, WM_APP, WM_CLOSE, WM_COMMAND,
     WM_CTLCOLORSTATIC, WM_DESTROY, WM_DPICHANGED, WM_ERASEBKGND, WM_NCDESTROY, WM_NOTIFY, WM_PAINT,
-    WM_SETFONT, WM_SIZE, WNDCLASSW, WS_CHILD, WS_EX_CLIENTEDGE, WS_OVERLAPPEDWINDOW, WS_TABSTOP,
-    WS_VISIBLE, WS_VSCROLL,
+    WM_SETFONT, WM_SIZE, WNDCLASSW, WS_CHILD, WS_CLIPCHILDREN, WS_EX_CLIENTEDGE,
+    WS_OVERLAPPEDWINDOW, WS_TABSTOP, WS_VISIBLE, WS_VSCROLL,
 };
 
 /// Sent to the window when the queue changed elsewhere: it reloads.
@@ -157,6 +157,7 @@ struct Review {
     font: HFONT,
     surface_brush: HBRUSH,
     rows: Vec<Row>,
+    frame: Frame,
 }
 
 fn wide(text: &str) -> Vec<u16> {
@@ -269,7 +270,7 @@ pub fn open(options: Open) -> Option<HWND> {
             0,
             class_name().as_ptr(),
             wide("FastCapture \u{2014} Review").as_ptr(),
-            WS_OVERLAPPEDWINDOW,
+            WS_OVERLAPPEDWINDOW | WS_CLIPCHILDREN,
             place.map_or(CW_USEDEFAULT, |rect| rect.left),
             place.map_or(CW_USEDEFAULT, |rect| rect.top),
             place.map_or(CW_USEDEFAULT, |rect| rect.right - rect.left),
@@ -300,7 +301,7 @@ pub fn open(options: Open) -> Option<HWND> {
         };
     }
     let colors = theme::current();
-    let font = theme::font(10, false, dpi);
+    let font = ramp::font(TextStyle::Body, dpi);
     let list = unsafe {
         CreateWindowExW(
             WS_EX_CLIENTEDGE,
@@ -347,32 +348,11 @@ pub fn open(options: Open) -> Option<HWND> {
             extended as usize,
             extended as isize,
         );
-        SendMessageW(list, LVM_SETBKCOLOR, 0, colors.content_background as isize);
-        SendMessageW(
-            list,
-            LVM_SETTEXTBKCOLOR,
-            0,
-            colors.content_background as isize,
-        );
-        SendMessageW(
-            list,
-            LVM_SETTEXTCOLOR,
-            0,
-            colors.content_foreground as isize,
-        );
-        if colors.dark_frame {
-            let theme = wide("DarkMode_Explorer");
-            SetWindowTheme(list, theme.as_ptr(), std::ptr::null());
-            SetWindowTheme(preview, theme.as_ptr(), std::ptr::null());
-            let dark: i32 = 1;
-            DwmSetWindowAttribute(
-                hwnd,
-                DWMWA_USE_IMMERSIVE_DARK_MODE as u32,
-                (&raw const dark).cast(),
-                size_of_val(&dark) as u32,
-            );
-        }
     }
+    // The list's rows and header, and both fields' borders, in the theme.
+    controls::paint_list(list);
+    controls::paint_as(list, Look::Field, Surface::Strip);
+    controls::paint_as(preview, Look::Field, Surface::Strip);
     for (index, title) in ["Capture", "Home", "Time", "State"].iter().enumerate() {
         let text = wide(title);
         let column = LVCOLUMNW {
@@ -397,8 +377,18 @@ pub fn open(options: Open) -> Option<HWND> {
         font,
         surface_brush: unsafe { CreateSolidBrush(colors.content_background) },
         rows: Vec::new(),
+        frame: Frame::new(
+            "FastCapture \u{2014} Review",
+            Buttons {
+                minimize: true,
+                maximize: true,
+            },
+            true,
+            dpi,
+        ),
     });
     unsafe { SetWindowLongPtrW(hwnd, GWLP_USERDATA, Box::into_raw(review) as isize) };
+    frame::attach(hwnd, &colors);
     lay_out(hwnd);
     reload(hwnd);
     unsafe {
@@ -417,25 +407,27 @@ fn lay_out(hwnd: HWND) {
     unsafe { GetClientRect(hwnd, &mut client) };
     let pad = scale(PAD_AT_96_DPI, review.dpi);
     let footer = scale(FOOTER_AT_96_DPI, review.dpi);
-    let height = (client.bottom - footer - pad).max(0);
+    // Below the title strip.
+    let top = review.frame.height() + scale(4, review.dpi);
+    let height = (client.bottom - footer - top).max(0);
     let list_width = ((client.right - 3 * pad) * 45 / 100).max(0);
     unsafe {
         SetWindowPos(
             review.list,
             std::ptr::null_mut(),
             pad,
-            pad,
+            top,
             list_width,
-            height - pad,
+            height,
             SWP_NOZORDER | SWP_NOACTIVATE,
         );
         SetWindowPos(
             review.preview,
             std::ptr::null_mut(),
             2 * pad + list_width,
-            pad,
+            top,
             (client.right - 3 * pad - list_width).max(0),
-            height - pad,
+            height,
             SWP_NOZORDER | SWP_NOACTIVATE,
         );
         // The columns share the list's width, less room for a vertical scroll bar, so no
@@ -518,12 +510,9 @@ fn reload(hwnd: HWND) {
         .and_then(|id| rows.iter().position(|row| row.capture_id == id))
         .unwrap_or(0);
     review.rows = rows;
-    unsafe {
-        SetWindowTextW(
-            hwnd,
-            wide(&format!("FastCapture \u{2014} Review ({count})")).as_ptr(),
-        )
-    };
+    review
+        .frame
+        .set_title(hwnd, &format!("FastCapture \u{2014} Review ({count})"));
     if count > 0 {
         select(review, keep);
     }
@@ -1058,41 +1047,46 @@ fn notify(hwnd: HWND, header: &NMHDR, lparam: LPARAM) -> LRESULT {
     0
 }
 
+/// The strip, the status line below the panes, and the frame's title strip, in the theme.
 fn paint(hwnd: HWND) {
     let Some(review) = state(hwnd) else {
         return;
     };
-    let mut ps: PAINTSTRUCT = unsafe { std::mem::zeroed() };
-    let dc: HDC = unsafe { BeginPaint(hwnd, &mut ps) };
-    let mut client: RECT = unsafe { std::mem::zeroed() };
-    unsafe { GetClientRect(hwnd, &mut client) };
-    unsafe {
-        let brush = CreateSolidBrush(review.colors.strip_background);
-        FillRect(dc, &client, brush);
-        DeleteObject(brush);
-        SetBkMode(dc, TRANSPARENT as i32);
-        SetTextColor(dc, review.colors.muted_foreground);
-    }
-    let pad = scale(PAD_AT_96_DPI, review.dpi);
-    let mut footer = RECT {
-        left: pad,
-        top: client.bottom - scale(FOOTER_AT_96_DPI, review.dpi),
-        right: client.right - pad,
-        bottom: client.bottom,
-    };
-    let text: Vec<u16> = footer_text(review).encode_utf16().collect();
-    unsafe {
-        let old = SelectObject(dc, review.font);
-        DrawTextW(
+    let colors = review.colors;
+    let maximized = unsafe { windows_sys::Win32::UI::WindowsAndMessaging::IsZoomed(hwnd) } != 0;
+    super::paint::buffered(hwnd, |dc, client| {
+        super::paint::fill(dc, client, colors.strip_background);
+        let pad = scale(PAD_AT_96_DPI, review.dpi);
+        let footer = RECT {
+            left: pad,
+            top: client.bottom - scale(FOOTER_AT_96_DPI, review.dpi),
+            right: client.right - pad,
+            bottom: client.bottom,
+        };
+        super::paint::text(
             dc,
-            text.as_ptr(),
-            text.len() as i32,
-            &mut footer,
-            DT_LEFT | DT_SINGLELINE | DT_VCENTER | DT_NOPREFIX | DT_END_ELLIPSIS,
+            &footer_text(review),
+            footer,
+            review.font,
+            colors.muted_foreground,
+            super::paint::Align::Left,
         );
-        SelectObject(dc, old);
-        EndPaint(hwnd, &ps);
+        review.frame.paint(dc, client.right, &colors, maximized);
+    });
+}
+
+/// Takes the theme now in force.
+fn retheme(hwnd: HWND) {
+    let Some(review) = state(hwnd) else {
+        return;
+    };
+    review.colors = theme::current();
+    unsafe {
+        DeleteObject(review.surface_brush);
+        review.surface_brush = CreateSolidBrush(review.colors.content_background);
     }
+    frame::apply_theme(hwnd, &review.colors);
+    controls::retheme(hwnd);
 }
 
 unsafe extern "system" fn review_proc(
@@ -1104,7 +1098,16 @@ unsafe extern "system" fn review_proc(
     if unsafe { GetWindowLongPtrW(hwnd, GWLP_USERDATA) } == 0 {
         return unsafe { DefWindowProcW(hwnd, message, wparam, lparam) };
     }
+    if let Some(review) = state(hwnd)
+        && let Some(answer) = review.frame.handle(hwnd, message, wparam, lparam)
+    {
+        return answer;
+    }
     match message {
+        _ if message == theme::changed_message() => {
+            retheme(hwnd);
+            0
+        }
         WM_ERASEBKGND => 1,
         WM_PAINT => {
             paint(hwnd);
@@ -1118,6 +1121,7 @@ unsafe extern "system" fn review_proc(
             let suggested = unsafe { &*(lparam as *const RECT) };
             if let Some(review) = state(hwnd) {
                 review.dpi = u32::from((wparam & 0xFFFF) as u16).max(96);
+                review.frame.set_dpi(review.dpi);
             }
             unsafe {
                 SetWindowPos(
@@ -1133,6 +1137,20 @@ unsafe extern "system" fn review_proc(
             0
         }
         WM_NOTIFY => {
+            // The list's rows, painted in the theme; a failed capture's state in the error
+            // color.
+            let failed = |row: usize, column: usize| {
+                let review = state(hwnd)?;
+                (column == 3
+                    && review
+                        .rows
+                        .get(row)
+                        .is_some_and(|row| row.state == State::Failed))
+                .then_some(review.colors.error_foreground)
+            };
+            if let Some(answer) = controls::list_rows(lparam, failed) {
+                return answer;
+            }
             let header = unsafe { &*(lparam as *const NMHDR) };
             notify(hwnd, header, lparam)
         }
@@ -1146,17 +1164,8 @@ unsafe extern "system" fn review_proc(
             }
             0
         }
-        WM_CTLCOLORSTATIC => {
-            let Some(review) = state(hwnd) else {
-                return 0;
-            };
-            let dc = wparam as HDC;
-            unsafe {
-                SetTextColor(dc, review.colors.content_foreground);
-                SetBkColor(dc, review.colors.content_background);
-            }
-            review.surface_brush as LRESULT
-        }
+        // The read-only preview asks as a label does.
+        WM_CTLCOLORSTATIC => controls::colors(message, wparam, lparam, Surface::Strip).unwrap_or(0),
         WM_REVIEW_REFRESH => {
             reload(hwnd);
             0
@@ -1230,6 +1239,72 @@ mod tests {
         fn changed(&mut self) {
             self.0.borrow_mut().changes += 1;
         }
+    }
+
+    #[test]
+    fn an_open_review_window_follows_a_theme_change_and_paints_its_rows() {
+        use crate::runner::process::tests::Temp;
+        use crate::ui::theme::{DARK, LIGHT, ThemePreference};
+        theme::set_system_for_test(theme::System::default());
+        theme::set_preference(ThemePreference::Light);
+        let temp = Temp::new("review-theme");
+        temp.capture("lag spikes during ledger batch");
+        let seen = Rc::new(RefCell::new(Seen::default()));
+        let hwnd = open(Open {
+            queue: temp.0.join("queue"),
+            settings: None,
+            notebook: Some(temp.notebook()),
+            indexes: None,
+            actions: Box::new(Watch(seen.clone())),
+        })
+        .unwrap();
+        assert_eq!(state(hwnd).unwrap().colors, LIGHT);
+        let list = state(hwnd).unwrap().list;
+        let mut client: RECT = unsafe { std::mem::zeroed() };
+        unsafe { GetClientRect(list, &mut client) };
+        let canvas = crate::ui::paint::tests::Canvas::new(client.right, client.bottom);
+        unsafe {
+            SendMessageW(
+                list,
+                windows_sys::Win32::UI::WindowsAndMessaging::WM_PRINTCLIENT,
+                canvas.dc as usize,
+                windows_sys::Win32::UI::WindowsAndMessaging::PRF_CLIENT as isize,
+            )
+        };
+        let mut row = RECT {
+            left: windows_sys::Win32::UI::Controls::LVIR_BOUNDS as i32,
+            top: 0,
+            right: 0,
+            bottom: 0,
+        };
+        unsafe {
+            SendMessageW(
+                list,
+                windows_sys::Win32::UI::Controls::LVM_GETITEMRECT,
+                0,
+                (&raw mut row) as isize,
+            )
+        };
+        let middle = (row.top + row.bottom) / 2;
+        assert_eq!(
+            canvas.pixel(1, middle),
+            LIGHT.content_background,
+            "beside the row's plate"
+        );
+        let plate = canvas.pixel(row.right / 2 + 40, middle);
+        assert!(
+            [
+                LIGHT.selection_background,
+                LIGHT.inactive_selection_background
+            ]
+            .contains(&plate),
+            "the selected row's plate: {plate:06x}"
+        );
+        theme::set_preference(ThemePreference::Dark);
+        unsafe { SendMessageW(hwnd, theme::changed_message(), 0, 0) };
+        assert_eq!(state(hwnd).unwrap().colors, DARK);
+        theme::set_preference(ThemePreference::System);
+        unsafe { DestroyWindow(hwnd) };
     }
 
     #[test]

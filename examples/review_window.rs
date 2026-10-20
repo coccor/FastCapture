@@ -1,5 +1,7 @@
 //! Opens the review window over a queue folder, for looking at it by hand:
-//! `cargo run --example review_window -- <queue folder> [<notebook>]`. Esc closes it.
+//! `cargo run --example review_window -- <queue folder> [<notebook>]`, or
+//! `-- --sample <empty folder> [light|dark]` for a scratch notebook with a few captures in it.
+//! Esc closes it.
 
 #![windows_subsystem = "windows"]
 
@@ -9,10 +11,43 @@ use windows_sys::Win32::UI::WindowsAndMessaging::{
     DispatchMessageW, GetMessageW, MSG, TranslateMessage,
 };
 
+/// A scratch notebook with three captures queued, and its queue.
+fn sample(folder: &std::path::Path) -> (PathBuf, Option<PathBuf>) {
+    use fastcapture::capture::{Capture, submit::submit};
+    let notebook = folder.join("Sample notebook");
+    let queue = folder.join("queue");
+    std::fs::create_dir_all(&notebook).unwrap();
+    for text in [
+        "lag spikes during ledger batch?? check batch size",
+        "Kafka consumer groups: read later",
+        "call Ana about the Q4 payments roadmap",
+    ] {
+        let capture = Capture {
+            text: text.to_owned(),
+            attachments: Vec::new(),
+            source_window: None,
+            source_url: None,
+        };
+        submit(&notebook, &capture, Some(&queue), true).unwrap();
+    }
+    (queue, Some(notebook))
+}
+
 fn main() {
     let mut args = std::env::args_os().skip(1);
-    let queue = PathBuf::from(args.next().expect("a queue folder"));
-    let notebook = args.next().map(PathBuf::from);
+    let first = PathBuf::from(args.next().expect("a queue folder"));
+    let (queue, notebook) = if first.as_os_str() == "--sample" {
+        let folder = PathBuf::from(args.next().expect("an empty folder"));
+        let theme = match args.next().as_deref().and_then(|theme| theme.to_str()) {
+            Some("light") => fastcapture::ui::theme::ThemePreference::Light,
+            Some("dark") => fastcapture::ui::theme::ThemePreference::Dark,
+            _ => fastcapture::ui::theme::ThemePreference::System,
+        };
+        fastcapture::ui::theme::set_preference(theme);
+        sample(&folder)
+    } else {
+        (first, args.next().map(PathBuf::from))
+    };
     if review::open(review::Open {
         queue,
         settings: None,

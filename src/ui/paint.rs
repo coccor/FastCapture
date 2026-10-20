@@ -305,6 +305,10 @@ pub enum Align {
 
 /// Draws `text` in `font` and `color` within `area`, with no background.
 pub fn text(dc: HDC, text: &str, area: RECT, font: HFONT, color: u32, align: Align) {
+    // An empty string's pointer dangles, and DrawTextW reads it even for a count of 0.
+    if text.is_empty() {
+        return;
+    }
     let format = DT_SINGLELINE
         | DT_VCENTER
         | DT_NOPREFIX
@@ -325,6 +329,9 @@ pub fn text(dc: HDC, text: &str, area: RECT, font: HFONT, color: u32, align: Ali
 
 /// How wide `text` is in `font`, in pixels.
 pub fn text_width(dc: HDC, text: &str, font: HFONT) -> i32 {
+    if text.is_empty() {
+        return 0;
+    }
     let wide: Vec<u16> = text.encode_utf16().collect();
     let mut area = rect(0, 0, 0, 0);
     unsafe {
@@ -510,6 +517,17 @@ pub(crate) mod tests {
             LIGHT.content_background,
             "only a ring"
         );
+    }
+
+    #[test]
+    fn empty_text_draws_nothing_and_has_no_width() {
+        let canvas = Canvas::new(20, 20);
+        fill(canvas.dc, rect(0, 0, 20, 20), LIGHT.content_background);
+        let font = crate::ui::theme::ramp::font(crate::ui::theme::ramp::TextStyle::Body, 96);
+        text(canvas.dc, "", rect(0, 0, 20, 20), font, 0, Align::Left);
+        assert_eq!(text_width(canvas.dc, "", font), 0);
+        unsafe { DeleteObject(font as HGDIOBJ) };
+        assert_eq!(canvas.pixel(10, 10), LIGHT.content_background);
     }
 
     #[test]

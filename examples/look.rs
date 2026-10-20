@@ -1,7 +1,7 @@
 //! Opens a window drawn with FastCapture's look, for checking it by eye: the frame, the painting
 //! kit's shapes and text, and real standard controls painted in the theme.
-//! `cargo run --example look -- [system|light|dark] [home]`. It follows Windows when it says
-//! System; `home` opens the home picker on its own instead.
+//! `cargo run --example look -- [system|light|dark] [home|capture]`. It follows Windows when it
+//! says System; `home` opens the home picker on its own instead, and `capture` the capture box.
 
 #![windows_subsystem = "windows"]
 
@@ -490,7 +490,30 @@ fn main() {
         )
     };
     add_controls(window, dpi);
-    if std::env::args().nth(2).as_deref() == Some("home") {
+    if std::env::args().nth(2).as_deref() == Some("capture") {
+        struct Nowhere;
+        impl fastcapture::ui::capture_box::Sink for Nowhere {
+            fn notebooks(&self) -> Vec<std::path::PathBuf> {
+                vec![std::path::PathBuf::from(r"C:\Notes")]
+            }
+            fn file(
+                &mut self,
+                _: &fastcapture::capture::Capture,
+                _: &std::path::Path,
+            ) -> Result<(), String> {
+                Ok(())
+            }
+            fn closed(&mut self) {
+                unsafe { PostQuitMessage(0) };
+            }
+        }
+        fastcapture::ui::capture_box::open(fastcapture::ui::capture_box::Open {
+            sink: Box::new(Nowhere),
+            notebook: std::path::PathBuf::from(r"C:\Notes"),
+            draft_dir: None,
+            source_window: Some("Grafana".to_owned()),
+        });
+    } else if std::env::args().nth(2).as_deref() == Some("home") {
         let option = |label: &str, detail: &str| fastcapture::file::home::HomeOption {
             label: label.to_owned(),
             detail: detail.to_owned(),

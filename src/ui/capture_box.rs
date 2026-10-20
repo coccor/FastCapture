@@ -9,6 +9,9 @@
 //! to open); files arrive through `WM_DROPFILES` rather than an OLE drop target; and the 20 MB
 //! question is a message box.
 
+use super::controls;
+use super::frame;
+use super::theme::ramp::{self, TextStyle};
 use super::theme::{self, Palette, scale};
 use crate::capture::detect;
 use crate::capture::file::LARGE_FILE_BYTES;
@@ -17,10 +20,7 @@ use std::path::{Path, PathBuf};
 use windows_sys::Win32::Foundation::{
     ERROR_CLASS_ALREADY_EXISTS, GetLastError, HWND, LPARAM, LRESULT, POINT, RECT, WPARAM,
 };
-use windows_sys::Win32::Graphics::Dwm::{
-    DWMWA_USE_IMMERSIVE_DARK_MODE, DWMWA_WINDOW_CORNER_PREFERENCE, DWMWCP_ROUND,
-    DwmExtendFrameIntoClientArea, DwmSetWindowAttribute,
-};
+use windows_sys::Win32::Graphics::Dwm::DwmExtendFrameIntoClientArea;
 use windows_sys::Win32::Graphics::Gdi::{
     BeginPaint, CreateSolidBrush, DT_CALCRECT, DT_CENTER, DT_END_ELLIPSIS, DT_LEFT, DT_NOPREFIX,
     DT_RIGHT, DT_SINGLELINE, DT_VCENTER, DeleteObject, DrawTextW, EndPaint, FillRect, FrameRect,
@@ -32,7 +32,7 @@ use windows_sys::Win32::System::DataExchange::{
     AddClipboardFormatListener, RemoveClipboardFormatListener,
 };
 use windows_sys::Win32::System::LibraryLoader::GetModuleHandleW;
-use windows_sys::Win32::UI::Controls::{EM_REPLACESEL, EM_SETSEL, MARGINS, SetWindowTheme};
+use windows_sys::Win32::UI::Controls::{EM_REPLACESEL, EM_SETSEL, MARGINS};
 use windows_sys::Win32::UI::HiDpi::GetDpiForWindow;
 use windows_sys::Win32::UI::Input::KeyboardAndMouse::{
     GetFocus, GetKeyState, SetFocus, VK_BACK, VK_CONTROL, VK_DELETE, VK_ESCAPE, VK_LEFT, VK_MENU,
@@ -391,16 +391,14 @@ pub fn open(options: Open) -> Option<HWND> {
         )
     };
     let colors = theme::current();
-    let body_font = theme::font(10, false, dpi);
-    let title_font = theme::font(11, true, dpi);
+    let body_font = ramp::font(TextStyle::Body, dpi);
+    let title_font = ramp::font(TextStyle::Heading, dpi);
     unsafe {
         SendMessageW(edit, WM_SETFONT, body_font as usize, 0);
         SetWindowSubclass(edit, Some(edit_proc), EDIT_HOOK, hwnd as usize);
-        if colors.dark_frame {
-            SetWindowTheme(edit, wide("DarkMode_Explorer").as_ptr(), std::ptr::null());
-        }
         DragAcceptFiles(hwnd, 1);
     }
+    controls::theme_scrollbars(edit, &colors);
     let restored = options
         .draft_dir
         .as_deref()
@@ -431,21 +429,10 @@ pub fn open(options: Open) -> Option<HWND> {
     set_edit_text(edit, &restored.text);
     relayout(hwnd);
     place(hwnd, cursor);
+    // Rounded and dark as the theme says; the 1 px frame extension keeps DWM's shadow on a
+    // window without a border.
+    frame::apply_theme(hwnd, &colors);
     unsafe {
-        let corners = DWMWCP_ROUND;
-        DwmSetWindowAttribute(
-            hwnd,
-            DWMWA_WINDOW_CORNER_PREFERENCE as u32,
-            (&raw const corners).cast(),
-            size_of_val(&corners) as u32,
-        );
-        let dark: i32 = colors.dark_frame.into();
-        DwmSetWindowAttribute(
-            hwnd,
-            DWMWA_USE_IMMERSIVE_DARK_MODE as u32,
-            (&raw const dark).cast(),
-            size_of_val(&dark) as u32,
-        );
         let margins = MARGINS {
             cxLeftWidth: 1,
             cxRightWidth: 1,
@@ -1036,12 +1023,46 @@ fn frame(dc: HDC, rect: &RECT, color: u32) {
     }
 }
 
+/// Takes the theme now in force: colors, the edit's brush and scroll bars, the frame.
+fn retheme(hwnd: HWND) {
+    let Some(capture) = state(hwnd) else {
+        return;
+    };
+    let colors = theme::current();
+    if colors == capture.colors {
+        return;
+    }
+    capture.colors = colors;
+    unsafe {
+        DeleteObject(capture.edit_brush);
+        capture.edit_brush = CreateSolidBrush(colors.content_background);
+    }
+    controls::theme_scrollbars(capture.edit, &colors);
+    frame::apply_theme(hwnd, &colors);
+    unsafe {
+        InvalidateRect(capture.edit, std::ptr::null(), 1);
+    }
+    invalidate(hwnd);
+}
+
 fn paint(hwnd: HWND) {
     let Some(capture) = state(hwnd) else {
         return;
     };
     let mut ps: PAINTSTRUCT = unsafe { std::mem::zeroed() };
-    let dc = unsafe { BeginPaint(hwnd, &mut ps) };
+    let screen = unsafe { BeginPaint(hwnd, &mut ps) };
+    let whole = RECT {
+        left: 0,
+        top: 0,
+        right: capture.layout.width,
+        bottom: capture.layout.height,
+    };
+    // Drawn in memory first, so nothing flickers as the box is typed in or chips change.
+    super::paint::in_memory(screen, whole, |dc, _| draw(capture, dc, hwnd));
+    unsafe { EndPaint(hwnd, &ps) };
+}
+
+fn draw(capture: &CaptureBox, dc: HDC, hwnd: HWND) {
     let colors = capture.colors;
     let layout = capture.layout.clone();
     let client = RECT {
@@ -1153,10 +1174,7 @@ fn paint(hwnd: HWND) {
         },
         DT_RIGHT | DT_END_ELLIPSIS,
     );
-    unsafe {
-        SelectObject(dc, old);
-        EndPaint(hwnd, &ps);
-    }
+    unsafe { SelectObject(dc, old) };
 }
 
 fn contains(rect: &RECT, x: i32, y: i32) -> bool {
@@ -1238,6 +1256,10 @@ unsafe extern "system" fn box_proc(
             paint(hwnd);
             0
         }
+        _ if message == theme::changed_message() => {
+            retheme(hwnd);
+            0
+        }
         WM_NCCALCSIZE => 0,
         WM_NCHITTEST => {
             let mut point = POINT {
@@ -1287,6 +1309,7 @@ unsafe extern "system" fn box_proc(
                 // The hotkey during a snip brings the box back without an image.
                 end_snip(hwnd);
             } else if unsafe { GetForegroundWindow() } != hwnd {
+                retheme(hwnd);
                 show(hwnd);
             }
             0
@@ -1544,6 +1567,27 @@ mod tests {
         assert_eq!(filed[0].0.source_window.as_deref(), Some("Grafana"));
         assert_eq!(filed[0].1, PathBuf::from(r"D:\Notes"));
         assert_eq!(draft::load(&drafts), None);
+    }
+
+    #[test]
+    fn an_open_box_follows_a_theme_change() {
+        use crate::ui::theme::{DARK, LIGHT, ThemePreference};
+        theme::set_system_for_test(theme::System::default());
+        theme::set_preference(ThemePreference::Light);
+        let drafts = temp("theme");
+        let (hwnd, _) = open_box(&drafts, None);
+        assert_eq!(state(hwnd).unwrap().colors, LIGHT);
+        let brush = state(hwnd).unwrap().edit_brush;
+        theme::set_preference(ThemePreference::Dark);
+        unsafe { SendMessageW(hwnd, theme::changed_message(), 0, 0) };
+        let capture = state(hwnd).unwrap();
+        assert_eq!(capture.colors, DARK);
+        assert_ne!(
+            capture.edit_brush, brush,
+            "the edit's brush is the dark one"
+        );
+        theme::set_preference(ThemePreference::System);
+        unsafe { DestroyWindow(hwnd) };
     }
 
     #[test]

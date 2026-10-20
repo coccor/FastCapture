@@ -10,7 +10,7 @@
 
 use super::paint::{self, Align, Corners, GLYPH_CHEVRON_DOWN, blend, rect};
 use super::theme::metrics::{
-    CONTROL_RADIUS, FOCUS_GAP, FOCUS_RING, ROW_INSET_X, ROW_INSET_Y, SELECTION_BAR_HEIGHT,
+    CONTROL_RADIUS, FOCUS_GAP, FOCUS_RING, ROW, ROW_INSET_X, ROW_INSET_Y, SELECTION_BAR_HEIGHT,
     SELECTION_BAR_WIDTH, TOGGLE_HEIGHT, TOGGLE_WIDTH, scale,
 };
 use super::theme::{self, Palette, ramp};
@@ -24,9 +24,10 @@ use windows_sys::Win32::Graphics::Gdi::{
 use windows_sys::Win32::UI::Controls::{
     BST_CHECKED, CDDS_ITEMPREPAINT, CDDS_PREPAINT, CDRF_DODEFAULT, CDRF_NOTIFYITEMDRAW,
     CDRF_SKIPDEFAULT, COMBOBOXINFO, DRAWITEMSTRUCT, EM_SETMARGINS, GetComboBoxInfo, HDI_TEXT,
-    HDITEMW, HDM_GETITEMCOUNT, HDM_GETITEMRECT, HDM_GETITEMW, LVIR_BOUNDS, LVIR_LABEL,
-    LVIS_SELECTED, LVITEMW, LVM_GETHEADER, LVM_GETITEMRECT, LVM_GETITEMSTATE, LVM_GETITEMTEXTW,
-    LVM_GETSUBITEMRECT, LVM_SETBKCOLOR, LVM_SETTEXTBKCOLOR, LVM_SETTEXTCOLOR, NM_CUSTOMDRAW, NMHDR,
+    HDITEMW, HDM_GETITEMCOUNT, HDM_GETITEMRECT, HDM_GETITEMW, ILC_COLOR32, ImageList_Create,
+    ImageList_Destroy, LVIR_BOUNDS, LVIR_LABEL, LVIS_SELECTED, LVITEMW, LVM_GETHEADER,
+    LVM_GETITEMRECT, LVM_GETITEMSTATE, LVM_GETITEMTEXTW, LVM_GETSUBITEMRECT, LVM_SETBKCOLOR,
+    LVM_SETIMAGELIST, LVM_SETTEXTBKCOLOR, LVM_SETTEXTCOLOR, LVSIL_SMALL, NM_CUSTOMDRAW, NMHDR,
     NMLVCUSTOMDRAW, ODS_FOCUS, ODS_SELECTED, SetWindowTheme, WM_MOUSELEAVE,
 };
 use windows_sys::Win32::UI::HiDpi::GetDpiForWindow;
@@ -768,6 +769,23 @@ pub fn paint_list(list: HWND) {
     let palette = theme::current();
     list_colors(list, &palette);
     theme_scrollbars(list, &palette);
+    // A list view's rows are as tall as its small images: an empty list of 1 px wide images
+    // gives FastPad's row height. The list destroys it with itself.
+    let dpi = unsafe { GetDpiForWindow(list) };
+    let images = unsafe { ImageList_Create(1, ramp::scale_text(ROW, dpi), ILC_COLOR32, 0, 0) };
+    if images != 0 {
+        let previous = unsafe {
+            SendMessageW(
+                list,
+                LVM_SETIMAGELIST,
+                LVSIL_SMALL as WPARAM,
+                images as LPARAM,
+            )
+        };
+        if previous != 0 {
+            unsafe { ImageList_Destroy(previous as _) };
+        }
+    }
     let header = unsafe { SendMessageW(list, LVM_GETHEADER, 0, 0) } as HWND;
     if !header.is_null() {
         paint_as(header, Look::Header, Surface::Content);
