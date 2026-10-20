@@ -4,6 +4,7 @@
 //! the notebooks in use. Everything
 //! that touches windows runs on this thread.
 
+use super::popup::{self, Anchor, Entry};
 use crate::add::{self, Context};
 use crate::capture::Capture;
 use crate::capture::file::FileError;
@@ -11,7 +12,7 @@ use crate::capture::submit::submit;
 use crate::config::settings::{Settings, SettingsFile};
 use crate::index::service::Indexes;
 use crate::ipc::pipe;
-use crate::platform::tray::{self, MenuItem, Tray};
+use crate::platform::tray::{self, Tray};
 use crate::platform::window::SendHwnd;
 use crate::platform::{hotkey, instance, shell, startup};
 use crate::queue::{State, Store};
@@ -633,71 +634,79 @@ fn show_menu(window: HWND, at: POINT) {
         return;
     };
     let pause_text = if paused {
-        "Resume processing"
+        "&Resume processing"
     } else {
-        "Pause processing"
+        "&Pause processing"
     };
     let clipboard_text = with_app(|app| {
         app.settings
             .clipboard_hotkey
-            .map_or("Capture clipboard".to_owned(), |key| {
-                format!("Capture clipboard\t{key}")
+            .map_or("Capture c&lipboard".to_owned(), |key| {
+                format!("Capture c&lipboard\t{key}")
             })
     })
     .unwrap_or_default();
     let capture_text = with_app(|app| {
         app.settings
             .capture_hotkey
-            .map_or("Capture…".to_owned(), |key| format!("Capture…\t{key}"))
+            .map_or("&Capture…".to_owned(), |key| format!("&Capture…\t{key}"))
     })
     .unwrap_or_default();
-    let review_text = format!("Review ({})", waiting + notes);
+    let review_text = format!("&Review ({})", waiting + notes);
     // The app isn't borrowed while the menu is open: the menu runs a message loop of its own.
-    let chosen = tray::menu(
+    let chosen = popup::menu(
         window,
-        at,
+        Anchor::Above(at),
         &[
-            MenuItem::Command {
+            Entry::Item {
                 id: MENU_CAPTURE,
                 text: &capture_text,
                 enabled: true,
+                checked: false,
             },
-            MenuItem::Command {
+            Entry::Item {
                 id: MENU_CLIPBOARD,
                 text: &clipboard_text,
                 enabled: true,
+                checked: false,
             },
-            MenuItem::Command {
+            Entry::Item {
                 id: MENU_REVIEW,
                 text: &review_text,
                 enabled: true,
+                checked: false,
             },
-            MenuItem::Command {
+            Entry::Item {
                 id: MENU_PAUSE,
                 text: pause_text,
                 enabled: true,
+                checked: false,
             },
-            MenuItem::Separator,
-            MenuItem::Command {
+            Entry::Separator,
+            Entry::Item {
                 id: MENU_SETTINGS,
-                text: "Settings…",
+                text: "&Settings…",
                 enabled: true,
+                checked: false,
             },
-            MenuItem::Command {
+            Entry::Item {
                 id: MENU_SETTINGS_FILE,
-                text: "Open settings file",
+                text: "Open settings &file",
                 enabled: true,
+                checked: false,
             },
-            MenuItem::Command {
+            Entry::Item {
                 id: MENU_FOLDER,
-                text: "Open notebook folder",
+                text: "Open &notebook folder",
                 enabled: true,
+                checked: false,
             },
-            MenuItem::Separator,
-            MenuItem::Command {
+            Entry::Separator,
+            Entry::Item {
                 id: MENU_QUIT,
-                text: "Quit FastCapture",
+                text: "&Quit FastCapture",
                 enabled: true,
+                checked: false,
             },
         ],
     );

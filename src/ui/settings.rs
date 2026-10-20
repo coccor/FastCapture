@@ -1322,18 +1322,15 @@ fn confirm_cloud(hwnd: HWND, form: &Form) -> bool {
     }
     #[cfg(not(test))]
     {
-        use windows_sys::Win32::UI::WindowsAndMessaging::{
-            IDYES, MB_DEFBUTTON2, MB_ICONINFORMATION, MB_YESNO, MessageBoxW,
-        };
         let (title, text) = form.consent();
-        unsafe {
-            MessageBoxW(
-                hwnd,
-                wide(&text).as_ptr(),
-                wide(&title).as_ptr(),
-                MB_YESNO | MB_ICONINFORMATION | MB_DEFBUTTON2,
-            ) == IDYES
-        }
+        let question = super::popup::Question {
+            title: &title,
+            text: &text,
+            buttons: &["Yes, send them", "No"],
+            default: 1,
+            cancel: 1,
+        };
+        super::popup::ask(hwnd, &question) == 0
     }
 }
 

@@ -1,7 +1,8 @@
 //! Opens a window drawn with FastCapture's look, for checking it by eye: the frame, the painting
 //! kit's shapes and text, and real standard controls painted in the theme.
-//! `cargo run --example look -- [system|light|dark] [home|capture]`. It follows Windows when it
-//! says System; `home` opens the home picker on its own instead, and `capture` the capture box.
+//! `cargo run --example look -- [system|light|dark] [home|capture|menu|question]`. It follows
+//! Windows when it says System; `home` opens the home picker on its own instead, `capture` the
+//! capture box, `menu` the tray's menu and `question` the Cloud first-use screen.
 
 #![windows_subsystem = "windows"]
 
@@ -490,6 +491,57 @@ fn main() {
         )
     };
     add_controls(window, dpi);
+    if std::env::args().nth(2).as_deref() == Some("menu") {
+        use fastcapture::ui::popup::{self, Anchor, Entry};
+        let item = |id, text| Entry::Item {
+            id,
+            text,
+            enabled: true,
+            checked: false,
+        };
+        let mut cursor = windows_sys::Win32::Foundation::POINT { x: 0, y: 0 };
+        unsafe { windows_sys::Win32::UI::WindowsAndMessaging::GetCursorPos(&mut cursor) };
+        popup::menu(
+            window,
+            Anchor::Below(cursor),
+            &[
+                item(1, "&Capture…\tCtrl+Alt+C"),
+                item(2, "Capture c&lipboard"),
+                item(3, "&Review (3)"),
+                Entry::Item {
+                    id: 4,
+                    text: "&Pause processing",
+                    enabled: false,
+                    checked: false,
+                },
+                Entry::Separator,
+                Entry::Item {
+                    id: 5,
+                    text: "&Settings…",
+                    enabled: true,
+                    checked: true,
+                },
+                item(6, "Open settings &file"),
+                item(7, "Open &notebook folder"),
+                Entry::Separator,
+                item(8, "&Quit FastCapture"),
+            ],
+        );
+        return;
+    }
+    if std::env::args().nth(2).as_deref() == Some("question") {
+        fastcapture::ui::popup::ask(
+            std::ptr::null_mut(),
+            &fastcapture::ui::popup::Question {
+                title: "Send captures to GitHub Copilot?",
+                text: "In Cloud mode with GitHub Copilot, FastCapture runs your own installed Copilot CLI for each capture, which sends it to GitHub with your Copilot login, and GitHub passes it on to the provider of the model Copilot chooses.\n\nNothing is sent before you save a capture. Notes use your Copilot plan's allowance; there is no API bill.\n\nSend your captures to GitHub Copilot?",
+                buttons: &["Yes, send them", "No"],
+                default: 1,
+                cancel: 1,
+            },
+        );
+        return;
+    }
     if std::env::args().nth(2).as_deref() == Some("capture") {
         struct Nowhere;
         impl fastcapture::ui::capture_box::Sink for Nowhere {

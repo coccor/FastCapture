@@ -107,17 +107,14 @@ impl Actions for ShellActions {
     }
 
     fn confirm(&mut self, owner: SendHwnd, question: &str) -> bool {
-        use windows_sys::Win32::UI::WindowsAndMessaging::{
-            IDYES, MB_DEFBUTTON2, MB_ICONQUESTION, MB_YESNO, MessageBoxW,
+        let question = super::popup::Question {
+            title: "FastCapture",
+            text: question,
+            buttons: &["Yes", "No"],
+            default: 1,
+            cancel: 1,
         };
-        unsafe {
-            MessageBoxW(
-                owner.get(),
-                wide(question).as_ptr(),
-                wide("FastCapture").as_ptr(),
-                MB_YESNO | MB_ICONQUESTION | MB_DEFBUTTON2,
-            ) == IDYES
-        }
+        super::popup::ask(owner.get(), &question) == 0
     }
 
     fn changed(&mut self) {

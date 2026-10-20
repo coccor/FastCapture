@@ -8,6 +8,7 @@ pub mod controls;
 pub mod frame;
 pub mod home_picker;
 pub mod paint;
+pub mod popup;
 pub mod review;
 pub mod review_list;
 pub mod settings;

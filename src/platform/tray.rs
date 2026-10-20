@@ -2,17 +2,14 @@
 //! balloons, and a popup menu. The icon is drawn from `crate::icon` at the size Windows asks
 //! for, so it needs no resource and looks the same in light and dark taskbars.
 
-use windows_sys::Win32::Foundation::{HWND, POINT};
+use windows_sys::Win32::Foundation::HWND;
 use windows_sys::Win32::UI::Shell::{
     NIF_ICON, NIF_INFO, NIF_MESSAGE, NIF_SHOWTIP, NIF_TIP, NIIF_ERROR, NIIF_INFO, NIIF_NOSOUND,
     NIM_ADD, NIM_DELETE, NIM_MODIFY, NIM_SETVERSION, NOTIFYICON_VERSION_4, NOTIFYICONDATAW,
     Shell_NotifyIconW,
 };
 use windows_sys::Win32::UI::WindowsAndMessaging::{
-    AppendMenuW, CreateIconFromResourceEx, CreatePopupMenu, DestroyIcon, DestroyMenu,
-    GetSystemMetrics, HICON, LR_DEFAULTCOLOR, MF_GRAYED, MF_SEPARATOR, MF_STRING, PostMessageW,
-    SM_CXSMICON, SetForegroundWindow, TPM_BOTTOMALIGN, TPM_RETURNCMD, TPM_RIGHTBUTTON,
-    TrackPopupMenuEx, WM_NULL,
+    CreateIconFromResourceEx, DestroyIcon, GetSystemMetrics, HICON, LR_DEFAULTCOLOR, SM_CXSMICON,
 };
 
 /// The icon's id within the window.
@@ -117,54 +114,4 @@ impl Drop for Tray {
             DestroyIcon(self.icon);
         }
     }
-}
-
-/// One line of the tray menu.
-pub enum MenuItem<'a> {
-    Command {
-        id: u32,
-        text: &'a str,
-        enabled: bool,
-    },
-    Separator,
-}
-
-/// Shows a popup menu at `at` and returns the chosen command, or 0. The window must be the
-/// tray icon's: it is brought to the front so the menu closes when you click elsewhere.
-pub(crate) fn menu(window: HWND, at: POINT, items: &[MenuItem<'_>]) -> u32 {
-    let menu = unsafe { CreatePopupMenu() };
-    if menu.is_null() {
-        return 0;
-    }
-    for item in items {
-        match item {
-            MenuItem::Command { id, text, enabled } => {
-                let text: Vec<u16> = text.encode_utf16().chain(std::iter::once(0)).collect();
-                let flags = if *enabled {
-                    MF_STRING
-                } else {
-                    MF_STRING | MF_GRAYED
-                };
-                unsafe { AppendMenuW(menu, flags, *id as usize, text.as_ptr()) };
-            }
-            MenuItem::Separator => unsafe {
-                AppendMenuW(menu, MF_SEPARATOR, 0, std::ptr::null());
-            },
-        }
-    }
-    let chosen = unsafe {
-        SetForegroundWindow(window);
-        let chosen = TrackPopupMenuEx(
-            menu,
-            TPM_RETURNCMD | TPM_RIGHTBUTTON | TPM_BOTTOMALIGN,
-            at.x,
-            at.y,
-            window,
-            std::ptr::null(),
-        );
-        PostMessageW(window, WM_NULL, 0, 0);
-        DestroyMenu(menu);
-        chosen
-    };
-    chosen as u32
 }

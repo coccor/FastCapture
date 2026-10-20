@@ -42,17 +42,16 @@ use windows_sys::Win32::UI::Shell::{
     DefSubclassProc, DragAcceptFiles, DragFinish, HDROP, RemoveWindowSubclass, SetWindowSubclass,
 };
 use windows_sys::Win32::UI::WindowsAndMessaging::{
-    AppendMenuW, CreatePopupMenu, CreateWindowExW, DefWindowProcW, DestroyMenu, DestroyWindow,
-    ES_AUTOVSCROLL, ES_MULTILINE, ES_WANTRETURN, FindWindowW, GWLP_USERDATA, GetCursorPos,
-    GetForegroundWindow, GetWindowLongPtrW, GetWindowRect, GetWindowTextLengthW, GetWindowTextW,
-    HTCAPTION, HTCLIENT, IDC_ARROW, IsWindow, KillTimer, LoadCursorW, MF_CHECKED, MF_STRING,
-    RegisterClassW, SW_HIDE, SW_SHOW, SWP_NOACTIVATE, SWP_NOZORDER, SendMessageW,
-    SetForegroundWindow, SetTimer, SetWindowLongPtrW, SetWindowPos, SetWindowTextW, ShowWindow,
-    TPM_RETURNCMD, TrackPopupMenuEx, WM_APP, WM_CHAR, WM_CLIPBOARDUPDATE, WM_CLOSE,
-    WM_CTLCOLOREDIT, WM_DESTROY, WM_DROPFILES, WM_ERASEBKGND, WM_KEYDOWN, WM_LBUTTONDOWN,
-    WM_NCCALCSIZE, WM_NCDESTROY, WM_NCHITTEST, WM_PAINT, WM_PASTE, WM_SETFOCUS, WM_SETFONT,
-    WM_TIMER, WNDCLASSW, WS_CAPTION, WS_CHILD, WS_CLIPCHILDREN, WS_EX_ACCEPTFILES, WS_EX_TOPMOST,
-    WS_POPUP, WS_TABSTOP, WS_VISIBLE, WS_VSCROLL,
+    CreateWindowExW, DefWindowProcW, DestroyWindow, ES_AUTOVSCROLL, ES_MULTILINE, ES_WANTRETURN,
+    FindWindowW, GWLP_USERDATA, GetCursorPos, GetForegroundWindow, GetWindowLongPtrW,
+    GetWindowRect, GetWindowTextLengthW, GetWindowTextW, HTCAPTION, HTCLIENT, IDC_ARROW, IsWindow,
+    KillTimer, LoadCursorW, RegisterClassW, SW_HIDE, SW_SHOW, SWP_NOACTIVATE, SWP_NOZORDER,
+    SendMessageW, SetForegroundWindow, SetTimer, SetWindowLongPtrW, SetWindowPos, SetWindowTextW,
+    ShowWindow, WM_APP, WM_CHAR, WM_CLIPBOARDUPDATE, WM_CLOSE, WM_CTLCOLOREDIT, WM_DESTROY,
+    WM_DROPFILES, WM_ERASEBKGND, WM_KEYDOWN, WM_LBUTTONDOWN, WM_NCCALCSIZE, WM_NCDESTROY,
+    WM_NCHITTEST, WM_PAINT, WM_PASTE, WM_SETFOCUS, WM_SETFONT, WM_TIMER, WNDCLASSW, WS_CAPTION,
+    WS_CHILD, WS_CLIPCHILDREN, WS_EX_ACCEPTFILES, WS_EX_TOPMOST, WS_POPUP, WS_TABSTOP, WS_VISIBLE,
+    WS_VSCROLL,
 };
 
 const WIDTH_AT_96_DPI: i32 = 520;
@@ -637,17 +636,14 @@ fn confirm_large(hwnd: HWND, path: &Path, size: u64) -> bool {
             path.file_name().unwrap_or_default().to_string_lossy(),
             size.div_ceil(1024 * 1024)
         );
-        use windows_sys::Win32::UI::WindowsAndMessaging::{
-            IDNO, MB_ICONQUESTION, MB_YESNO, MessageBoxW,
+        let question = super::popup::Question {
+            title: "Copy a large file?",
+            text: &message,
+            buttons: &["Copy it", "Don't copy"],
+            default: 0,
+            cancel: 1,
         };
-        unsafe {
-            MessageBoxW(
-                hwnd,
-                wide(&message).as_ptr(),
-                wide("FastCapture").as_ptr(),
-                MB_YESNO | MB_ICONQUESTION,
-            ) != IDNO
-        }
+        super::popup::ask(hwnd, &question) == 0
     }
 }
 
@@ -793,30 +789,29 @@ fn pick_notebook(hwnd: HWND) {
     if !notebooks.contains(&capture.notebook) {
         notebooks.insert(0, capture.notebook.clone());
     }
-    let menu = unsafe { CreatePopupMenu() };
-    if menu.is_null() {
-        return;
-    }
-    for (index, notebook) in notebooks.iter().enumerate() {
-        let flags = if *notebook == capture.notebook {
-            MF_STRING | MF_CHECKED
-        } else {
-            MF_STRING
-        };
-        let label = wide(&format!("&{} {}", index + 1, notebook_name(notebook)));
-        unsafe { AppendMenuW(menu, flags, index + 1, label.as_ptr()) };
-    }
+    let labels: Vec<String> = notebooks
+        .iter()
+        .enumerate()
+        .map(|(index, notebook)| format!("&{} {}", index + 1, notebook_name(notebook)))
+        .collect();
+    let entries: Vec<super::popup::Entry<'_>> = notebooks
+        .iter()
+        .zip(&labels)
+        .enumerate()
+        .map(|(index, (notebook, label))| super::popup::Entry::Item {
+            id: index as u32 + 1,
+            text: label,
+            enabled: true,
+            checked: *notebook == capture.notebook,
+        })
+        .collect();
     let title = capture.layout.title;
     let mut at = POINT {
         x: scale(PAD_AT_96_DPI, capture.dpi),
         y: title.bottom,
     };
     unsafe { windows_sys::Win32::Graphics::Gdi::ClientToScreen(hwnd, &mut at) };
-    let chosen = unsafe {
-        let chosen = TrackPopupMenuEx(menu, TPM_RETURNCMD, at.x, at.y, hwnd, std::ptr::null());
-        DestroyMenu(menu);
-        chosen
-    };
+    let chosen = super::popup::menu(hwnd, super::popup::Anchor::Below(at), &entries);
     if chosen > 0
         && let Some(notebook) = notebooks.get(chosen as usize - 1)
         && let Some(capture) = state(hwnd)
