@@ -28,7 +28,7 @@ use crate::runner::usage::{self, Ledger, thousands};
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 use windows_sys::Win32::Foundation::{
-    ERROR_CLASS_ALREADY_EXISTS, GetLastError, HWND, LPARAM, LRESULT, WPARAM,
+    ERROR_CLASS_ALREADY_EXISTS, GetLastError, HWND, LPARAM, LRESULT, RECT, WPARAM,
 };
 use windows_sys::Win32::Graphics::Gdi::{DeleteObject, HDC, HFONT, InvalidateRect, SetTextColor};
 use windows_sys::Win32::System::LibraryLoader::GetModuleHandleW;
@@ -42,10 +42,11 @@ use windows_sys::Win32::UI::WindowsAndMessaging::{
     CreateWindowExW, DefWindowProcW, DestroyWindow, ES_AUTOHSCROLL, ES_PASSWORD, FindWindowW,
     GWLP_USERDATA, GetWindowLongPtrW, GetWindowTextLengthW, GetWindowTextW, IDC_ARROW, IDCANCEL,
     IDOK, IsDialogMessageW, LoadCursorW, MSG, PostMessageW, RegisterClassW, SW_HIDE, SW_SHOW,
-    SW_SHOWNORMAL, SendMessageW, SetForegroundWindow, SetWindowLongPtrW, SetWindowTextW,
-    ShowWindow, WM_APP, WM_CLOSE, WM_COMMAND, WM_CTLCOLORBTN, WM_CTLCOLOREDIT, WM_CTLCOLORLISTBOX,
-    WM_CTLCOLORSTATIC, WM_ERASEBKGND, WM_NCDESTROY, WM_PAINT, WM_SETFONT, WNDCLASSW, WS_CAPTION,
-    WS_CHILD, WS_CLIPCHILDREN, WS_EX_CLIENTEDGE, WS_GROUP, WS_MINIMIZEBOX, WS_SYSMENU, WS_TABSTOP,
+    SW_SHOWNORMAL, SWP_NOACTIVATE, SWP_NOZORDER, SendMessageW, SetForegroundWindow,
+    SetWindowLongPtrW, SetWindowPos, SetWindowTextW, ShowWindow, WM_APP, WM_CLOSE, WM_COMMAND,
+    WM_CTLCOLORBTN, WM_CTLCOLOREDIT, WM_CTLCOLORLISTBOX, WM_CTLCOLORSTATIC, WM_DPICHANGED,
+    WM_ERASEBKGND, WM_NCDESTROY, WM_PAINT, WM_SETFONT, WNDCLASSW, WS_CAPTION, WS_CHILD,
+    WS_CLIPCHILDREN, WS_EX_CLIENTEDGE, WS_GROUP, WS_MINIMIZEBOX, WS_SYSMENU, WS_TABSTOP,
     WS_VISIBLE, WS_VSCROLL,
 };
 
@@ -174,6 +175,8 @@ struct Controls {
     copilot_only: Vec<HWND>,
     /// The address and key rows, which Claude Code and Copilot have no use for.
     api_only: Vec<HWND>,
+    /// Every control and where it sits at 96 DPI, to place them again at another.
+    placed: Vec<(HWND, [i32; 4])>,
 }
 
 struct SettingsWindow {
@@ -361,15 +364,14 @@ pub fn open(options: Open) -> Option<HWND> {
     let dpi = unsafe { GetDpiForWindow(hwnd) }.max(96);
     // The frame gives up the native caption and border: the client area is the whole window.
     unsafe {
-        windows_sys::Win32::UI::WindowsAndMessaging::SetWindowPos(
+        SetWindowPos(
             hwnd,
             std::ptr::null_mut(),
             0,
             0,
             scale(WIDTH, dpi),
             scale(HEIGHT, dpi),
-            windows_sys::Win32::UI::WindowsAndMessaging::SWP_NOMOVE
-                | windows_sys::Win32::UI::WindowsAndMessaging::SWP_NOZORDER,
+            windows_sys::Win32::UI::WindowsAndMessaging::SWP_NOMOVE | SWP_NOZORDER,
         )
     };
     let font = ramp::font(TextStyle::Body, dpi);
@@ -423,6 +425,7 @@ pub fn open(options: Open) -> Option<HWND> {
 fn create_controls(hwnd: HWND, dpi: u32, font: HFONT) -> Controls {
     let s = |value: i32| scale(value, dpi);
     let instance = unsafe { GetModuleHandleW(std::ptr::null()) };
+    let placed = std::cell::RefCell::new(Vec::new());
     // Rows are placed below the title strip and the Theme row.
     let make =
         |class: &str, text: &str, style: u32, ex: u32, x: i32, y: i32, w: i32, h: i32, id: i32| {
@@ -445,6 +448,7 @@ fn create_controls(hwnd: HWND, dpi: u32, font: HFONT) -> Controls {
             };
             unsafe { SendMessageW(control, WM_SETFONT, font as usize, 1) };
             paint(control, class, style);
+            placed.borrow_mut().push((control, [x, y, w, h]));
             control
         };
     let label = |text: &str, y: i32| make("STATIC", text, 0, 0, 16, y + 4, 92, 20, -1);
@@ -890,6 +894,44 @@ fn create_controls(hwnd: HWND, dpi: u32, font: HFONT) -> Controls {
         claude_code_only: vec![claude_code_label, claude_code_status, claude_code_model],
         copilot_only: vec![copilot_label, copilot_status, copilot_model],
         api_only: vec![address_label, key_label, key, key_status],
+        placed: placed.take(),
+    }
+}
+
+/// Follows the window to a monitor with another scale: the size Windows suggests, the fonts,
+/// the strip and every control at the new DPI.
+fn change_dpi(hwnd: HWND, dpi: u32, suggested: &RECT) {
+    let Some(window) = state(hwnd) else {
+        return;
+    };
+    window.frame.set_dpi(dpi);
+    let font = ramp::font(TextStyle::Body, dpi);
+    for &(control, [x, y, w, h]) in &window.controls.placed {
+        unsafe {
+            SendMessageW(control, WM_SETFONT, font as usize, 0);
+            SetWindowPos(
+                control,
+                std::ptr::null_mut(),
+                scale(x, dpi),
+                scale(y, dpi),
+                scale(w, dpi),
+                scale(h, dpi),
+                SWP_NOZORDER | SWP_NOACTIVATE,
+            );
+        }
+    }
+    unsafe { DeleteObject(std::mem::replace(&mut window.font, font)) };
+    unsafe {
+        SetWindowPos(
+            hwnd,
+            std::ptr::null_mut(),
+            suggested.left,
+            suggested.top,
+            suggested.right - suggested.left,
+            suggested.bottom - suggested.top,
+            SWP_NOZORDER | SWP_NOACTIVATE,
+        );
+        InvalidateRect(hwnd, std::ptr::null(), 1);
     }
 }
 
@@ -1597,6 +1639,11 @@ unsafe extern "system" fn settings_proc(
             }
             answer
         }
+        WM_DPICHANGED => {
+            let dpi = u32::from((wparam & 0xFFFF) as u16).max(96);
+            change_dpi(hwnd, dpi, unsafe { &*(lparam as *const RECT) });
+            0
+        }
         WM_ERASEBKGND => 1,
         WM_PAINT => {
             let palette = theme::current();
@@ -2034,6 +2081,50 @@ mod tests {
         );
         assert_eq!(theme::current(), DARK, "kept");
         theme::set_preference(ThemePreference::System);
+    }
+
+    /// Where `control` sits in its window's client area.
+    fn place_of(hwnd: HWND, control: HWND) -> RECT {
+        use windows_sys::Win32::Graphics::Gdi::MapWindowPoints;
+        use windows_sys::Win32::UI::WindowsAndMessaging::GetWindowRect;
+        let mut place: RECT = unsafe { std::mem::zeroed() };
+        unsafe {
+            GetWindowRect(control, &mut place);
+            MapWindowPoints(std::ptr::null_mut(), hwnd, &mut place as *mut RECT as _, 2);
+        }
+        place
+    }
+
+    #[test]
+    fn moved_to_a_monitor_at_another_scale_it_is_laid_out_again() {
+        let temp = Temp::new("dpi");
+        let hwnd = temp.open(Rc::new(Cell::new(false)));
+        let suggested = RECT {
+            left: 40,
+            top: 30,
+            right: 40 + scale(WIDTH, 144),
+            bottom: 30 + scale(HEIGHT, 144),
+        };
+        unsafe {
+            SendMessageW(
+                hwnd,
+                WM_DPICHANGED,
+                (144 << 16) | 144,
+                &suggested as *const RECT as isize,
+            )
+        };
+        let window = state(hwnd).unwrap();
+        assert_eq!(window.frame.height(), scale(TITLE_STRIP, 144));
+        let notebook = place_of(hwnd, window.controls.notebook);
+        assert_eq!(
+            (notebook.left, notebook.top),
+            (scale(112, 144), scale(16 + TITLE_STRIP + THEME_ROW, 144))
+        );
+        assert_eq!(notebook.right - notebook.left, scale(320, 144));
+        let mut place: RECT = unsafe { std::mem::zeroed() };
+        unsafe { windows_sys::Win32::UI::WindowsAndMessaging::GetWindowRect(hwnd, &mut place) };
+        assert_eq!(place.right - place.left, scale(WIDTH, 144));
+        command(hwnd, IDCANCEL);
     }
 
     #[test]

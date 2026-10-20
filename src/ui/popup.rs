@@ -24,8 +24,8 @@ use windows_sys::Win32::Graphics::Dwm::{
 };
 use windows_sys::Win32::Graphics::Gdi::{
     DT_CALCRECT, DT_NOPREFIX, DT_WORDBREAK, DeleteObject, DrawTextW, GetDC, GetMonitorInfoW, HDC,
-    HFONT, HGDIOBJ, MONITOR_DEFAULTTONEAREST, MONITORINFO, MonitorFromPoint, ReleaseDC,
-    SelectObject,
+    HFONT, HGDIOBJ, InvalidateRect, MONITOR_DEFAULTTONEAREST, MONITORINFO, MonitorFromPoint,
+    ReleaseDC, SelectObject,
 };
 use windows_sys::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows_sys::Win32::UI::Controls::{DRAWITEMSTRUCT, MEASUREITEMSTRUCT, ODS_SELECTED};
@@ -42,10 +42,11 @@ use windows_sys::Win32::UI::WindowsAndMessaging::{
     LBS_HASSTRINGS, LBS_NOINTEGRALHEIGHT, LBS_NOTIFY, LBS_OWNERDRAWVARIABLE, LoadCursorW, MSG,
     PostMessageW, PostQuitMessage, RegisterClassW, SW_SHOW, SWP_NOACTIVATE, SWP_NOZORDER,
     SendMessageW, SetForegroundWindow, SetWindowLongPtrW, SetWindowPos, ShowWindow,
-    TranslateMessage, WA_INACTIVE, WM_ACTIVATE, WM_CHAR, WM_CLOSE, WM_COMMAND, WM_DRAWITEM,
-    WM_ERASEBKGND, WM_KEYDOWN, WM_LBUTTONUP, WM_MEASUREITEM, WM_MOUSEMOVE, WM_NCDESTROY, WM_NULL,
-    WM_PAINT, WM_SETFONT, WNDCLASSW, WS_CAPTION, WS_CHILD, WS_CLIPCHILDREN, WS_EX_TOOLWINDOW,
-    WS_EX_TOPMOST, WS_GROUP, WS_POPUP, WS_SYSMENU, WS_TABSTOP, WS_VISIBLE, WS_VSCROLL,
+    TranslateMessage, WA_INACTIVE, WM_ACTIVATE, WM_CHAR, WM_CLOSE, WM_COMMAND, WM_DPICHANGED,
+    WM_DRAWITEM, WM_ERASEBKGND, WM_KEYDOWN, WM_LBUTTONUP, WM_MEASUREITEM, WM_MOUSEMOVE,
+    WM_NCDESTROY, WM_NULL, WM_PAINT, WM_SETFONT, WNDCLASSW, WS_CAPTION, WS_CHILD, WS_CLIPCHILDREN,
+    WS_EX_TOOLWINDOW, WS_EX_TOPMOST, WS_GROUP, WS_POPUP, WS_SYSMENU, WS_TABSTOP, WS_VISIBLE,
+    WS_VSCROLL,
 };
 
 fn wide(text: &str) -> Vec<u16> {
@@ -697,6 +698,9 @@ pub struct Question<'a> {
 struct QuestionState {
     frame: Frame,
     font: HFONT,
+    /// The question, to wrap again at another DPI.
+    text: String,
+    field: HWND,
     buttons: Vec<HWND>,
     cancel: usize,
     answer: Option<usize>,
@@ -732,6 +736,81 @@ fn text_height(window: HWND, text: &str, font: HFONT, width: i32) -> i32 {
     area.bottom
 }
 
+/// The width of the question's text.
+fn question_inner(dpi: u32) -> i32 {
+    scale(WIDTH, dpi) - 2 * scale(DIALOG_PADDING, dpi)
+}
+
+/// Places the text and the buttons at `dpi` in the state's font, and returns the window's size.
+fn lay_out_question(window: HWND, state: &QuestionState, dpi: u32) -> (i32, i32) {
+    let s = |value| scale(value, dpi);
+    let width = s(WIDTH);
+    let pad = s(DIALOG_PADDING);
+    let inner = question_inner(dpi);
+    let wrapped = text_height(window, &state.text, state.font, inner - s(4));
+    let text_height = wrapped.min(s(MOST_TEXT)) + s(4);
+    let top = state.frame.height() + s(8);
+    let height = top + text_height + s(16) + s(FOOTER);
+    unsafe {
+        SendMessageW(state.field, WM_SETFONT, state.font as usize, 0);
+        SetWindowPos(
+            state.field,
+            std::ptr::null_mut(),
+            pad,
+            top,
+            inner,
+            text_height,
+            SWP_NOZORDER | SWP_NOACTIVATE,
+        );
+    }
+    let button_width = s(96);
+    let button_height = s(26);
+    let gap = s(8);
+    let count = state.buttons.len() as i32;
+    let mut left = width - pad - count * button_width - (count - 1).max(0) * gap;
+    for &button in &state.buttons {
+        unsafe {
+            SendMessageW(button, WM_SETFONT, state.font as usize, 0);
+            SetWindowPos(
+                button,
+                std::ptr::null_mut(),
+                left,
+                height - s(FOOTER) + (s(FOOTER) - button_height) / 2 - s(4),
+                button_width,
+                button_height,
+                SWP_NOZORDER | SWP_NOACTIVATE,
+            );
+        }
+        left += button_width + gap;
+    }
+    (width, height)
+}
+
+/// Follows the question to a monitor with another scale: the fonts, the strip and the layout at
+/// the new DPI, where Windows suggests.
+fn change_question_dpi(window: HWND, dpi: u32, suggested: &RECT) {
+    let Some(state) = question_state(window) else {
+        return;
+    };
+    state.frame.set_dpi(dpi);
+    let font = ramp::font(TextStyle::Body, dpi);
+    let previous = std::mem::replace(&mut state.font, font);
+    let (width, height) = lay_out_question(window, state, dpi);
+    unsafe {
+        DeleteObject(previous as HGDIOBJ);
+        SetWindowPos(
+            window,
+            std::ptr::null_mut(),
+            suggested.left,
+            suggested.top,
+            width,
+            height,
+            SWP_NOZORDER | SWP_NOACTIVATE,
+        );
+        InvalidateRect(window, std::ptr::null(), 1);
+    }
+}
+
 /// Opens `question` over `owner` without waiting; `run_question` waits.
 pub(crate) fn open_question(owner: HWND, question: &Question<'_>) -> Option<HWND> {
     register(QUESTION_CLASS, question_proc);
@@ -756,11 +835,12 @@ pub(crate) fn open_question(owner: HWND, question: &Question<'_>) -> Option<HWND
         return None;
     }
     let dpi = unsafe { GetDpiForWindow(window) };
-    let s = |value| scale(value, dpi);
     let font = ramp::font(TextStyle::Body, dpi);
     let state = Box::new(QuestionState {
         frame: Frame::new(question.title, Buttons::default(), false, dpi),
         font,
+        text: question.text.to_owned(),
+        field: std::ptr::null_mut(),
         buttons: Vec::new(),
         cancel: question.cancel,
         answer: None,
@@ -768,16 +848,14 @@ pub(crate) fn open_question(owner: HWND, question: &Question<'_>) -> Option<HWND
     unsafe { SetWindowLongPtrW(window, GWLP_USERDATA, Box::into_raw(state) as isize) };
     let state = question_state(window)?;
     frame::attach(window, &theme::current());
-    let width = s(WIDTH);
-    let pad = s(DIALOG_PADDING);
-    let inner = width - 2 * pad;
-    let wrapped = text_height(window, question.text, font, inner - s(4));
-    let scrolls = wrapped > s(MOST_TEXT);
-    let text_height = wrapped.min(s(MOST_TEXT)) + s(4);
-    let top = state.frame.height() + s(8);
-    let height = top + text_height + s(16) + s(FOOTER);
+    let scrolls = text_height(
+        window,
+        question.text,
+        font,
+        question_inner(dpi) - scale(4, dpi),
+    ) > scale(MOST_TEXT, dpi);
     let text = question.text.replace("\r\n", "\n").replace('\n', "\r\n");
-    let field = unsafe {
+    state.field = unsafe {
         CreateWindowExW(
             0,
             wide("EDIT").as_ptr(),
@@ -786,23 +864,17 @@ pub(crate) fn open_question(owner: HWND, question: &Question<'_>) -> Option<HWND
                 | WS_VISIBLE
                 | (ES_MULTILINE | ES_READONLY) as u32
                 | if scrolls { WS_VSCROLL } else { 0 },
-            pad,
-            top,
-            inner,
-            text_height,
+            0,
+            0,
+            0,
+            0,
             window,
             std::ptr::null_mut(),
             instance,
             std::ptr::null(),
         )
     };
-    unsafe { SendMessageW(field, WM_SETFONT, font as usize, 0) };
-    controls::theme_scrollbars(field, &theme::current());
-    let button_width = s(96);
-    let button_height = s(26);
-    let gap = s(8);
-    let count = question.buttons.len() as i32;
-    let mut left = width - pad - count * button_width - (count - 1).max(0) * gap;
+    controls::theme_scrollbars(state.field, &theme::current());
     for (index, label) in question.buttons.iter().enumerate() {
         let kind = if index == question.default {
             BS_DEFPUSHBUTTON
@@ -816,21 +888,20 @@ pub(crate) fn open_question(owner: HWND, question: &Question<'_>) -> Option<HWND
                 wide("BUTTON").as_ptr(),
                 wide(label).as_ptr(),
                 WS_CHILD | WS_VISIBLE | WS_TABSTOP | flags | kind as u32,
-                left,
-                height - s(FOOTER) + (s(FOOTER) - button_height) / 2 - s(4),
-                button_width,
-                button_height,
+                0,
+                0,
+                0,
+                0,
                 window,
                 (BUTTON_ID + index) as _,
                 instance,
                 std::ptr::null(),
             )
         };
-        unsafe { SendMessageW(button, WM_SETFONT, font as usize, 0) };
         controls::paint_as(button, Look::Button, Surface::Content);
         state.buttons.push(button);
-        left += button_width + gap;
     }
+    let (width, height) = lay_out_question(window, state, dpi);
     // Centered over the owner when it is showing, else on the monitor under the mouse.
     let mut over = rect(0, 0, 0, 0);
     let showing = !owner.is_null() && unsafe { IsWindowVisible(owner) } != 0;
@@ -953,6 +1024,11 @@ unsafe extern "system" fn question_proc(
                 let cancel = state.cancel;
                 answer(window, cancel);
             }
+            0
+        }
+        WM_DPICHANGED => {
+            let dpi = u32::from((wparam & 0xFFFF) as u16).max(96);
+            change_question_dpi(window, dpi, unsafe { &*(lparam as *const RECT) });
             0
         }
         WM_ERASEBKGND => 1,
@@ -1195,6 +1271,40 @@ mod tests {
             outer.bottom - outer.top < scale(MOST_TEXT + 200, 96) + 40,
             "long text scrolls"
         );
+        unsafe { DestroyWindow(window) };
+    }
+
+    #[test]
+    fn a_question_moved_to_a_monitor_at_another_scale_is_laid_out_again() {
+        use crate::ui::theme::metrics::TITLE_STRIP;
+        use windows_sys::Win32::Graphics::Gdi::MapWindowPoints;
+        let question = Question {
+            title: "Discard this note?",
+            text: "The note goes to the Recycle Bin.",
+            buttons: &["Discard", "Keep"],
+            default: 1,
+            cancel: 1,
+        };
+        let window = open_question(std::ptr::null_mut(), &question).unwrap();
+        let suggested = rect(40, 30, 40 + scale(WIDTH, 144), 30 + 300);
+        unsafe {
+            SendMessageW(
+                window,
+                WM_DPICHANGED,
+                (144 << 16) | 144,
+                &suggested as *const RECT as isize,
+            )
+        };
+        let state = question_state(window).unwrap();
+        assert_eq!(state.frame.height(), scale(TITLE_STRIP, 144));
+        let mut keep = rect(0, 0, 0, 0);
+        unsafe {
+            GetWindowRect(state.buttons[1], &mut keep);
+            MapWindowPoints(std::ptr::null_mut(), window, &mut keep as *mut RECT as _, 2);
+        }
+        let pad = scale(DIALOG_PADDING, 144);
+        assert_eq!(keep.right, scale(WIDTH, 144) - pad);
+        assert_eq!(keep.right - keep.left, scale(96, 144));
         unsafe { DestroyWindow(window) };
     }
 }

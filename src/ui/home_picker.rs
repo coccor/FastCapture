@@ -27,10 +27,10 @@ use windows_sys::Win32::UI::WindowsAndMessaging::{
     IDC_ARROW, IDCANCEL, IDOK, IsDialogMessageW, LB_ADDSTRING, LB_ERR, LB_GETCURSEL,
     LB_RESETCONTENT, LB_SETCURSEL, LB_SETITEMHEIGHT, LBN_DBLCLK, LBS_HASSTRINGS,
     LBS_NOINTEGRALHEIGHT, LBS_NOTIFY, LBS_OWNERDRAWFIXED, LoadCursorW, MSG, RegisterClassW,
-    SW_SHOWNORMAL, SWP_NOZORDER, SendMessageW, SetWindowLongPtrW, SetWindowPos, ShowWindow,
-    WM_CLOSE, WM_COMMAND, WM_DRAWITEM, WM_ERASEBKGND, WM_KEYDOWN, WM_NCDESTROY, WM_PAINT,
-    WM_SETFONT, WM_SIZE, WNDCLASSW, WS_CAPTION, WS_CHILD, WS_CLIPCHILDREN, WS_EX_CLIENTEDGE,
-    WS_POPUP, WS_SYSMENU, WS_TABSTOP, WS_THICKFRAME, WS_VISIBLE, WS_VSCROLL,
+    SW_SHOWNORMAL, SWP_NOACTIVATE, SWP_NOZORDER, SendMessageW, SetWindowLongPtrW, SetWindowPos,
+    ShowWindow, WM_CLOSE, WM_COMMAND, WM_DPICHANGED, WM_DRAWITEM, WM_ERASEBKGND, WM_KEYDOWN,
+    WM_NCDESTROY, WM_PAINT, WM_SETFONT, WM_SIZE, WNDCLASSW, WS_CAPTION, WS_CHILD, WS_CLIPCHILDREN,
+    WS_EX_CLIENTEDGE, WS_POPUP, WS_SYSMENU, WS_TABSTOP, WS_THICKFRAME, WS_VISIBLE, WS_VSCROLL,
 };
 
 const EDIT_ID: usize = 100;
@@ -228,6 +228,39 @@ fn lay_out(hwnd: HWND) {
     }
 }
 
+/// Follows the picker to a monitor with another scale: the size Windows suggests, the fonts,
+/// the strip and the rows at the new DPI.
+fn change_dpi(hwnd: HWND, dpi: u32, suggested: &RECT) {
+    let Some(picker) = state(hwnd) else {
+        return;
+    };
+    picker.dpi = dpi;
+    picker.frame.set_dpi(dpi);
+    let font = ramp::font(TextStyle::Body, dpi);
+    unsafe {
+        SendMessageW(picker.edit, WM_SETFONT, font as usize, 0);
+        SendMessageW(picker.list, WM_SETFONT, font as usize, 0);
+        SendMessageW(
+            picker.list,
+            LB_SETITEMHEIGHT,
+            0,
+            scale_text(ROW, dpi) as isize,
+        );
+        DeleteObject(std::mem::replace(&mut picker.font, font));
+        SetWindowPos(
+            hwnd,
+            std::ptr::null_mut(),
+            suggested.left,
+            suggested.top,
+            suggested.right - suggested.left,
+            suggested.bottom - suggested.top,
+            SWP_NOZORDER | SWP_NOACTIVATE,
+        );
+    }
+    lay_out(hwnd);
+    unsafe { InvalidateRect(hwnd, std::ptr::null(), 1) };
+}
+
 /// Shows the options matching what is typed, the first selected.
 fn fill(picker: &mut Picker) {
     let length = unsafe { GetWindowTextLengthW(picker.edit) }.max(0) as usize;
@@ -341,6 +374,11 @@ unsafe extern "system" fn picker_proc(
         }
         WM_SIZE => {
             lay_out(hwnd);
+            0
+        }
+        WM_DPICHANGED => {
+            let dpi = u32::from((wparam & 0xFFFF) as u16).max(96);
+            change_dpi(hwnd, dpi, unsafe { &*(lparam as *const RECT) });
             0
         }
         WM_COMMAND => {
