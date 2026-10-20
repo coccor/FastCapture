@@ -1,6 +1,6 @@
 //! `.fastcapture\capture.ini`: FastCapture's own keys for a notebook, kept apart from
 //! FastPad's `notebook.ini`. A missing file means the defaults; a bad value falls back to its
-//! default and is reported with its line, as `notebook.ini` does. M1 only reads it.
+//! default and is reported with its line, as `notebook.ini` does. FastCapture only reads it.
 
 use super::notebook_ini::{Warning, inside_path};
 use std::path::{Path, PathBuf};

@@ -1,5 +1,4 @@
-//! The processing queue. M1 writes and lists jobs; the runner that takes them to a
-//! model comes with M2.
+//! The processing queue: it writes and lists jobs, which the runner takes to a model.
 
 pub mod job;
 pub mod store;

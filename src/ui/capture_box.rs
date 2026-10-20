@@ -214,7 +214,7 @@ pub fn layout(dpi: u32, chip_widths: &[i32], has_error: bool, snip_width: i32) -
     }
 }
 
-/// The title band: where the capture goes, and which mode (M2 adds the mode).
+/// The title band: where the capture goes.
 pub fn title_text(notebook: &str) -> String {
     format!("Capture \u{2192} {notebook}")
 }

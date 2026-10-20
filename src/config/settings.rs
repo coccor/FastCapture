@@ -296,7 +296,7 @@ pub fn parse(text: &str) -> (Settings, Vec<Warning>) {
                 settings.openai_accepted = (!value.is_empty()).then(|| value.to_ascii_lowercase());
                 Some(())
             }
-            // Kept for later milestones and other versions; never an error.
+            // Written by FastCapture itself or by other versions; never an error.
             _ if is_reserved(key) => Some(()),
             _ => {
                 warn(format!("unknown setting key: {key}"));
@@ -310,8 +310,7 @@ pub fn parse(text: &str) -> (Settings, Vec<Warning>) {
     (settings, warnings)
 }
 
-/// Keys FastCapture writes itself that `parse` doesn't read: window placement and later
-/// milestones' keys.
+/// Keys FastCapture writes itself that `parse` doesn't read, such as window placement.
 fn is_reserved(key: &str) -> bool {
     key.starts_with("review_")
 }
