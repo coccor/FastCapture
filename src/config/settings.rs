@@ -50,6 +50,11 @@ pub struct Settings {
     pub claude_code_model: String,
     pub claude_code_path: Option<PathBuf>,
     pub claude_code_accepted: bool,
+    /// GitHub Copilot: the model (`auto` lets Copilot choose), where `copilot` is when it isn't
+    /// found by itself, and whether its first-use screen was accepted.
+    pub copilot_model: String,
+    pub copilot_path: Option<PathBuf>,
+    pub copilot_accepted: bool,
 }
 
 /// One model provider at a time: on this PC, or in the cloud.
@@ -68,6 +73,8 @@ pub enum CloudBackend {
     OpenAi,
     /// The user's own installed Claude Code, signed in with their Claude plan.
     ClaudeCode,
+    /// The user's own installed Copilot CLI, signed in with their Copilot plan.
+    Copilot,
 }
 
 impl CloudBackend {
@@ -77,6 +84,7 @@ impl CloudBackend {
             Self::Claude => "claude",
             Self::OpenAi => "openai",
             Self::ClaudeCode => "claude_code",
+            Self::Copilot => "copilot",
         }
     }
 }
@@ -103,6 +111,9 @@ impl Default for Settings {
             claude_code_model: crate::model::claude_code::DEFAULT_MODEL.to_owned(),
             claude_code_path: None,
             claude_code_accepted: false,
+            copilot_model: crate::model::copilot::DEFAULT_MODEL.to_owned(),
+            copilot_path: None,
+            copilot_accepted: false,
         }
     }
 }
@@ -199,6 +210,7 @@ pub fn parse(text: &str) -> (Settings, Vec<Warning>) {
                 CloudBackend::Claude,
                 CloudBackend::OpenAi,
                 CloudBackend::ClaudeCode,
+                CloudBackend::Copilot,
             ]
             .into_iter()
             .find(|backend| value.eq_ignore_ascii_case(backend.key()))
@@ -242,6 +254,14 @@ pub fn parse(text: &str) -> (Settings, Vec<Warning>) {
             "claude_code_accepted" => {
                 parse_bool(value).map(|on| settings.claude_code_accepted = on)
             }
+            "copilot_model" => (!value.is_empty() && !value.contains(char::is_whitespace))
+                .then(|| settings.copilot_model = value.to_owned()),
+            "copilot_path" if value.is_empty() => {
+                settings.copilot_path = None;
+                Some(())
+            }
+            "copilot_path" => parse_folder(value).map(|path| settings.copilot_path = Some(path)),
+            "copilot_accepted" => parse_bool(value).map(|on| settings.copilot_accepted = on),
             "openai_accepted" => {
                 settings.openai_accepted = (!value.is_empty()).then(|| value.to_ascii_lowercase());
                 Some(())
@@ -479,6 +499,26 @@ mod tests {
         assert_eq!(warnings.len(), 2, "a relative path, an empty model");
         assert_eq!(settings.claude_code_path, None);
         assert_eq!(settings.claude_code_model, "sonnet");
+    }
+
+    #[test]
+    fn the_copilot_settings_are_read() {
+        let (settings, warnings) = parse(
+            "mode=cloud\nbackend=copilot\ncopilot_model=gpt-5.4\n\
+             copilot_path=C:\\Tools\\copilot.exe\ncopilot_accepted=true\n",
+        );
+        assert!(warnings.is_empty(), "{warnings:?}");
+        assert_eq!(settings.backend, CloudBackend::Copilot);
+        assert_eq!(settings.copilot_model, "gpt-5.4");
+        assert_eq!(
+            settings.copilot_path,
+            Some(PathBuf::from(r"C:\Tools\copilot.exe"))
+        );
+        assert!(settings.copilot_accepted && !settings.claude_code_accepted);
+        let (settings, warnings) = parse("copilot_path=copilot.exe\ncopilot_model=\n");
+        assert_eq!(warnings.len(), 2, "a relative path, an empty model");
+        assert_eq!(settings.copilot_path, None);
+        assert_eq!(settings.copilot_model, "auto");
     }
 
     #[test]

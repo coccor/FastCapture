@@ -20,6 +20,8 @@ pub struct Form {
     pub openai_model: String,
     /// Claude Code's model: an alias such as `sonnet`, or a full name.
     pub claude_code_model: String,
+    /// Copilot's model: `auto`, or one the plan offers.
+    pub copilot_model: String,
     /// A key typed into the form for the chosen provider; empty keeps the saved one.
     pub new_key: String,
     /// A key for the chosen provider is already saved in Credential Manager.
@@ -57,6 +59,7 @@ impl Form {
             openai_endpoint: settings.openai_endpoint.clone().unwrap_or_default(),
             openai_model: settings.openai_model.clone().unwrap_or_default(),
             claude_code_model: settings.claude_code_model.clone(),
+            copilot_model: settings.copilot_model.clone(),
             new_key: String::new(),
             key_saved,
             token_cap: cap_text(settings.token_cap),
@@ -139,6 +142,13 @@ impl Form {
                     }
                     None
                 }
+                CloudBackend::Copilot => {
+                    let model = self.copilot_model.trim();
+                    if model.is_empty() || model.contains(char::is_whitespace) {
+                        return Some("Choose or type a Copilot model, like auto.".to_owned());
+                    }
+                    None
+                }
             },
         }
     }
@@ -155,6 +165,7 @@ impl Form {
                 settings.openai_accepted.as_deref() != Some(self.openai_host().as_str())
             }
             CloudBackend::ClaudeCode => !settings.claude_code_accepted,
+            CloudBackend::Copilot => !settings.copilot_accepted,
         }
     }
 
@@ -182,11 +193,15 @@ impl Form {
         if !self.claude_code_model.trim().is_empty() {
             file.set("claude_code_model", self.claude_code_model.trim());
         }
+        if !self.copilot_model.trim().is_empty() {
+            file.set("copilot_model", self.copilot_model.trim());
+        }
         if cloud_accepted_now {
             match self.backend {
                 CloudBackend::Claude => file.set("cloud_accepted", "true"),
                 CloudBackend::OpenAi => file.set("openai_accepted", &self.openai_host()),
                 CloudBackend::ClaudeCode => file.set("claude_code_accepted", "true"),
+                CloudBackend::Copilot => file.set("copilot_accepted", "true"),
             }
         }
         file.set(
@@ -222,13 +237,46 @@ impl Form {
             CloudBackend::ClaudeCode => (
                 "Send captures to Anthropic through Claude Code?".to_owned(),
                 format!(
-                    "In Cloud mode with Claude Code, FastCapture runs your own installed Claude                      Code for each capture, which sends it to Anthropic with your Claude plan's                      login ({}): what you typed, the text of links and files you capture, your                      screenshots and images, and short descriptions of related notes in your                      notebook. Claude Code runs with no tools, so it can't read or change                      anything else.\n\n\
-                     Nothing is sent before you save a capture. Notes count against your plan's                      usage limits; there is no API bill.\n\n\
-                     This is experimental and for your own use: Anthropic lets you use Claude                      Code with your own plan, but its terms don't say whether another app may                      start it for you, so this may have to change.\n\n\
+                    "In Cloud mode with Claude Code, FastCapture runs your own installed Claude \
+                    Code for each capture, which sends it to Anthropic with your Claude plan's \
+                    login ({}): what you typed, the text of links and files you capture, your \
+                    screenshots and images, and short descriptions of related notes in your \
+                    notebook. Claude Code runs with no tools, so it can't read or change \
+                    anything else.\n\n\
+                     Nothing is sent before you save a capture. Notes count against your plan's \
+                     usage limits; there is no API bill.\n\n\
+                     This is experimental and for your own use: Anthropic lets you use Claude \
+                     Code with your own plan, but its terms don't say whether another app may \
+                     start it for you, so this may have to change.\n\n\
                      Send your captures to Anthropic through Claude Code?",
                     self.claude_code_model.trim()
                 ),
             ),
+            CloudBackend::Copilot => {
+                let model = self.copilot_model.trim();
+                let model = if model.eq_ignore_ascii_case(crate::model::copilot::DEFAULT_MODEL) {
+                    "the model Copilot chooses".to_owned()
+                } else {
+                    model.to_owned()
+                };
+                (
+                    "Send captures to GitHub Copilot?".to_owned(),
+                    format!(
+                        "In Cloud mode with GitHub Copilot, FastCapture runs your own installed \
+                         Copilot CLI for each capture, which sends it to GitHub with your Copilot \
+                         login, and GitHub passes it on to the provider of {model}: what you \
+                         typed, the text of links and files you capture, your screenshots and \
+                         images, and short descriptions of related notes in your notebook. The \
+                         CLI runs with no tools, so it can't read or change anything else.\n\n\
+                         Nothing is sent before you save a capture. Notes use your Copilot \
+                         plan's allowance; there is no API bill.\n\n\
+                         This is experimental and for your own use: GitHub lets you use the \
+                         Copilot CLI with your own plan, but its terms don't say whether another \
+                         app may start it for you, so this may have to change.\n\n\
+                         Send your captures to GitHub Copilot?"
+                    ),
+                )
+            }
         }
     }
 }
@@ -264,6 +312,7 @@ mod tests {
             local_model: "gemma3".into(),
             claude_model: "claude-sonnet-5-5".into(),
             claude_code_model: "sonnet".into(),
+            copilot_model: "auto".into(),
             ..Form::default()
         }
     }
@@ -439,6 +488,58 @@ mod tests {
         assert_eq!(settings.backend, CloudBackend::ClaudeCode);
         assert_eq!(settings.claude_code_model, "haiku");
         assert!(settings.claude_code_accepted && !settings.cloud_accepted);
+    }
+
+    #[test]
+    fn copilot_needs_a_model_and_its_own_consent_but_no_key() {
+        let copilot = Form {
+            mode: Some(Mode::Cloud),
+            backend: CloudBackend::Copilot,
+            ..form()
+        };
+        assert_eq!(copilot.problem(), None, "no key");
+        let mut nameless = copilot.clone();
+        nameless.copilot_model = String::new();
+        assert!(
+            nameless
+                .problem()
+                .unwrap()
+                .starts_with("Choose or type a Copilot model")
+        );
+        assert!(copilot.needs_cloud_consent(&parse("claude_code_accepted=true").0));
+        assert!(!copilot.needs_cloud_consent(&parse("copilot_accepted=true").0));
+        let (title, text) = copilot.consent();
+        assert_eq!(title, "Send captures to GitHub Copilot?");
+        assert!(text.contains("the model Copilot chooses") && text.contains("experimental"));
+        let mut named = copilot.clone();
+        named.copilot_model = "gpt-5.4".into();
+        assert!(named.consent().1.contains("provider of gpt-5.4:"));
+
+        let mut file = SettingsFile::from_text("");
+        named.apply(&mut file, true);
+        let (settings, warnings) = parse(&file.text());
+        assert!(warnings.is_empty(), "{warnings:?}");
+        assert_eq!(settings.backend, CloudBackend::Copilot);
+        assert_eq!(settings.copilot_model, "gpt-5.4");
+        assert!(settings.copilot_accepted && !settings.claude_code_accepted);
+    }
+
+    #[test]
+    fn every_first_use_screen_reads_as_plain_sentences() {
+        for backend in [
+            CloudBackend::Claude,
+            CloudBackend::OpenAi,
+            CloudBackend::ClaudeCode,
+            CloudBackend::Copilot,
+        ] {
+            let (title, text) = Form {
+                backend,
+                ..openai()
+            }
+            .consent();
+            assert!(!text.contains("  "), "{title}: {text:?}");
+            assert!(text.ends_with('?'), "{title}");
+        }
     }
 
     #[test]

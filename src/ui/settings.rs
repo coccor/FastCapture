@@ -1,6 +1,7 @@
 //! The Settings window: the notebook, Local or Cloud, the local server and model, the cloud
-//! provider (the Claude API, an OpenAI-compatible API, or the user's own Claude Code) with its
-//! model and API key, the tokens used and the monthly cap, and two switches. Built from standard controls, so the keyboard and
+//! provider (the Claude API, an OpenAI-compatible API, or the user's own Claude Code or Copilot
+//! CLI) with its model and API key, the tokens used and the monthly cap, and two switches. Built
+//! from standard controls, so the keyboard and
 //! screen readers work through Windows; Tab, Enter (Save) and Esc (Cancel) come from
 //! `IsDialogMessageW` in the app's message loop. Finding servers, listing models, the vision
 //! check and Test run on threads of their own and report back with `WM_SETTINGS_RESULT`. The
@@ -12,6 +13,7 @@ use super::theme::{self, scale};
 use crate::config::settings::{CloudBackend, Mode, Settings, SettingsFile};
 use crate::model::claude::{self, Claude};
 use crate::model::claude_code::{self, ClaudeCode};
+use crate::model::copilot::{self, Copilot};
 use crate::model::local::{self, Found};
 use crate::model::openai::{self, OpenAi};
 use crate::model::request::{CaptureFacts, NoteRequest};
@@ -70,17 +72,23 @@ const ID_USAGE: i32 = 123;
 const ID_CAP: i32 = 124;
 const ID_CLAUDE_CODE_MODEL: i32 = 125;
 const ID_CLAUDE_CODE_STATUS: i32 = 126;
+const ID_COPILOT_MODEL: i32 = 127;
+const ID_COPILOT_STATUS: i32 = 128;
 
 const WIDTH: i32 = 560;
 const HEIGHT: i32 = 636;
 
 /// The provider combo's items, in `CloudBackend` order.
-const PROVIDERS: [(CloudBackend, &str); 3] = [
+const PROVIDERS: [(CloudBackend, &str); 4] = [
     (CloudBackend::Claude, "Claude API (Anthropic)"),
     (CloudBackend::OpenAi, "OpenAI-compatible API"),
     (
         CloudBackend::ClaudeCode,
         "Claude Code (your Claude plan, experimental)",
+    ),
+    (
+        CloudBackend::Copilot,
+        "GitHub Copilot (your Copilot plan, experimental)",
     ),
 ];
 
@@ -94,6 +102,8 @@ enum Event {
     Tested(Result<String, String>),
     /// Which Claude Code is used, and whether it is signed in.
     ClaudeCode(String),
+    /// Which Copilot CLI is used, who is signed in, and the models the plan offers.
+    Copilot(copilot::Status),
 }
 
 /// What the window opens with.
@@ -124,6 +134,8 @@ struct Controls {
     openai_model: HWND,
     claude_code_model: HWND,
     claude_code_status: HWND,
+    copilot_model: HWND,
+    copilot_status: HWND,
     key: HWND,
     key_status: HWND,
     test_status: HWND,
@@ -139,7 +151,8 @@ struct Controls {
     claude_only: Vec<HWND>,
     openai_only: Vec<HWND>,
     claude_code_only: Vec<HWND>,
-    /// The address and key rows, which Claude Code has no use for.
+    copilot_only: Vec<HWND>,
+    /// The address and key rows, which Claude Code and Copilot have no use for.
     api_only: Vec<HWND>,
 }
 
@@ -155,12 +168,12 @@ struct SettingsWindow {
 }
 
 impl SettingsWindow {
-    /// Where the provider's key is saved; Claude Code has none.
+    /// Where the provider's key is saved; Claude Code and Copilot have none.
     fn key_target(&self, backend: CloudBackend) -> Option<&str> {
         match backend {
             CloudBackend::Claude => Some(&self.open.claude_key),
             CloudBackend::OpenAi => Some(&self.open.openai_key),
-            CloudBackend::ClaudeCode => None,
+            CloudBackend::ClaudeCode | CloudBackend::Copilot => None,
         }
     }
 
@@ -168,7 +181,7 @@ impl SettingsWindow {
         match backend {
             CloudBackend::Claude => self.claude_key_saved,
             CloudBackend::OpenAi => self.openai_key_saved,
-            CloudBackend::ClaudeCode => false,
+            CloudBackend::ClaudeCode | CloudBackend::Copilot => false,
         }
     }
 
@@ -595,6 +608,29 @@ fn create_controls(hwnd: HWND, dpi: u32, font: HFONT) -> Controls {
         200,
         ID_CLAUDE_CODE_MODEL,
     );
+    let copilot_label = label("Copilot", 236);
+    let copilot_status = make(
+        "STATIC",
+        "",
+        0,
+        0,
+        field_x,
+        232,
+        field_w + button_w,
+        34,
+        ID_COPILOT_STATUS,
+    );
+    let copilot_model = make(
+        "COMBOBOX",
+        "",
+        WS_TABSTOP | WS_VSCROLL | CBS_DROPDOWN as u32,
+        0,
+        field_x,
+        272,
+        field_w,
+        200,
+        ID_COPILOT_MODEL,
+    );
     let key_label = label("API key", 308);
     let key = make(
         "EDIT",
@@ -749,6 +785,8 @@ fn create_controls(hwnd: HWND, dpi: u32, font: HFONT) -> Controls {
         openai_model,
         claude_code_model,
         claude_code_status,
+        copilot_model,
+        copilot_status,
         key,
         key_status,
         test_status,
@@ -777,6 +815,9 @@ fn create_controls(hwnd: HWND, dpi: u32, font: HFONT) -> Controls {
             claude_code_label,
             claude_code_status,
             claude_code_model,
+            copilot_label,
+            copilot_status,
+            copilot_model,
             key_label,
             key,
             key_status,
@@ -784,6 +825,7 @@ fn create_controls(hwnd: HWND, dpi: u32, font: HFONT) -> Controls {
         claude_only: vec![claude_address, cloud_model],
         openai_only: vec![openai_address, openai_model, list_models],
         claude_code_only: vec![claude_code_label, claude_code_status, claude_code_model],
+        copilot_only: vec![copilot_label, copilot_status, copilot_model],
         api_only: vec![address_label, key_label, key, key_status],
     }
 }
@@ -835,6 +877,8 @@ fn load(hwnd: HWND) {
         .collect();
     combo_fill(controls.claude_code_model, &aliases);
     set_text(controls.claude_code_model, &form.claude_code_model);
+    combo_fill(controls.copilot_model, &[copilot::DEFAULT_MODEL.to_owned()]);
+    set_text(controls.copilot_model, &form.copilot_model);
     set_text(controls.cap, &form.token_cap);
     set_text(
         controls.usage,
@@ -873,6 +917,7 @@ fn read_form(window: &SettingsWindow) -> Form {
         openai_endpoint: text_of(controls.openai_address).trim().to_owned(),
         openai_model: combo_text(controls.openai_model).trim().to_owned(),
         claude_code_model: combo_text(controls.claude_code_model).trim().to_owned(),
+        copilot_model: combo_text(controls.copilot_model).trim().to_owned(),
         new_key: text_of(controls.key).trim().to_owned(),
         key_saved: window.key_saved(window.provider()),
         token_cap: text_of(controls.cap).trim().to_owned(),
@@ -914,13 +959,20 @@ fn enable_for_mode(hwnd: HWND) {
         provider == CloudBackend::ClaudeCode,
     );
     show(
+        &window.controls.copilot_only,
+        provider == CloudBackend::Copilot,
+    );
+    show(
         &window.controls.api_only,
-        provider != CloudBackend::ClaudeCode,
+        !matches!(provider, CloudBackend::ClaudeCode | CloudBackend::Copilot),
     );
     if provider == CloudBackend::ClaudeCode
         && text_of(window.controls.claude_code_status).is_empty()
     {
         check_claude_code(hwnd);
+    }
+    if provider == CloudBackend::Copilot && text_of(window.controls.copilot_status).is_empty() {
+        check_copilot(hwnd);
     }
     set_text(
         window.controls.key_status,
@@ -944,6 +996,22 @@ fn check_claude_code(hwnd: HWND) {
     let path = window.settings.claude_code_path.clone();
     in_background(hwnd, move || {
         Event::ClaudeCode(claude_code::status(path.as_deref()))
+    });
+}
+
+/// Finds the Copilot CLI, and asks who is signed in and which models the plan offers, off the
+/// UI thread.
+fn check_copilot(hwnd: HWND) {
+    let Some(window) = state(hwnd) else {
+        return;
+    };
+    set_text(
+        window.controls.copilot_status,
+        "Looking for the Copilot CLI…",
+    );
+    let path = window.settings.copilot_path.clone();
+    in_background(hwnd, move || {
+        Event::Copilot(copilot::status(path.as_deref()))
     });
 }
 
@@ -1094,6 +1162,7 @@ fn test(hwnd: HWND) {
         })
         .flatten();
     let claude_code_path = window.settings.claude_code_path.clone();
+    let copilot_path = window.settings.copilot_path.clone();
     set_text(
         window.controls.test_status,
         "Asking the model for a test note…",
@@ -1118,6 +1187,10 @@ fn test(hwnd: HWND) {
                     }
                     CloudBackend::ClaudeCode => {
                         ClaudeCode::new(claude_code_path.as_deref(), &form.claude_code_model)
+                            .map(|backend| Box::new(backend) as Box<dyn Backend>)
+                    }
+                    CloudBackend::Copilot => {
+                        Copilot::new(copilot_path.as_deref(), &form.copilot_model)
                             .map(|backend| Box::new(backend) as Box<dyn Backend>)
                     }
                 }
@@ -1317,6 +1390,14 @@ fn on_event(hwnd: HWND, event: Event) {
             );
         }
         Event::ClaudeCode(status) => set_text(controls.claude_code_status, &status),
+        Event::Copilot(status) => {
+            set_text(controls.copilot_status, &status.line);
+            if !status.models.is_empty() {
+                let typed = combo_text(controls.copilot_model);
+                combo_fill(controls.copilot_model, &status.models);
+                set_text(controls.copilot_model, &typed);
+            }
+        }
         Event::Tested(result) => set_text(
             controls.test_status,
             &match result {
@@ -1495,6 +1576,76 @@ mod tests {
             std::thread::sleep(Duration::from_millis(20));
         }
         done()
+    }
+
+    #[test]
+    fn copilot_shows_who_is_signed_in_lists_the_plan_s_models_and_is_saved_without_a_key() {
+        let temp = Temp::new("copilot");
+        let fakes = crate::model::claude_code::cli::tests::Temp::new("settings-window-copilot");
+        let fake = crate::model::copilot::cli::tests::fake(
+            &fakes,
+            &[
+                crate::model::copilot::cli::tests::connects(),
+                r#"auth.getStatus	"result":{"isAuthenticated":true,"login":"someone"}"#.to_owned(),
+                r#"models.list	"result":{"models":[{"id":"auto"},{"id":"gpt-5.4"}]}"#.to_owned(),
+                r#"account.getQuota	"result":{"quotaSnapshots":{"chat":{"isUnlimitedEntitlement":false,"entitlementRequests":200,"usedRequests":3}}}"#.to_owned(),
+            ],
+        );
+        std::fs::write(
+            temp.0.join("fastcapture.ini"),
+            format!(
+                "notebook={}\r\nmode=cloud\r\ncopilot_path={}\r\n",
+                temp.0.display(),
+                fake.display()
+            ),
+        )
+        .unwrap();
+        let saved = Rc::new(Cell::new(false));
+        let hwnd = temp.open(saved.clone());
+        let window = state(hwnd).unwrap();
+        unsafe { SendMessageW(window.controls.provider, CB_SETCURSEL, 3, 0) };
+        notify(hwnd, ID_PROVIDER, CBN_SELCHANGE);
+        let window = state(hwnd).unwrap();
+        assert!(visible(window.controls.copilot_model));
+        assert!(!visible(window.controls.key) && !visible(window.controls.claude_code_model));
+        assert_eq!(text_of(window.controls.copilot_model), "auto");
+        let status = window.controls.copilot_status;
+        assert!(pump_until(
+            || text_of(status).starts_with("Copilot CLI 1.0.100")
+        ));
+        assert_eq!(
+            text_of(status),
+            format!(
+                "Copilot CLI 1.0.100, signed in as someone; 197 of 200 chat requests left this month. At {}.",
+                fake.display()
+            )
+        );
+        let count = unsafe {
+            SendMessageW(
+                window.controls.copilot_model,
+                windows_sys::Win32::UI::WindowsAndMessaging::CB_GETCOUNT,
+                0,
+                0,
+            )
+        };
+        assert_eq!(count, 2, "the plan's models");
+        assert_eq!(
+            text_of(window.controls.copilot_model),
+            "auto",
+            "the choice is kept"
+        );
+
+        set_text(window.controls.copilot_model, "gpt-5.4");
+        command(hwnd, IDOK);
+        assert!(saved.get());
+        let text = std::fs::read_to_string(temp.0.join("fastcapture.ini")).unwrap();
+        let (settings, _) = crate::config::settings::parse(&text);
+        assert_eq!(settings.backend, CloudBackend::Copilot);
+        assert_eq!(settings.copilot_model, "gpt-5.4");
+        assert!(settings.copilot_accepted && !settings.cloud_accepted);
+        assert_eq!(settings.copilot_path, Some(fake.clone()), "kept as it was");
+        assert_eq!(crate::secrets::load(&temp.1), None);
+        assert_eq!(crate::secrets::load(&temp.2), None);
     }
 
     #[test]

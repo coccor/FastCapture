@@ -128,6 +128,126 @@ impl Copilot {
     }
 }
 
+/// What Settings shows about the Copilot CLI: a line saying which one is used and whether it
+/// is signed in, and the models the plan offers.
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct Status {
+    pub line: String,
+    pub models: Vec<String>,
+}
+
+/// Finds the Copilot CLI, starts it and asks who is signed in, which models the plan offers and
+/// how many chat requests are left. Sends no prompt, but takes a second or two, so call it off
+/// the UI thread.
+pub fn status(path: Option<&Path>) -> Status {
+    let Some(found) = cli::find(path) else {
+        return Status {
+            line: match path {
+                Some(path) => format!("The Copilot CLI isn't at {}.", path.display()),
+                None => "The Copilot CLI isn't installed, or isn't on PATH: install it with \
+                         winget install GitHub.Copilot, then run copilot login."
+                    .to_owned(),
+            },
+            models: Vec::new(),
+        };
+    };
+    let dir = cli::scratch_dir();
+    let _ = std::fs::create_dir_all(&dir);
+    let server = match Server::start(&found, &dir, START_TIMEOUT) {
+        Ok(server) => server,
+        Err(error) => {
+            return Status {
+                line: sentence(&error.to_string()),
+                models: Vec::new(),
+            };
+        }
+    };
+    let ask = |method: &str| {
+        server
+            .call(method, json!({}), CALL_TIMEOUT)
+            .unwrap_or(Value::Null)
+    };
+    let auth = ask("auth.getStatus");
+    let models: Vec<String> = if auth["isAuthenticated"] == true {
+        ask("models.list")["models"]
+            .as_array()
+            .map(|models| {
+                models
+                    .iter()
+                    .filter_map(|model| model["id"].as_str().map(str::to_owned))
+                    .collect()
+            })
+            .unwrap_or_default()
+    } else {
+        Vec::new()
+    };
+    let quota = if models.is_empty() {
+        Value::Null
+    } else {
+        ask("account.getQuota")
+    };
+    let version = if server.version.is_empty() {
+        String::new()
+    } else {
+        format!(" {}", server.version)
+    };
+    Status {
+        line: format!(
+            "Copilot CLI{version}{}. At {}.",
+            account_text(&auth, &models, &quota),
+            shown_path(&found).display()
+        ),
+        models,
+    }
+}
+
+/// The path as the user knows it: for an npm install, the `copilot.cmd` npm made rather than
+/// the program deep inside its package.
+pub fn shown_path(found: &Path) -> PathBuf {
+    let mut npm = PathBuf::new();
+    for part in found.components() {
+        if part.as_os_str().eq_ignore_ascii_case("node_modules") {
+            return npm.join("copilot.cmd");
+        }
+        npm.push(part);
+    }
+    found.to_path_buf()
+}
+
+/// ", signed in as someone; 197 of 200 chat requests left this month", from the CLI's answers.
+pub fn account_text(auth: &Value, models: &[String], quota: &Value) -> String {
+    let login = auth["login"].as_str().unwrap_or("you");
+    if auth["isAuthenticated"] != true {
+        return format!(
+            ", not signed in: {}",
+            SIGN_IN.to_lowercase().trim_end_matches('.')
+        );
+    }
+    if models.is_empty() {
+        return if auth["authType"] == "gh-cli" {
+            format!(
+                ", signed in as {login} through gh only, which offers no models: run copilot \
+                 login in a terminal"
+            )
+        } else {
+            format!(", signed in as {login}, but your plan offers no models")
+        };
+    }
+    let chat = &quota["quotaSnapshots"]["chat"];
+    let left = match (
+        chat["isUnlimitedEntitlement"].as_bool(),
+        chat["entitlementRequests"].as_u64(),
+        chat["usedRequests"].as_u64(),
+    ) {
+        (Some(false), Some(total @ 1..), Some(used)) => format!(
+            "; {} of {total} chat requests left this month",
+            total.saturating_sub(used)
+        ),
+        _ => String::new(),
+    };
+    format!(", signed in as {login}{left}")
+}
+
 /// The session for one note: no tools, no instructions, skills or saved state of the user's,
 /// and the rules in place of Copilot's own prompt. Auto is Copilot's choice, so no model is
 /// named for it.
@@ -724,6 +844,64 @@ mod tests {
             received(&temp).last().unwrap()["method"],
             "session.delete",
             "the session is deleted all the same"
+        );
+    }
+
+    #[test]
+    fn the_status_line_says_who_is_signed_in_and_what_is_left() {
+        let auth = json!({"isAuthenticated": true, "authType": "user", "login": "someone"});
+        let quota = json!({"quotaSnapshots": {"chat": {"isUnlimitedEntitlement": false, "entitlementRequests": 200, "usedRequests": 5}}});
+        let auto = ["auto".to_owned()];
+        assert_eq!(
+            account_text(&auth, &auto, &quota),
+            ", signed in as someone; 195 of 200 chat requests left this month"
+        );
+        let unlimited = json!({"quotaSnapshots": {"chat": {"isUnlimitedEntitlement": true}}});
+        assert_eq!(
+            account_text(&auth, &auto, &unlimited),
+            ", signed in as someone"
+        );
+        let through_gh = json!({"isAuthenticated": true, "authType": "gh-cli", "login": "someone"});
+        assert!(account_text(&through_gh, &[], &Value::Null).contains("through gh only"));
+        assert_eq!(
+            account_text(&json!({"isAuthenticated": false}), &[], &Value::Null),
+            ", not signed in: run copilot login in a terminal"
+        );
+
+        let temp = Temp::new("copilot-status");
+        let path = fake(
+            &temp,
+            &[
+                connects(),
+                r#"auth.getStatus	"result":{"isAuthenticated":true,"login":"someone"}"#.to_owned(),
+                r#"models.list	"result":{"models":[{"id":"auto","name":"Auto"},{"id":"gpt-5.4","name":"GPT-5.4"}]}"#.to_owned(),
+            ],
+        );
+        assert_eq!(
+            status(Some(&path)),
+            Status {
+                line: format!(
+                    "Copilot CLI 1.0.100, signed in as someone. At {}.",
+                    path.display()
+                ),
+                models: vec!["auto".to_owned(), "gpt-5.4".to_owned()],
+            },
+            "no quota known, so none is shown"
+        );
+        assert!(
+            status(Some(&temp.0.join("nope.exe")))
+                .line
+                .starts_with("The Copilot CLI isn't at")
+        );
+        assert_eq!(
+            shown_path(Path::new(
+                r"C:\Users\a\AppData\Roaming\npm\node_modules\@github\copilot\node_modules\@github\copilot-win32-x64\copilot.exe"
+            )),
+            Path::new(r"C:\Users\a\AppData\Roaming\npm\copilot.cmd")
+        );
+        assert_eq!(
+            shown_path(Path::new(r"C:\Tools\copilot.exe")),
+            Path::new(r"C:\Tools\copilot.exe")
         );
     }
 

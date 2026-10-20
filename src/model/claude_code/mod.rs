@@ -357,7 +357,8 @@ impl Backend for ClaudeCode {
         } else if is_batch(&self.cli.path) {
             // cmd.exe can't be given the rules' lines as one argument.
             return Err(BackendError::Pause(format!(
-                "This Claude Code ({}) can't be given FastCapture's rules through {}. Update                  it with claude update, or install the native build.",
+                "This Claude Code ({}) can't be given FastCapture's rules through {}. Update \
+                    it with claude update, or install the native build.",
                 self.cli.version,
                 self.cli.path.display()
             )));

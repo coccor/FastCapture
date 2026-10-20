@@ -1,6 +1,6 @@
 //! The backend `fastcapture.ini` chooses: a local server when the mode is Local; the Claude API
 //! or an OpenAI-compatible API, with its key from Credential Manager, or the user's own Claude
-//! Code, when it is Cloud. Never both, and never one standing in for the other.
+//! Code or Copilot CLI, when it is Cloud. Never both, and never one standing in for the other.
 
 use super::worker::Factory;
 use crate::config::settings::{CloudBackend, Mode, Settings, SettingsFile};
@@ -72,6 +72,19 @@ pub fn build(
                 crate::model::claude_code::ClaudeCode::new(
                     settings.claude_code_path.as_deref(),
                     &settings.claude_code_model,
+                )
+                .map(|backend| Box::new(backend) as Box<dyn Backend>)
+                .map_err(|error| error.to_string())
+            }
+            CloudBackend::Copilot => {
+                if !settings.copilot_accepted {
+                    return Err(
+                        "Confirm Cloud mode for GitHub Copilot in Settings first.".to_owned()
+                    );
+                }
+                crate::model::copilot::Copilot::new(
+                    settings.copilot_path.as_deref(),
+                    &settings.copilot_model,
                 )
                 .map(|backend| Box::new(backend) as Box<dyn Backend>)
                 .map_err(|error| error.to_string())
@@ -176,6 +189,33 @@ mod tests {
         );
         let built = build(&settings(&text(true, &fake)), none).unwrap();
         assert_eq!(built.label(), "cloud/claude-code/haiku");
+    }
+
+    #[test]
+    fn copilot_needs_consent_and_an_installed_cli() {
+        use crate::model::claude_code::cli::tests::Temp;
+        let temp = Temp::new("from-settings-copilot");
+        let cli = temp.script("copilot.cmd", &["exit /b 0"]);
+        let none = |_: &str| None;
+        let text = |accepted: bool, path: &std::path::Path| {
+            format!(
+                "mode=cloud\nbackend=copilot\ncopilot_accepted={accepted}\ncopilot_path={}\n",
+                path.display()
+            )
+        };
+        assert_eq!(
+            build(&settings(&text(false, &cli)), none).err().unwrap(),
+            "Confirm Cloud mode for GitHub Copilot in Settings first."
+        );
+        assert!(
+            build(&settings(&text(true, &temp.0.join("missing.exe"))), none)
+                .err()
+                .unwrap()
+                .contains("isn't at")
+        );
+        let built = build(&settings(&text(true, &cli)), none).unwrap();
+        assert_eq!(built.label(), "cloud/copilot/auto");
+        assert!(built.metered(), "its tokens count toward the cap");
     }
 
     #[test]
