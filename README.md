@@ -4,7 +4,7 @@ A Windows tray app that captures what you come across (a thought, a screenshot, 
 
 FastCapture writes plain Markdown files with YAML front matter and attachments into a notebook folder. [FastPad](https://github.com/coccor/FastPad), Obsidian, any other editor or an AI agent reads them. Neither app needs the other.
 
-**Status:** milestone M7, the GitHub Copilot backend. Everything you capture is saved, the pages it links to and the documents attached to it are read, and the model you choose (on this PC, the Claude API, any OpenAI-compatible API, your own Claude Code with your Claude plan, or your own Copilot CLI with your Copilot plan) writes it up as a note that links the notes it relates to and suggests where it belongs; one key files it there. Settings shows the tokens cloud notes used, and a monthly cap stops them. See the [design](docs/specs/2026-10-18-fastcapture-design.md) and the plans for [M1](docs/plans/2026-10-18-m1-capture-and-raw-sources.md), [M2](docs/plans/2026-10-18-m2-notes-from-models.md), [M3](docs/plans/2026-10-19-m3-extraction.md), [M4](docs/plans/2026-10-19-m4-index-links-filing.md), [M5](docs/plans/2026-10-19-m5-cloud-openai-usage.md), [M6](docs/plans/2026-10-19-m6-claude-code.md) and [M7](docs/plans/2026-10-20-m7-github-copilot.md).
+**Status:** milestone M8, the look: FastPad's design in every window, with light, dark and System themes. Everything you capture is saved, the pages it links to and the documents attached to it are read, and the model you choose (on this PC, the Claude API, any OpenAI-compatible API, your own Claude Code with your Claude plan, or your own Copilot CLI with your Copilot plan) writes it up as a note that links the notes it relates to and suggests where it belongs; one key files it there. Settings shows the tokens cloud notes used, and a monthly cap stops them. See the [design](docs/specs/2026-10-18-fastcapture-design.md) and the plans for [M1](docs/plans/2026-10-18-m1-capture-and-raw-sources.md), [M2](docs/plans/2026-10-18-m2-notes-from-models.md), [M3](docs/plans/2026-10-19-m3-extraction.md), [M4](docs/plans/2026-10-19-m4-index-links-filing.md), [M5](docs/plans/2026-10-19-m5-cloud-openai-usage.md), [M6](docs/plans/2026-10-19-m6-claude-code.md), [M7](docs/plans/2026-10-20-m7-github-copilot.md) and [M8](docs/plans/2026-10-20-m8-look.md).
 
 ## Capturing
 
@@ -125,6 +125,18 @@ On this PC:
 
 Tray menu › **Settings…** chooses how notes are written and the everyday options. **Open settings file** opens `fastcapture.ini` for the rest; changes apply when you save it.
 
+### Theme
+
+FastCapture looks like [FastPad](https://github.com/coccor/FastPad), its sibling: the same light and dark colors, Segoe UI Variable on Windows 11, rounded fields and buttons, and one blue focus ring for the keyboard. **Theme** at the top of Settings is **System** (light or dark as Windows' apps are, and following Windows when it changes), **Light** or **Dark**. A choice shows at once in every open window; Cancel puts the saved one back. In high contrast FastCapture uses Windows' own colors, whatever the theme.
+
+Every window, the tray menu and FastCapture's questions are drawn in the theme. They stay keyboard-first and readable by screen readers: the controls are Windows' own, painted, and the menus are lists of named items.
+
+<img src="docs/images/settings-dark.png" alt="Settings in the dark theme" width="420"> <img src="docs/images/settings-light.png" alt="Settings in the light theme" width="420">
+
+<img src="docs/images/review-dark.png" alt="The review window in the dark theme" width="640">
+
+<img src="docs/images/capture-dark.png" alt="The capture box in the dark theme" width="420"> <img src="docs/images/menu-dark.png" alt="The tray menu in the dark theme" width="240">
+
 ### Local or Cloud
 
 Notes are written by one model, never both:
@@ -196,6 +208,7 @@ Settings shows the tokens cloud notes used today and this month, added up from w
 | `clipboard_hotkey` | (none) | Captures the clipboard with no box |
 | `capture_source` | `false` | Records the title of the window in front when you capture. Off by default because titles can hold private things. |
 | `start_at_sign_in` | `true` | Starts FastCapture when you sign in |
+| `theme` | `system` | `system`, `light` or `dark` |
 | `recent_notebook` | | One line per notebook offered by Ctrl+N |
 | `mode` | (none) | `local` or `cloud`, set by Settings |
 | `local_endpoint`, `local_model` | | The local server's address and model |
@@ -228,7 +241,7 @@ cargo test -- --test-threads=1
 cargo run --release --example bench
 ```
 
-`examples/bench.rs` times the box opening, a 4K screenshot's encoding, Ctrl+Enter, building a model request, an article page, a 20-page PDF, and the index of 10,000 notes (built, rebuilt from its cache, searched) against their budgets. `examples/review_window.rs <queue folder> [<notebook>]` and `examples/settings_window.rs` open those windows on their own.
+`examples/bench.rs` times the box opening, a 4K screenshot's encoding, Ctrl+Enter, building a model request, an article page, a 20-page PDF, and the index of 10,000 notes (built, rebuilt from its cache, searched) against their budgets. `examples/review_window.rs <queue folder> [<notebook>]` (or `--sample <empty folder> [light|dark]` for a scratch notebook with three captures) and `examples/settings_window.rs <fastcapture.ini>` open those windows on their own. `examples/look.rs [system|light|dark] [home|capture|menu|question]` shows the painted controls, or one of the home picker, the capture box, the tray menu and a question, for checking the look by eye.
 
 `cargo run --release --example live_note -- [--dry-run] [--effort low|medium|high] [--claude-code MODEL] [--copilot MODEL] [--notebook PATH] [--attach PATH]… ["text"]` writes one real note with your settings (any cloud provider; `--effort` is for the Claude API only, and `--claude-code` and `--copilot` use your Claude Code or Copilot CLI whatever the settings say) into a scratch notebook and prints it with the time and the tokens used; links in the text are fetched, and `--notebook` offers that notebook's notes as candidates (it is only read). **In Cloud mode it costs money**, except with `--dry-run`, which prints what would be sent and stops. The tests never reach the internet.
 

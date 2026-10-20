@@ -34,6 +34,12 @@ fn sample(folder: &std::path::Path) -> (PathBuf, Option<PathBuf>) {
 }
 
 fn main() {
+    // As the app's manifest makes it: drawn at the monitor's own DPI.
+    unsafe {
+        windows_sys::Win32::UI::HiDpi::SetProcessDpiAwarenessContext(
+            windows_sys::Win32::UI::HiDpi::DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2,
+        )
+    };
     let mut args = std::env::args_os().skip(1);
     let first = PathBuf::from(args.next().expect("a queue folder"));
     let (queue, notebook) = if first.as_os_str() == "--sample" {

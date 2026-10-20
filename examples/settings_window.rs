@@ -10,6 +10,12 @@ use windows_sys::Win32::UI::WindowsAndMessaging::{
 };
 
 fn main() {
+    // As the app's manifest makes it: drawn at the monitor's own DPI.
+    unsafe {
+        windows_sys::Win32::UI::HiDpi::SetProcessDpiAwarenessContext(
+            windows_sys::Win32::UI::HiDpi::DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2,
+        )
+    };
     let path = PathBuf::from(std::env::args_os().nth(1).expect("a settings file path"));
     // As the tray app does: the file's theme, and Windows' changes followed.
     let (chosen, _) = fastcapture::config::settings::SettingsFile::load(&path).settings();

@@ -597,3 +597,16 @@ Plan: `docs/plans/2026-10-20-m7-github-copilot.md`.
 - **Settings** has GitHub Copilot as a fourth provider, with its model list and a status line found off the UI thread ("Copilot CLI 1.0.100, signed in as …; 198 of 200 chat requests left this month. At …\npm\copilot.cmd."). The account comes first, and npm's `copilot.cmd` is named rather than the program deep in its package, which didn't fit.
 - **M6's consent text was fixed on the way**: a few long strings had lost their line continuations, leaving runs of spaces; a test now checks every first-use screen.
 - **Measured** with `examples/live_note.rs --copilot auto`, where Auto chose GPT-6 Luna: a text capture, the M2 chart and a Wikipedia article took 7.8–9.8 s, 2–3 s more than Claude Code; 900–2,200 input and 280–430 output tokens, 0.02–0.05 AI units each. All three notes were good, and the chart was read exactly.
+
+### M8: The look
+
+Plan: `docs/plans/2026-10-20-m8-look.md`.
+
+- **FastPad's Light and Dark palettes, value for value**, under FastPad's role names (its `editor_*` roles are `content_*`), with its type ramp, faces, metrics and contrast rules. One change: a selected row's text uses the hover text color, since FastPad's dark text on its selection blue is 4.10:1.
+- **This replaces M1's notes** on the capture box's small palette (high contrast is now handled) and the review list's light header (it is painted). The old palette never found Windows' dark setting: it read a registry key path ending in a literal `\0`, so it always fell back to light.
+- **`theme=system|light|dark`**: the tray app's hidden window re-reads Windows on `WM_SETTINGCHANGE`, `WM_THEMECHANGED` and `WM_DWMCOLORIZATIONCOLORCHANGED`, and posts a registered `FastCapture.ThemeChanged` message to every window of its thread when the palette changes. Settings previews a choice the same way and puts the saved one back on Cancel.
+- **The frame** (`ui/frame.rs`) gives up the native caption: the client area is the whole window, a 40 px strip is painted with caption buttons (Snap through `HTMAXBUTTON`), and the edges resize from inside the window. Caption clicks are posted, so a window busy in its own message handling is safe.
+- **Controls stay Windows' own, subclassed and painted** (`ui/controls.rs`), so their keyboard handling and what screen readers read are unchanged. A disabled label draws its own embossed grey, so Settings dims the unused mode's labels by color instead of disabling them. List view rows are FastPad's 26 px through an empty small image list.
+- **Menus and questions** (`ui/popup.rs`): an owner-drawn list box in a popup, and a framed modal window. They need none of uxtheme's undocumented exports. No `MessageBoxW` or `TrackPopupMenuEx` is left.
+- **Found and fixed:** `DrawTextW` reads an empty string's dangling pointer even for a count of 0, which crashed the review list's custom draw; empty text now draws nothing.
+- **Checked** in light and dark at 125 % (the development PC), by screenshots of every window kept in `docs/images/`, and by tests that paint into bitmaps (including high contrast's palette). 150 % and 200 %, a larger text size, and high contrast on screen need Windows' display settings changed and haven't been looked at. Settings still keeps the DPI it opened at when moved to another monitor. The capture box still opens in 62 ms (§14: 100 ms).
