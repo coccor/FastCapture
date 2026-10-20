@@ -388,7 +388,9 @@ A note you've edited since FastCapture wrote it (its stamp changed) is never rep
 
 ## 11. Settings and files
 
-**Per-PC settings:** `%AppData%\FastCapture\fastcapture.ini`: the notebook, mode, backend, endpoint and model per backend, hotkeys, `capture_source`, `notify_ready`, the token cap, start at sign-in. Keys are in Credential Manager.
+**Per-PC settings:** `%AppData%\FastCapture\fastcapture.ini`: the notebook, mode, backend, endpoint and model per backend, hotkeys, `capture_source`, `notify_ready`, the token cap, start at sign-in, the theme. Keys are in Credential Manager.
+
+**Look:** FastCapture follows FastPad's design so the two read as one family: the same light and dark palettes (the same roles and values), Segoe UI Variable on Windows 11 with Segoe UI elsewhere, a 4 px grid, 4 px corners on fields, rows and buttons, one 2 px accent focus ring, and Segoe Fluent Icons. No Mica and no motion. `theme` is `system` (the default: light or dark as Windows' app setting says, and following it when it changes), `light` or `dark`, and Settings offers the same three. Every window changes theme while it is open. High contrast ignores the theme and uses Windows' own colors with square corners. Every FastCapture window, menu and confirmation is drawn in the theme, while staying keyboard-first, readable by screen readers, and DPI-aware.
 
 **Per-notebook:** `.fastcapture\capture.ini`, created only when a value changes from its default:
 
@@ -456,7 +458,7 @@ Dependencies are kept small: `serde`/`serde_json`, `pulldown-cmark` (as in FastP
 
 ## 16. Delivery
 
-Seven milestones. Each is usable on its own.
+Eight milestones. Each is usable on its own.
 
 | # | Scope | Depends on |
 |---|---|---|
@@ -467,6 +469,7 @@ Seven milestones. Each is usable on its own.
 | **M5** | OpenAI-compatible cloud backend, token usage display and cap. | M2 |
 | **M6** | Claude Code CLI backend (experimental), after checking image input and limit errors. | M2 |
 | **M7** | GitHub Copilot backend (experimental) through the user's own Copilot CLI and the Copilot SDK's protocol, after the checks in §18. | M2 |
+| **M8** | The look (§11): FastPad's palettes, type and shapes in every window, light, dark and System themes that change live, high contrast, and themed menus and confirmations. | M1 |
 
 ## 17. Later
 
