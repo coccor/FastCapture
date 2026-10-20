@@ -12,10 +12,10 @@ FastCapture runs in the notification area and starts when you sign in.
 
 | Key or action | What it does |
 |---|---|
-| **Ctrl+Alt+C** (anywhere) | Opens the capture box |
+| **Ctrl+Alt+C** (anywhere) | Opens the capture box. Settings › **Capture key** changes it. |
 | Tray icon, click | Opens the review window |
 | Tray icon, right click | Capture…, Capture clipboard, Review, Pause processing, Settings…, Open settings file, Open notebook folder, Quit |
-| `clipboard_hotkey` (none by default) | Captures the clipboard as it is, with no box |
+| Settings › **Clipboard key** (none by default) | Captures the clipboard as it is, with no box |
 
 ### The capture box
 
@@ -225,7 +225,7 @@ Settings shows the tokens cloud notes used today and this month, added up from w
 | `copilot_path` | (found) | Where `copilot.exe` (or npm's `copilot.cmd`) is, when it isn't on `PATH` |
 | `copilot_accepted` | `false` | Set when you confirm Cloud for GitHub Copilot |
 
-If a hotkey is already taken by another app, a notification says so; pick another key here.
+**Capture key** and **Clipboard key** in Settings set the same two hotkeys, typed like `Ctrl+Shift+Space`, and take effect when you save. If a hotkey is already taken by another app, a notification says so; choose another there or here.
 
 ## Privacy
 

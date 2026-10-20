@@ -1,13 +1,14 @@
 //! The Settings window: the notebook, Local or Cloud, the local server and model, the cloud
 //! provider (the Claude API, an OpenAI-compatible API, or the user's own Claude Code or Copilot
-//! CLI) with its model and API key, the tokens used and the monthly cap, two switches, and the
-//! theme. Built from standard controls painted in the theme (`controls`), under FastPad's title
+//! CLI) with its model and API key, the tokens used and the monthly cap, two switches, the
+//! hotkeys, and the theme. Built from standard controls painted in the theme (`controls`), under FastPad's title
 //! strip (`frame`), so the keyboard and screen readers work through Windows; choosing a theme
 //! shows it at once, and Cancel puts the saved one back. Tab, Enter (Save) and Esc (Cancel) come from
 //! `IsDialogMessageW` in the app's message loop. Finding servers, listing models, the vision
-//! check and Test run on threads of their own and report back with `WM_SETTINGS_RESULT`. The
-//! two providers' fields share rows; only the chosen provider's are shown.
-//! Hotkeys and the rest stay in `fastcapture.ini` (Open settings file).
+//! check and Test run on threads of their own and report back with `WM_SETTINGS_RESULT`. Local's
+//! and Cloud's fields share rows, as the providers' do: only the chosen mode's and provider's are
+//! shown, and the rows below move up and the window shrinks to fit them.
+//! The rest stays in `fastcapture.ini` (Open settings file).
 
 use super::controls::{self, Look, Segment, Surface};
 use super::frame::{self, Buttons, Frame};
@@ -83,11 +84,14 @@ const ID_COPILOT_STATUS: i32 = 128;
 const ID_THEME_SYSTEM: i32 = 129;
 const ID_THEME_LIGHT: i32 = 130;
 const ID_THEME_DARK: i32 = 131;
+const ID_CAPTURE_HOTKEY: i32 = 132;
+const ID_CLIPBOARD_HOTKEY: i32 = 133;
 
 const WIDTH: i32 = 560;
 /// The title strip, the Theme row, then the form.
 const THEME_ROW: i32 = 40;
-const HEIGHT: i32 = TITLE_STRIP + THEME_ROW + 636;
+/// The window with Cloud's rows, the tallest.
+const HEIGHT: i32 = TITLE_STRIP + THEME_ROW + 600;
 /// The theme choice's buttons, in order.
 const THEMES: [(i32, ThemePreference); 3] = [
     (ID_THEME_SYSTEM, ThemePreference::System),
@@ -162,6 +166,8 @@ struct Controls {
     cap: HWND,
     sign_in: HWND,
     source: HWND,
+    capture_hotkey: HWND,
+    clipboard_hotkey: HWND,
     problem: HWND,
     /// Status and hint lines, in muted text.
     muted: Vec<HWND>,
@@ -175,8 +181,11 @@ struct Controls {
     copilot_only: Vec<HWND>,
     /// The address and key rows, which Claude Code and Copilot have no use for.
     api_only: Vec<HWND>,
-    /// Every control and where it sits at 96 DPI, to place them again at another.
+    /// Every control and where it sits at 96 DPI with Cloud chosen, to place them again at
+    /// another DPI or mode.
     placed: Vec<(HWND, [i32; 4])>,
+    /// Where in `placed` the rows below the mode's fields start: Test and everything after.
+    below: usize,
 }
 
 struct SettingsWindow {
@@ -189,8 +198,6 @@ struct SettingsWindow {
     /// The Claude models listed in the combo, in order.
     claude_models: Vec<String>,
     frame: Frame,
-    /// Labels of the mode that isn't chosen, shown dimmed.
-    dimmed: Vec<HWND>,
 }
 
 impl SettingsWindow {
@@ -403,7 +410,6 @@ pub fn open(options: Open) -> Option<HWND> {
             false,
             dpi,
         ),
-        dimmed: Vec::new(),
     });
     unsafe { SetWindowLongPtrW(hwnd, GWLP_USERDATA, Box::into_raw(window) as isize) };
     frame::attach(hwnd, &theme::current());
@@ -583,26 +589,26 @@ fn create_controls(hwnd: HWND, dpi: u32, font: HFONT) -> Controls {
         ID_VISION,
     );
 
-    let provider_label = label("Provider", 200);
+    let provider_label = label("Provider", 96);
     let provider = make(
         "COMBOBOX",
         "",
         WS_TABSTOP | WS_GROUP | WS_VSCROLL | CBS_DROPDOWNLIST as u32,
         0,
         field_x,
-        200,
+        96,
         field_w,
         200,
         ID_PROVIDER,
     );
-    let address_label = label("Address", 236);
+    let address_label = label("Address", 132);
     let claude_address = make(
         "EDIT",
         claude::API_BASE,
         ES_AUTOHSCROLL as u32,
         WS_EX_CLIENTEDGE,
         field_x,
-        236,
+        132,
         field_w,
         26,
         -1,
@@ -613,19 +619,19 @@ fn create_controls(hwnd: HWND, dpi: u32, font: HFONT) -> Controls {
         edit,
         WS_EX_CLIENTEDGE,
         field_x,
-        236,
+        132,
         field_w,
         26,
         ID_ADDRESS,
     );
-    let cloud_label = label("Model", 272);
+    let cloud_label = label("Model", 168);
     let cloud_model = make(
         "COMBOBOX",
         "",
         WS_TABSTOP | WS_VSCROLL | CBS_DROPDOWNLIST as u32,
         0,
         field_x,
-        272,
+        168,
         field_w,
         200,
         ID_CLOUD_MODEL,
@@ -636,7 +642,7 @@ fn create_controls(hwnd: HWND, dpi: u32, font: HFONT) -> Controls {
         WS_TABSTOP | WS_VSCROLL | CBS_DROPDOWN as u32,
         0,
         field_x,
-        272,
+        168,
         field_w,
         200,
         ID_OPENAI_MODEL,
@@ -647,19 +653,19 @@ fn create_controls(hwnd: HWND, dpi: u32, font: HFONT) -> Controls {
         WS_TABSTOP | BS_PUSHBUTTON as u32,
         0,
         button_x,
-        271,
+        167,
         button_w,
         26,
         ID_LIST_MODELS,
     );
-    let claude_code_label = label("Claude Code", 236);
+    let claude_code_label = label("Claude Code", 132);
     let claude_code_status = make(
         "STATIC",
         "",
         0,
         0,
         field_x,
-        232,
+        128,
         field_w + button_w,
         34,
         ID_CLAUDE_CODE_STATUS,
@@ -670,19 +676,19 @@ fn create_controls(hwnd: HWND, dpi: u32, font: HFONT) -> Controls {
         WS_TABSTOP | WS_VSCROLL | CBS_DROPDOWN as u32,
         0,
         field_x,
-        272,
+        168,
         field_w,
         200,
         ID_CLAUDE_CODE_MODEL,
     );
-    let copilot_label = label("Copilot", 236);
+    let copilot_label = label("Copilot", 132);
     let copilot_status = make(
         "STATIC",
         "",
         0,
         0,
         field_x,
-        232,
+        128,
         field_w + button_w,
         34,
         ID_COPILOT_STATUS,
@@ -693,19 +699,19 @@ fn create_controls(hwnd: HWND, dpi: u32, font: HFONT) -> Controls {
         WS_TABSTOP | WS_VSCROLL | CBS_DROPDOWN as u32,
         0,
         field_x,
-        272,
+        168,
         field_w,
         200,
         ID_COPILOT_MODEL,
     );
-    let key_label = label("API key", 308);
+    let key_label = label("API key", 204);
     let key = make(
         "EDIT",
         "",
         edit | ES_PASSWORD as u32,
         WS_EX_CLIENTEDGE,
         field_x,
-        308,
+        204,
         field_w,
         26,
         ID_KEY,
@@ -716,44 +722,21 @@ fn create_controls(hwnd: HWND, dpi: u32, font: HFONT) -> Controls {
         0,
         0,
         field_x,
-        338,
+        234,
         field_w + button_w,
         20,
         ID_KEY_STATUS,
     );
 
-    make(
-        "BUTTON",
-        "Test",
-        WS_TABSTOP | BS_PUSHBUTTON as u32,
-        0,
-        field_x,
-        372,
-        96,
-        26,
-        ID_TEST,
-    );
-    let test_status = make(
-        "STATIC",
-        "",
-        0,
-        0,
-        field_x + 106,
-        376,
-        field_w + button_w - 106,
-        40,
-        ID_TEST_STATUS,
-    );
-
-    let usage = make("STATIC", "", 0, 0, 16, 422, WIDTH - 32, 20, ID_USAGE);
-    label("Token cap", 450);
+    let usage = make("STATIC", "", 0, 0, 16, 262, WIDTH - 32, 20, ID_USAGE);
+    let cap_label = label("Token cap", 290);
     let cap = make(
         "EDIT",
         "",
         edit,
         WS_EX_CLIENTEDGE,
         field_x,
-        450,
+        290,
         96,
         26,
         ID_CAP,
@@ -764,10 +747,34 @@ fn create_controls(hwnd: HWND, dpi: u32, font: HFONT) -> Controls {
         0,
         0,
         field_x + 106,
-        454,
+        294,
         field_w + button_w - 106,
         20,
         -1,
+    );
+
+    let below = placed.borrow().len();
+    make(
+        "BUTTON",
+        "Test",
+        WS_TABSTOP | BS_PUSHBUTTON as u32,
+        0,
+        field_x,
+        330,
+        96,
+        26,
+        ID_TEST,
+    );
+    let test_status = make(
+        "STATIC",
+        "",
+        0,
+        0,
+        field_x + 106,
+        334,
+        field_w + button_w - 106,
+        40,
+        ID_TEST_STATUS,
     );
 
     let sign_in = make(
@@ -776,7 +783,7 @@ fn create_controls(hwnd: HWND, dpi: u32, font: HFONT) -> Controls {
         WS_TABSTOP | BS_AUTOCHECKBOX as u32,
         0,
         field_x,
-        490,
+        382,
         360,
         28,
         ID_SIGN_IN,
@@ -787,20 +794,67 @@ fn create_controls(hwnd: HWND, dpi: u32, font: HFONT) -> Controls {
         WS_TABSTOP | BS_AUTOCHECKBOX as u32,
         0,
         field_x,
-        522,
+        414,
         360,
         28,
         ID_SOURCE,
     );
 
-    let problem = make("STATIC", "", 0, 0, 16, 558, WIDTH - 32, 20, ID_PROBLEM);
+    label("Capture key", 450);
+    let capture_hotkey = make(
+        "EDIT",
+        "",
+        edit,
+        WS_EX_CLIENTEDGE,
+        field_x,
+        450,
+        160,
+        26,
+        ID_CAPTURE_HOTKEY,
+    );
+    let capture_hint = make(
+        "STATIC",
+        "opens the capture box, like Ctrl+Alt+C",
+        0,
+        0,
+        field_x + 170,
+        454,
+        field_w + button_w - 170,
+        20,
+        -1,
+    );
+    label("Clipboard key", 486);
+    let clipboard_hotkey = make(
+        "EDIT",
+        "",
+        edit,
+        WS_EX_CLIENTEDGE,
+        field_x,
+        486,
+        160,
+        26,
+        ID_CLIPBOARD_HOTKEY,
+    );
+    let clipboard_hint = make(
+        "STATIC",
+        "captures the clipboard; empty for none",
+        0,
+        0,
+        field_x + 170,
+        490,
+        field_w + button_w - 170,
+        20,
+        -1,
+    );
+
+    let problem = make("STATIC", "", 0, 0, 16, 522, WIDTH - 32, 20, ID_PROBLEM);
     make(
         "BUTTON",
         "Open settings file",
         WS_TABSTOP | BS_PUSHBUTTON as u32,
         0,
         16,
-        588,
+        552,
         140,
         28,
         ID_OPEN_FILE,
@@ -811,7 +865,7 @@ fn create_controls(hwnd: HWND, dpi: u32, font: HFONT) -> Controls {
         WS_TABSTOP | BS_DEFPUSHBUTTON as u32,
         0,
         WIDTH - 16 - 2 * 96 - 8,
-        588,
+        552,
         96,
         28,
         IDOK,
@@ -822,7 +876,7 @@ fn create_controls(hwnd: HWND, dpi: u32, font: HFONT) -> Controls {
         WS_TABSTOP | BS_PUSHBUTTON as u32,
         0,
         WIDTH - 16 - 96,
-        588,
+        552,
         96,
         28,
         IDCANCEL,
@@ -852,6 +906,8 @@ fn create_controls(hwnd: HWND, dpi: u32, font: HFONT) -> Controls {
         cap,
         sign_in,
         source,
+        capture_hotkey,
+        clipboard_hotkey,
         problem,
         muted: vec![
             vision,
@@ -861,6 +917,8 @@ fn create_controls(hwnd: HWND, dpi: u32, font: HFONT) -> Controls {
             test_status,
             usage,
             cap_hint,
+            capture_hint,
+            clipboard_hint,
         ],
         local_group: vec![
             server_label,
@@ -874,6 +932,7 @@ fn create_controls(hwnd: HWND, dpi: u32, font: HFONT) -> Controls {
             provider_label,
             provider,
             address_label,
+            claude_address,
             openai_address,
             cloud_label,
             cloud_model,
@@ -888,6 +947,10 @@ fn create_controls(hwnd: HWND, dpi: u32, font: HFONT) -> Controls {
             key_label,
             key,
             key_status,
+            usage,
+            cap_label,
+            cap,
+            cap_hint,
         ],
         claude_only: vec![claude_address, cloud_model],
         openai_only: vec![openai_address, openai_model, list_models],
@@ -895,6 +958,7 @@ fn create_controls(hwnd: HWND, dpi: u32, font: HFONT) -> Controls {
         copilot_only: vec![copilot_label, copilot_status, copilot_model],
         api_only: vec![address_label, key_label, key, key_status],
         placed: placed.take(),
+        below,
     }
 }
 
@@ -906,19 +970,8 @@ fn change_dpi(hwnd: HWND, dpi: u32, suggested: &RECT) {
     };
     window.frame.set_dpi(dpi);
     let font = ramp::font(TextStyle::Body, dpi);
-    for &(control, [x, y, w, h]) in &window.controls.placed {
-        unsafe {
-            SendMessageW(control, WM_SETFONT, font as usize, 0);
-            SetWindowPos(
-                control,
-                std::ptr::null_mut(),
-                scale(x, dpi),
-                scale(y, dpi),
-                scale(w, dpi),
-                scale(h, dpi),
-                SWP_NOZORDER | SWP_NOACTIVATE,
-            );
-        }
+    for &(control, _) in &window.controls.placed {
+        unsafe { SendMessageW(control, WM_SETFONT, font as usize, 0) };
     }
     unsafe { DeleteObject(std::mem::replace(&mut window.font, font)) };
     unsafe {
@@ -930,6 +983,57 @@ fn change_dpi(hwnd: HWND, dpi: u32, suggested: &RECT) {
             suggested.right - suggested.left,
             suggested.bottom - suggested.top,
             SWP_NOZORDER | SWP_NOACTIVATE,
+        );
+    }
+    place(hwnd, dpi);
+}
+
+/// How far the rows below the mode's fields move up: none under Cloud's rows, which are the
+/// tallest; Local's are shorter, and with no mode chosen there are none.
+fn lift(mode: Option<Mode>) -> i32 {
+    match mode {
+        Some(Mode::Cloud) => 0,
+        Some(Mode::Local) => 122,
+        None => 220,
+    }
+}
+
+/// Places every control for the chosen mode at `dpi`, and fits the window's height to them.
+fn place(hwnd: HWND, dpi: u32) {
+    let Some(window) = state(hwnd) else {
+        return;
+    };
+    let controls = &window.controls;
+    let lift = lift(if checked(controls.local) {
+        Some(Mode::Local)
+    } else if checked(controls.cloud) {
+        Some(Mode::Cloud)
+    } else {
+        None
+    });
+    for (index, &(control, [x, y, w, h])) in controls.placed.iter().enumerate() {
+        let y = if index >= controls.below { y - lift } else { y };
+        unsafe {
+            SetWindowPos(
+                control,
+                std::ptr::null_mut(),
+                scale(x, dpi),
+                scale(y, dpi),
+                scale(w, dpi),
+                scale(h, dpi),
+                SWP_NOZORDER | SWP_NOACTIVATE,
+            );
+        }
+    }
+    unsafe {
+        SetWindowPos(
+            hwnd,
+            std::ptr::null_mut(),
+            0,
+            0,
+            scale(WIDTH, dpi),
+            scale(HEIGHT - lift, dpi),
+            windows_sys::Win32::UI::WindowsAndMessaging::SWP_NOMOVE | SWP_NOZORDER | SWP_NOACTIVATE,
         );
         InvalidateRect(hwnd, std::ptr::null(), 1);
     }
@@ -1012,6 +1116,8 @@ fn load(hwnd: HWND) {
     );
     set_checked(controls.sign_in, form.start_at_sign_in);
     set_checked(controls.source, form.capture_source);
+    set_text(controls.capture_hotkey, &form.capture_hotkey);
+    set_text(controls.clipboard_hotkey, &form.clipboard_hotkey);
     if !form.local_endpoint.is_empty() {
         list_models(hwnd, form.local_endpoint.clone());
     }
@@ -1047,6 +1153,8 @@ fn read_form(window: &SettingsWindow) -> Form {
         new_key: text_of(controls.key).trim().to_owned(),
         key_saved: window.key_saved(window.provider()),
         token_cap: text_of(controls.cap).trim().to_owned(),
+        capture_hotkey: text_of(controls.capture_hotkey).trim().to_owned(),
+        clipboard_hotkey: text_of(controls.clipboard_hotkey).trim().to_owned(),
         start_at_sign_in: checked(controls.sign_in),
         capture_source: checked(controls.source),
         theme: controls
@@ -1064,24 +1172,6 @@ fn enable_for_mode(hwnd: HWND) {
     };
     let local = checked(window.controls.local);
     let cloud = checked(window.controls.cloud);
-    // A disabled label draws its own embossed grey, whatever the theme: labels stay enabled
-    // and are dimmed through their color instead.
-    window.dimmed.clear();
-    for (group, on) in [
-        (&window.controls.local_group, local),
-        (&window.controls.cloud_group, cloud),
-    ] {
-        for control in group {
-            if controls::class_of(*control).eq_ignore_ascii_case("Static") {
-                if !on {
-                    window.dimmed.push(*control);
-                }
-                unsafe { InvalidateRect(*control, std::ptr::null(), 1) };
-            } else {
-                unsafe { EnableWindow(*control, i32::from(on)) };
-            }
-        }
-    }
     // Anthropic's address is shown, not edited.
     unsafe { EnableWindow(window.controls.claude_address, 0) };
     let provider = window.provider();
@@ -1090,26 +1180,34 @@ fn enable_for_mode(hwnd: HWND) {
             unsafe { ShowWindow(*control, if on { SW_SHOW } else { SW_HIDE }) };
         }
     };
-    show(
-        &window.controls.claude_only,
-        provider == CloudBackend::Claude,
-    );
-    show(
-        &window.controls.openai_only,
-        provider == CloudBackend::OpenAi,
-    );
-    show(
-        &window.controls.claude_code_only,
-        provider == CloudBackend::ClaudeCode,
-    );
-    show(
-        &window.controls.copilot_only,
-        provider == CloudBackend::Copilot,
-    );
-    show(
-        &window.controls.api_only,
-        !matches!(provider, CloudBackend::ClaudeCode | CloudBackend::Copilot),
-    );
+    show(&window.controls.local_group, local);
+    show(&window.controls.cloud_group, cloud);
+    if cloud {
+        show(
+            &window.controls.claude_only,
+            provider == CloudBackend::Claude,
+        );
+        show(
+            &window.controls.openai_only,
+            provider == CloudBackend::OpenAi,
+        );
+        show(
+            &window.controls.claude_code_only,
+            provider == CloudBackend::ClaudeCode,
+        );
+        show(
+            &window.controls.copilot_only,
+            provider == CloudBackend::Copilot,
+        );
+        show(
+            &window.controls.api_only,
+            !matches!(provider, CloudBackend::ClaudeCode | CloudBackend::Copilot),
+        );
+    }
+    place(hwnd, unsafe { GetDpiForWindow(hwnd) }.max(96));
+    let Some(window) = state(hwnd) else {
+        return;
+    };
     if provider == CloudBackend::ClaudeCode
         && text_of(window.controls.claude_code_status).is_empty()
     {
@@ -1624,9 +1722,7 @@ unsafe extern "system" fn settings_proc(
             {
                 let palette = theme::current();
                 let child = lparam as HWND;
-                let color = if window.dimmed.contains(&child) {
-                    Some(palette.disabled_foreground)
-                } else if child == window.controls.problem {
+                let color = if child == window.controls.problem {
                     Some(palette.error_foreground)
                 } else if window.controls.muted.contains(&child) {
                     Some(palette.muted_foreground)
@@ -2081,6 +2177,95 @@ mod tests {
         );
         assert_eq!(theme::current(), DARK, "kept");
         theme::set_preference(ThemePreference::System);
+    }
+
+    #[test]
+    fn hotkeys_are_shown_checked_and_saved() {
+        let temp = Temp::new("hotkeys");
+        std::fs::write(
+            temp.0.join("fastcapture.ini"),
+            format!(
+                "notebook={}\r\nmode=local\r\nlocal_endpoint=http://localhost:11434\r\n\
+                 local_model=gemma3\r\n",
+                temp.0.display()
+            ),
+        )
+        .unwrap();
+        let saved = Rc::new(Cell::new(false));
+        let hwnd = temp.open(saved.clone());
+        let window = state(hwnd).unwrap();
+        assert_eq!(text_of(window.controls.capture_hotkey), "Ctrl+Alt+C");
+        assert_eq!(text_of(window.controls.clipboard_hotkey), "");
+
+        set_text(window.controls.capture_hotkey, "Ctrl+Alt");
+        command(hwnd, IDOK);
+        assert!(
+            text_of(state(hwnd).unwrap().controls.problem)
+                .starts_with("\"Ctrl+Alt\" isn't a capture hotkey.")
+        );
+        assert!(!saved.get());
+
+        let window = state(hwnd).unwrap();
+        set_text(window.controls.capture_hotkey, "ctrl+shift+space");
+        set_text(window.controls.clipboard_hotkey, "Ctrl+Shift+V");
+        command(hwnd, IDOK);
+        assert!(saved.get());
+        let text = std::fs::read_to_string(temp.0.join("fastcapture.ini")).unwrap();
+        let settings = crate::config::settings::parse(&text).0;
+        assert_eq!(
+            settings.capture_hotkey.unwrap().to_string(),
+            "Ctrl+Shift+Space"
+        );
+        assert_eq!(
+            settings.clipboard_hotkey.unwrap().to_string(),
+            "Ctrl+Shift+V"
+        );
+    }
+
+    #[test]
+    fn only_the_chosen_mode_s_fields_are_shown_and_the_window_fits_them() {
+        let temp = Temp::new("modes");
+        let hwnd = temp.open(Rc::new(Cell::new(false)));
+        let height = || {
+            let mut place: RECT = unsafe { std::mem::zeroed() };
+            unsafe { windows_sys::Win32::UI::WindowsAndMessaging::GetWindowRect(hwnd, &mut place) };
+            place.bottom - place.top
+        };
+        let dpi = unsafe { GetDpiForWindow(hwnd) }.max(96);
+        let window = state(hwnd).unwrap();
+        let (endpoint, provider, cap, sign_in) = (
+            window.controls.endpoint,
+            window.controls.provider,
+            window.controls.cap,
+            window.controls.sign_in,
+        );
+
+        set_checked(window.controls.local, false);
+        set_checked(window.controls.cloud, false);
+        command(hwnd, ID_LOCAL);
+        assert!(!visible(endpoint) && !visible(provider) && !visible(cap));
+        assert_eq!(height(), scale(HEIGHT - lift(None), dpi));
+
+        set_checked(state(hwnd).unwrap().controls.local, true);
+        command(hwnd, ID_LOCAL);
+        assert!(visible(endpoint) && !visible(provider) && !visible(cap));
+        assert!(!visible(state(hwnd).unwrap().controls.claude_address));
+        assert_eq!(height(), scale(HEIGHT - lift(Some(Mode::Local)), dpi));
+        let local_sign_in = place_of(hwnd, sign_in).top;
+
+        let window = state(hwnd).unwrap();
+        set_checked(window.controls.local, false);
+        set_checked(window.controls.cloud, true);
+        command(hwnd, ID_CLOUD);
+        assert!(!visible(endpoint) && visible(provider) && visible(cap));
+        assert_eq!(height(), scale(HEIGHT, dpi));
+        assert_eq!(
+            place_of(hwnd, sign_in).top - local_sign_in,
+            scale(382 + TITLE_STRIP + THEME_ROW, dpi)
+                - scale(382 - lift(Some(Mode::Local)) + TITLE_STRIP + THEME_ROW, dpi),
+            "the rows below moved down"
+        );
+        command(hwnd, IDCANCEL);
     }
 
     /// Where `control` sits in its window's client area.

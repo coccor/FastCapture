@@ -329,12 +329,8 @@ impl App {
         }
         let mut failed = Vec::new();
         for (id, key, stroke) in [
-            (HOTKEY_CAPTURE, "capture_hotkey", settings.capture_hotkey),
-            (
-                HOTKEY_CLIPBOARD,
-                "clipboard_hotkey",
-                settings.clipboard_hotkey,
-            ),
+            (HOTKEY_CAPTURE, "Capture key", settings.capture_hotkey),
+            (HOTKEY_CLIPBOARD, "Clipboard key", settings.clipboard_hotkey),
         ] {
             if let Some(stroke) = stroke
                 && let Err(error) = hotkey::register(self.window, id, stroke)
@@ -347,7 +343,9 @@ impl App {
             if !self.reported.contains(&text) {
                 self.tray.notify(
                     "Hotkey not available",
-                    &format!("{text} is in use by another app. Change {key} in the settings file (tray menu › Open settings file)."),
+                    &format!(
+                        "{text} is in use by another app. Choose another in Settings › {key}."
+                    ),
                     true,
                 );
                 self.reported.push(text);
