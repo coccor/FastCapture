@@ -4,11 +4,13 @@
 //! runs in `cargo test` or CI. `--effort` applies to the Claude API only.
 //!
 //! ```text
-//! cargo run --release --example live_note -- [--dry-run] [--effort low|medium|high] [--claude-code MODEL] [--notebook PATH] [--attach PATH]… ["text"]
+//! cargo run --release --example live_note -- [--dry-run] [--effort low|medium|high] [--claude-code MODEL] [--copilot MODEL] [--notebook PATH] [--attach PATH]… ["text"]
 //! ```
 //!
 //! `--claude-code` uses your installed Claude Code with that model (`haiku`, `sonnet`…),
 //! whatever the settings say: the note counts against your Claude plan, with no API bill.
+//! `--copilot` uses your installed Copilot CLI with that model (`auto`…), whatever the settings
+//! say: the note uses your Copilot plan's allowance.
 //!
 //! `--dry-run` fetches pages and prints the request's text without asking the model: free.
 //!
@@ -41,6 +43,7 @@ fn main() {
     let mut attach: Vec<PathBuf> = Vec::new();
     let mut related: Option<PathBuf> = None;
     let mut claude_code: Option<String> = None;
+    let mut copilot: Option<String> = None;
     let mut text = SAMPLE.to_owned();
     let mut args = std::env::args().skip(1);
     while let Some(arg) = args.next() {
@@ -57,6 +60,7 @@ fn main() {
             "--attach" | "--image" => attach.extend(args.next().map(PathBuf::from)),
             "--notebook" => related = args.next().map(PathBuf::from),
             "--claude-code" => claude_code = args.next(),
+            "--copilot" => copilot = args.next(),
             other => text = other.to_owned(),
         }
     }
@@ -68,6 +72,13 @@ fn main() {
             fastcapture::model::claude_code::ClaudeCode::new(
                 settings.claude_code_path.as_deref(),
                 claude_code.as_deref().unwrap_or_default(),
+            )
+            .unwrap_or_else(|problem| panic!("{problem}")),
+        ),
+        _ if copilot.is_some() => Box::new(
+            fastcapture::model::copilot::Copilot::new(
+                settings.copilot_path.as_deref(),
+                copilot.as_deref().unwrap_or_default(),
             )
             .unwrap_or_else(|problem| panic!("{problem}")),
         ),

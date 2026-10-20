@@ -112,8 +112,8 @@ These need the Copilot CLI installed (`winget install GitHub.Copilot`) and signe
 
 ### Part 5: End to end and live
 
-- [ ] `runner/end_to_end.rs`: a capture with a screenshot written through the fake CLI: the messages it was given, the note written, the tokens in the ledger.
-- [ ] `examples/live_note.rs`: `--copilot <model>`.
+- [x] `runner/end_to_end.rs`: a capture with a screenshot written through the fake CLI: the messages it was given, the note written, the tokens in the ledger.
+- [x] `examples/live_note.rs`: `--copilot <model>`, whatever the settings say. A dry run found the real CLI and built the request, sending nothing.
 - [ ] Measure (with your approval): a text capture, a screenshot and a link on two models your plan offers; time per note, tokens and AI credits, against Claude Code's 4–8 s.
 
 ### Part 6: Polish and docs

@@ -741,3 +741,130 @@ fn a_screenshot_capture_becomes_a_note_through_claude_code() {
         "nothing added for Claude Code"
     );
 }
+
+struct CopilotAt(PathBuf, PathBuf);
+
+impl Factory for CopilotAt {
+    fn backend(&self) -> Result<Box<dyn Backend>, String> {
+        Ok(Box::new(crate::model::copilot::Copilot::with_path(
+            self.0.clone(),
+            "auto",
+            self.1.clone(),
+        )))
+    }
+}
+
+#[test]
+fn a_screenshot_capture_becomes_a_note_through_copilot_and_its_tokens_are_counted() {
+    use crate::model::copilot::cli::tests::{connects, fake, received};
+    let temp = Temp::new("copilot");
+    let queue = temp.0.join("queue");
+    let ledger = temp.0.join(super::usage::FILE);
+    let png = encode_png(&Pixels {
+        width: 40,
+        height: 30,
+        bgra: vec![90; 40 * 30 * 4],
+    })
+    .unwrap();
+    let job = temp.submit(Capture {
+        text: "lag spikes during ledger batch??".to_owned(),
+        attachments: vec![Attachment::Png(png.clone())],
+        source_window: None,
+        source_url: None,
+    });
+
+    let note = json!({
+        "title": "Consumer lag spikes during ledger batch",
+        "summary": "Lag jumps when the batch runs.",
+        "body": "Consumer lag spikes when the ledger batch runs.",
+        "key_points": [], "tasks": [], "tags": ["kafka"], "links": [], "home": null
+    });
+    let event = |event: serde_json::Value| {
+        json!({"jsonrpc": "2.0", "method": "session.event", "params": {"sessionId": "s1", "event": event}})
+            .to_string()
+    };
+    let send = [
+        "session.send\t\"result\":{\"messageId\":\"m1\"}".to_owned(),
+        event(
+            json!({"type": "assistant.usage", "data": {"model": "gpt-6-luna", "inputTokens": 1760,
+            "outputTokens": 297, "cacheReadTokens": 0, "cacheWriteTokens": 1757,
+            "copilotUsage": {"totalNanoAiu": 36_842_500}}}),
+        ),
+        event(json!({"type": "assistant.message", "data": {"content": note.to_string()}})),
+        event(json!({"type": "session.idle", "data": {}})),
+    ]
+    .join("\t");
+    let fakes = crate::model::claude_code::cli::tests::Temp::new("end-to-end-copilot");
+    let cli = fake(
+        &fakes,
+        &[
+            connects(),
+            r#"auth.getStatus	"result":{"isAuthenticated":true,"login":"someone"}"#.to_owned(),
+            r#"session.create	"result":{"sessionId":"s1"}"#.to_owned(),
+            send,
+            r#"session.delete	"result":{"success":true}"#.to_owned(),
+        ],
+    );
+
+    let worker = Worker::start(
+        queue.clone(),
+        Box::new(CopilotAt(cli, temp.0.join("run"))),
+        None,
+        Some(ledger.clone()),
+        Box::new(|| {}),
+    );
+    let store = Store::new(queue);
+    wait_for("the note", || {
+        store
+            .get(&job.capture_id)
+            .is_some_and(|job| job.state == State::Done)
+    });
+    wait_for("the tokens", || {
+        super::usage::Ledger::load(&ledger)
+            .month(&super::usage::today())
+            .total()
+            > 0
+    });
+    worker.stop();
+
+    // What Copilot was given: the rules in place of its own prompt, no tools, the screenshot
+    // as it was, the user turn and the note's schema.
+    let got = received(&fakes);
+    let create = got
+        .iter()
+        .find(|m| m["method"] == "session.create")
+        .unwrap();
+    assert_eq!(create["params"]["availableTools"], json!([]));
+    assert_eq!(create["params"]["systemMessage"]["mode"], "replace");
+    let send = got.iter().find(|m| m["method"] == "session.send").unwrap();
+    assert_eq!(
+        send["params"]["attachments"][0]["data"],
+        crate::model::images::base64(&png)
+    );
+    assert!(
+        send["params"]["prompt"]
+            .as_str()
+            .unwrap()
+            .contains("<your_note>\nlag spikes during ledger batch??\n</your_note>")
+    );
+    assert_eq!(send["params"]["responseFormat"]["type"], "json_schema");
+    assert_eq!(got.last().unwrap()["method"], "session.delete");
+
+    let written = store.get(&job.capture_id).unwrap().note.unwrap();
+    let text = std::fs::read_to_string(temp.0.join("Work notes").join(&written.path)).unwrap();
+    assert!(text.contains("model: \"cloud/copilot/auto\""), "{text}");
+    assert!(
+        text.contains("# Consumer lag spikes during ledger batch"),
+        "{text}"
+    );
+    assert_eq!(
+        super::usage::Ledger::load(&ledger).month(&super::usage::today()),
+        crate::model::Usage {
+            input: 3,
+            cache_read: 0,
+            cache_write: 1757,
+            output: 297
+        },
+        "Copilot's tokens count toward the cap"
+    );
+}
