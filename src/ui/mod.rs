@@ -4,7 +4,9 @@
 pub mod app;
 pub mod capture_box;
 pub mod clipboard_capture;
+pub mod frame;
 pub mod home_picker;
+pub mod paint;
 pub mod review;
 pub mod review_list;
 pub mod settings;
