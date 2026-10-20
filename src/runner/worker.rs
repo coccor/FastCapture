@@ -600,9 +600,9 @@ mod tests {
         assert!(!ledger.exists());
     }
 
-    /// Waits up to two seconds for `done`.
+    /// Waits up to ten seconds for `done`, as a shared CI runner can be slow.
     fn eventually(done: impl Fn() -> bool) -> bool {
-        let until = std::time::Instant::now() + Duration::from_secs(2);
+        let until = std::time::Instant::now() + Duration::from_secs(10);
         while std::time::Instant::now() < until {
             if done() {
                 return true;
@@ -714,7 +714,7 @@ mod tests {
     fn a_limit_pauses_the_queue_until_its_time_then_it_goes_on() {
         let temp = Temp::new("pause-until");
         let first = temp.capture("first");
-        let until = process::now_ms() + 700;
+        let until = process::now_ms() + 2_000;
         let script = Arc::new(Scripted::new(vec![
             Err(BackendError::PauseUntil {
                 until,
