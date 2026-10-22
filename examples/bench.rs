@@ -59,6 +59,7 @@ fn main() {
             notebook: temp.clone(),
             draft_dir: None,
             source_window: None,
+            settings: None,
         })
         .expect("the box opens");
         open_times.push(started.elapsed());
