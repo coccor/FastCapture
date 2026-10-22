@@ -16,6 +16,7 @@ use super::theme::{self, Palette, scale};
 use crate::capture::detect;
 use crate::capture::file::LARGE_FILE_BYTES;
 use crate::capture::{Attachment, Capture, draft};
+use crate::config::settings::SettingsFile;
 use std::path::{Path, PathBuf};
 use windows_sys::Win32::Foundation::{
     ERROR_CLASS_ALREADY_EXISTS, GetLastError, HWND, LPARAM, LRESULT, POINT, RECT, WPARAM,
@@ -44,15 +45,15 @@ use windows_sys::Win32::UI::Shell::{
 use windows_sys::Win32::UI::WindowsAndMessaging::{
     CreateWindowExW, DefWindowProcW, DestroyWindow, EC_LEFTMARGIN, EC_RIGHTMARGIN, ES_AUTOVSCROLL,
     ES_MULTILINE, ES_WANTRETURN, FindWindowW, GWLP_USERDATA, GetClientRect, GetCursorPos,
-    GetForegroundWindow, GetWindowLongPtrW, GetWindowTextLengthW, GetWindowTextW, HTCAPTION,
-    HTCLIENT, IDC_ARROW, IsWindow, KillTimer, LoadCursorW, MINMAXINFO, RegisterClassW, SW_HIDE,
-    SW_SHOW, SWP_NOACTIVATE, SWP_NOZORDER, SendMessageW, SetForegroundWindow, SetTimer,
+    GetForegroundWindow, GetWindowLongPtrW, GetWindowRect, GetWindowTextLengthW, GetWindowTextW,
+    HTCAPTION, HTCLIENT, IDC_ARROW, IsWindow, KillTimer, LoadCursorW, MINMAXINFO, RegisterClassW,
+    SW_HIDE, SW_SHOW, SWP_NOACTIVATE, SWP_NOZORDER, SendMessageW, SetForegroundWindow, SetTimer,
     SetWindowLongPtrW, SetWindowPos, SetWindowTextW, ShowWindow, WM_APP, WM_CHAR,
-    WM_CLIPBOARDUPDATE, WM_CLOSE, WM_CTLCOLOREDIT, WM_DESTROY, WM_DROPFILES, WM_ERASEBKGND,
-    WM_GETMINMAXINFO, WM_KEYDOWN, WM_LBUTTONDOWN, WM_NCCALCSIZE, WM_NCDESTROY, WM_NCHITTEST,
-    WM_PAINT, WM_PASTE, WM_SETFOCUS, WM_SETFONT, WM_SIZE, WM_TIMER, WNDCLASSW, WS_CAPTION,
-    WS_CHILD, WS_CLIPCHILDREN, WS_EX_ACCEPTFILES, WS_EX_TOPMOST, WS_POPUP, WS_TABSTOP, WS_VISIBLE,
-    WS_VSCROLL,
+    WM_CLIPBOARDUPDATE, WM_CLOSE, WM_CTLCOLOREDIT, WM_DESTROY, WM_DPICHANGED, WM_DROPFILES,
+    WM_ERASEBKGND, WM_EXITSIZEMOVE, WM_GETMINMAXINFO, WM_KEYDOWN, WM_LBUTTONDOWN, WM_NCCALCSIZE,
+    WM_NCDESTROY, WM_NCHITTEST, WM_PAINT, WM_PASTE, WM_SETFOCUS, WM_SETFONT, WM_SIZE, WM_TIMER,
+    WNDCLASSW, WS_CAPTION, WS_CHILD, WS_CLIPCHILDREN, WS_EX_ACCEPTFILES, WS_EX_TOPMOST, WS_POPUP,
+    WS_TABSTOP, WS_VISIBLE, WS_VSCROLL,
 };
 
 /// The box's size when it has none saved, and the smallest it can be made.
@@ -309,6 +310,7 @@ struct CaptureBox {
     /// The page the last rich text pasted came from.
     source_url: Option<String>,
     draft_dir: Option<PathBuf>,
+    settings: Option<PathBuf>,
     error: Option<String>,
     layout: Layout,
     snipping: bool,
@@ -365,6 +367,8 @@ pub struct Open {
     pub draft_dir: Option<PathBuf>,
     /// The window that was in front when the hotkey was pressed.
     pub source_window: Option<String>,
+    /// `fastcapture.ini`, where the box's size is kept; `None` keeps no size.
+    pub settings: Option<PathBuf>,
 }
 
 /// Opens the box centered on the monitor under the mouse, with the last draft. Returns the
@@ -446,6 +450,7 @@ pub fn open(options: Open) -> Option<HWND> {
         source_window: options.source_window,
         source_url: restored.source_url,
         draft_dir: options.draft_dir,
+        settings: options.settings,
         error: None,
         layout: Layout::default(),
         snipping: false,
@@ -494,8 +499,6 @@ fn place(hwnd: HWND, point: POINT) {
     let Some(capture) = state(hwnd) else {
         return;
     };
-    let s = |v: i32| scale(v, capture.dpi);
-    let (width, height) = (s(DEFAULT_SIZE_AT_96_DPI.0), s(DEFAULT_SIZE_AT_96_DPI.1));
     let mut monitor: MONITORINFO = unsafe { std::mem::zeroed() };
     monitor.cbSize = size_of::<MONITORINFO>() as u32;
     unsafe {
@@ -505,6 +508,7 @@ fn place(hwnd: HWND, point: POINT) {
         )
     };
     let work = monitor.rcWork;
+    let (width, height) = initial_size(saved_size(capture.settings.as_deref()), capture.dpi, work);
     let left = work.left + ((work.right - work.left) - width).max(0) / 2;
     let top = work.top + ((work.bottom - work.top) - height).max(0) / 3;
     unsafe {
@@ -518,6 +522,72 @@ fn place(hwnd: HWND, point: POINT) {
             SWP_NOZORDER | SWP_NOACTIVATE,
         )
     };
+}
+
+/// The size the box opens at: the saved one when it is at least the smallest the box can be,
+/// else the default, and never bigger than the work area `work`.
+pub fn initial_size(saved: Option<(i32, i32)>, dpi: u32, work: RECT) -> (i32, i32) {
+    let s = |v: i32| scale(v, dpi);
+    let (width, height) = saved
+        .filter(|&(width, height)| {
+            width >= s(MIN_SIZE_AT_96_DPI.0) && height >= s(MIN_SIZE_AT_96_DPI.1)
+        })
+        .unwrap_or((s(DEFAULT_SIZE_AT_96_DPI.0), s(DEFAULT_SIZE_AT_96_DPI.1)));
+    (
+        width.min(work.right - work.left),
+        height.min(work.bottom - work.top),
+    )
+}
+
+/// The box's last size, from `fastcapture.ini`, when both numbers are there.
+fn saved_size(settings: Option<&Path>) -> Option<(i32, i32)> {
+    let file = SettingsFile::load(settings?);
+    let number = |key: &str| file.value(key)?.parse::<i32>().ok();
+    Some((number("capture_width")?, number("capture_height")?))
+}
+
+/// Keeps the box's size (not its place: it opens where you are) in `fastcapture.ini`.
+fn save_size(hwnd: HWND, settings: Option<&Path>) {
+    let Some(path) = settings else {
+        return;
+    };
+    let mut rect: RECT = unsafe { std::mem::zeroed() };
+    unsafe { GetWindowRect(hwnd, &mut rect) };
+    let mut file = SettingsFile::load(path);
+    file.set("capture_width", &(rect.right - rect.left).to_string());
+    file.set("capture_height", &(rect.bottom - rect.top).to_string());
+    if let Err(error) = file.save(path) {
+        crate::log::line(&format!("capture box: {error}"));
+    }
+}
+
+/// Follows the box to a monitor with another scale: the size Windows suggests, the fonts and
+/// the margins at the new DPI.
+fn change_dpi(hwnd: HWND, dpi: u32, suggested: &RECT) {
+    let Some(capture) = state(hwnd) else {
+        return;
+    };
+    capture.dpi = dpi;
+    let title_font = ramp::font(TextStyle::Heading, dpi);
+    let body_font = ramp::font(TextStyle::Body, dpi);
+    unsafe {
+        DeleteObject(std::mem::replace(&mut capture.title_font, title_font));
+        DeleteObject(std::mem::replace(&mut capture.body_font, body_font));
+        SendMessageW(capture.edit, WM_SETFONT, body_font as usize, 0);
+    }
+    set_margins(capture.edit, dpi);
+    unsafe {
+        SetWindowPos(
+            hwnd,
+            std::ptr::null_mut(),
+            suggested.left,
+            suggested.top,
+            suggested.right - suggested.left,
+            suggested.bottom - suggested.top,
+            SWP_NOZORDER | SWP_NOACTIVATE,
+        )
+    };
+    relayout(hwnd);
 }
 
 fn text_width(hwnd: HWND, font: HFONT, text: &str) -> i32 {
@@ -1350,6 +1420,19 @@ unsafe extern "system" fn box_proc(
             relayout(hwnd);
             0
         }
+        WM_EXITSIZEMOVE => {
+            if let Some(capture) = state(hwnd) {
+                save_size(hwnd, capture.settings.as_deref());
+            }
+            0
+        }
+        WM_DPICHANGED => {
+            if lparam != 0 {
+                let suggested = unsafe { *(lparam as *const RECT) };
+                change_dpi(hwnd, ((wparam >> 16) & 0xFFFF) as u32, &suggested);
+            }
+            0
+        }
         WM_LBUTTONDOWN => {
             clicked(
                 hwnd,
@@ -1471,7 +1554,6 @@ mod tests {
     use super::*;
     use std::cell::RefCell;
     use std::rc::Rc;
-    use windows_sys::Win32::UI::WindowsAndMessaging::GetWindowRect;
 
     #[test]
     fn keys_map_to_the_box_actions() {
@@ -1678,6 +1760,19 @@ mod tests {
     }
 
     pub(super) fn open_box(draft_dir: &Path, fail: Option<&str>) -> (HWND, Filed) {
+        open_box_full(draft_dir, fail, None)
+    }
+
+    /// A box that keeps its size in `settings`.
+    fn open_box_with(draft_dir: &Path, settings: Option<&Path>) -> (HWND, Filed) {
+        open_box_full(draft_dir, None, settings)
+    }
+
+    fn open_box_full(
+        draft_dir: &Path,
+        fail: Option<&str>,
+        settings: Option<&Path>,
+    ) -> (HWND, Filed) {
         let filed = Rc::new(RefCell::new(Vec::new()));
         let hwnd = open(Open {
             sink: Box::new(Recorder {
@@ -1688,9 +1783,101 @@ mod tests {
             notebook: PathBuf::from(r"D:\Notes"),
             draft_dir: Some(draft_dir.to_path_buf()),
             source_window: Some("Grafana".to_owned()),
+            settings: settings.map(Path::to_path_buf),
         })
         .unwrap();
         (hwnd, filed)
+    }
+
+    #[test]
+    fn the_saved_size_is_used_when_it_is_big_enough() {
+        let work = RECT {
+            left: 0,
+            top: 0,
+            right: 1920,
+            bottom: 1040,
+        };
+        assert_eq!(initial_size(None, 96, work), (720, 420));
+        assert_eq!(initial_size(None, 144, work), (1080, 630));
+        assert_eq!(initial_size(Some((900, 500)), 96, work), (900, 500));
+        assert_eq!(
+            initial_size(Some((300, 500)), 96, work),
+            (720, 420),
+            "too narrow"
+        );
+    }
+
+    #[test]
+    fn a_saved_size_is_clamped_to_the_work_area() {
+        let small = RECT {
+            left: 1920,
+            top: 0,
+            right: 3200,
+            bottom: 760,
+        };
+        assert_eq!(initial_size(Some((1800, 1000)), 96, small), (1280, 760));
+    }
+
+    #[test]
+    fn a_resized_box_reopens_at_its_size() {
+        use windows_sys::Win32::UI::WindowsAndMessaging::SWP_NOMOVE;
+        let drafts = temp("size");
+        std::fs::create_dir_all(&drafts).unwrap();
+        let ini = drafts.join("fastcapture.ini");
+        let (hwnd, _) = open_box_with(&drafts, Some(&ini));
+        let dpi = state(hwnd).unwrap().dpi;
+        unsafe {
+            SetWindowPos(
+                hwnd,
+                std::ptr::null_mut(),
+                0,
+                0,
+                scale(800, dpi),
+                scale(500, dpi),
+                SWP_NOMOVE | SWP_NOZORDER,
+            );
+            SendMessageW(hwnd, WM_EXITSIZEMOVE, 0, 0);
+            DestroyWindow(hwnd);
+        }
+        let file = SettingsFile::load(&ini);
+        assert_eq!(
+            file.value("capture_width"),
+            Some(scale(800, dpi).to_string())
+        );
+        let (hwnd, _) = open_box_with(&drafts, Some(&ini));
+        let mut rect: RECT = unsafe { std::mem::zeroed() };
+        unsafe { GetWindowRect(hwnd, &mut rect) };
+        assert_eq!(
+            (rect.right - rect.left, rect.bottom - rect.top),
+            (scale(800, dpi), scale(500, dpi))
+        );
+        unsafe { DestroyWindow(hwnd) };
+        draft::clear(&drafts);
+    }
+
+    #[test]
+    fn a_dpi_change_rescales_the_box() {
+        let drafts = temp("dpi");
+        let (hwnd, _) = open_box(&drafts, None);
+        let suggested = RECT {
+            left: 0,
+            top: 0,
+            right: 1080,
+            bottom: 630,
+        };
+        unsafe {
+            SendMessageW(
+                hwnd,
+                WM_DPICHANGED,
+                (144 << 16) | 144,
+                &raw const suggested as isize,
+            )
+        };
+        let capture = state(hwnd).unwrap();
+        assert_eq!(capture.dpi, 144);
+        assert_eq!(capture.layout.edit.top, scale(34 + 6, 144));
+        unsafe { DestroyWindow(hwnd) };
+        draft::clear(&drafts);
     }
 
     #[test]
