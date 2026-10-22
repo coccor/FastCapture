@@ -1,14 +1,64 @@
+<div align="center">
+
+<img src="assets/fast-capture-icon.svg" alt="FastCapture" width="96" height="96">
+
 # FastCapture
 
-A Windows tray app that captures what you come across (a thought, a screenshot, a web page, a file), keeps the original, and has an AI model, local or cloud, turn it into a well-written Markdown note in your notebook.
+**Catch it now. The note writes itself.**
 
-FastCapture writes plain Markdown files with YAML front matter and attachments into a notebook folder. [FastPad](https://github.com/coccor/FastPad), Obsidian, any other editor or an AI agent reads them. Neither app needs the other.
+One key from anywhere, and the thought, screenshot, web page or file you came across is saved.
+An AI model, on your PC or in the cloud, turns it into a well-written Markdown note in your notebook.
 
-**Status:** 0.1.1. Every window follows FastPad's design, with light, dark and System themes. Everything you capture is saved, the pages it links to and the documents attached to it are read, and the model you choose (on this PC, the Claude API, any OpenAI-compatible API, your own Claude Code with your Claude plan, or your own Copilot CLI with your Copilot plan) writes it up as a note that links the notes it relates to and suggests where it belongs; one key files it there. Settings shows the tokens cloud notes used, and a monthly cap stops them.
+[![Latest release](https://img.shields.io/github/v/release/coccor/FastCapture?label=release)](https://github.com/coccor/FastCapture/releases/latest)
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue)](LICENSE)
+![Windows 10 | 11 x64 | Arm64](https://img.shields.io/badge/Windows-10%20%7C%2011%20x64%20%7C%20Arm64-0078D4)
+[![Downloads](https://img.shields.io/github/downloads/coccor/FastCapture/total)](https://github.com/coccor/FastCapture/releases)
 
-## Capturing
+[**Download**](https://github.com/coccor/FastCapture/releases/latest) · [Install](#install-in-a-minute) · [Features](#capture-it-before-its-gone) · [Models](#local-or-cloud) · [Privacy](#privacy)
 
-FastCapture runs in the notification area and starts when you sign in.
+<img src="docs/images/hero.png" alt="The FastCapture capture box with a note and a screenshot, in front of the review window listing notes the model wrote" width="900">
+
+</div>
+
+## Why FastCapture
+
+Notes you mean to write later rarely get written. FastCapture splits the job: you only catch the
+thing, in a second, without leaving what you're doing; reading it, writing it up and finding where
+it belongs happen in the background.
+
+- **One key, from anywhere.** **Ctrl+Alt+C** opens a small box over whatever you're doing. Type,
+  paste, snip or drop files, then **Ctrl+Enter** and you're back.
+- **The original is never lost.** Every capture is saved as written, with its attachments, before
+  any model sees it. Pages it links to and documents attached to it are read on your PC.
+- **Notes that link and file themselves.** The model writes a title, summary, key points and
+  tasks, links the notes it relates to, and suggests a home. One key files it there.
+- **Your model, your choice.** A model on this PC (Ollama, LM Studio, Foundry Local), the Claude
+  API, any OpenAI-compatible API, or your own Claude Code or GitHub Copilot plan. In Local mode
+  nothing you capture leaves your PC.
+- **Plain Markdown.** Files with YAML front matter in a folder you choose.
+  [FastPad](https://github.com/coccor/FastPad), Obsidian, any other editor or an AI agent reads
+  them. No database, no account, no lock-in.
+
+Written in Rust directly on Win32. It sits in the notification area and starts when you sign in.
+
+## Install in a minute
+
+1. Download `FastCapture-<version>-windows-x64.zip` (or `-arm64.zip`) from the
+   [latest release](https://github.com/coccor/FastCapture/releases/latest). Each zip has a
+   `.sha256` file beside it so you can verify what you downloaded.
+2. Unzip it anywhere and run `fastcapture.exe`. It appears in the notification area.
+3. Right-click the tray icon › **Settings…** and choose how notes are written (see
+   [Local or Cloud](#local-or-cloud)). Until you choose, captures wait in the queue; nothing is lost.
+4. Press **Ctrl+Alt+C**.
+
+Requires Windows 10 1809 or later, or Windows 11.
+
+> **"Windows protected your PC"?** Releases aren't code-signed yet, so SmartScreen may warn on
+> first run. Choose **More info > Run anyway**, or check the zip against its `.sha256` first.
+
+## Capture it before it's gone
+
+<img src="docs/images/capture.png" alt="The capture box with two lines of text and a screenshot attached" width="520">
 
 | Key or action | What it does |
 |---|---|
@@ -37,9 +87,9 @@ A line holding only an `http(s)://` address is recorded as a link. The footer sh
 
 Drag the box's edges or corners to resize it; it opens at the size you last left it. As you type, common English typos are fixed when you finish the word ("teh " becomes "the "); **Ctrl+Z** right after a fix puts back what you typed. Only words Windows' spell checker is sure of are changed, and never pasted text, web addresses, paths or #tags. Settings › **Fix common typos as I type (English)** turns it off.
 
-### `fastcapture add`
+### From scripts and agents: `fastcapture add`
 
-The same from scripts and agents, with no window:
+The same with no window:
 
 ```
 fastcapture add "lag spikes during ledger batch??" --attach C:\logs\ledger.log
@@ -50,9 +100,35 @@ fastcapture add "elsewhere" --notebook D:\Work
 
 It prints the raw source's path. Exit codes: 0 saved, 1 saving failed, 2 bad arguments, text over 1 MB, a missing file or a file over 20 MB. When the tray app is running, the capture goes through it; otherwise `add` saves it and the tray app finds it on its next start.
 
-### The review window
+## A note, written for you
 
-Lists the notes waiting in your inbox, newest first, each with the home the model suggested (`→ Payments incidents`), and the captures still queued, being written or failed. A capture that failed shows why. The note, or the raw source, is shown beside the list. Notes you file, keep or discard leave the list.
+Before a note is written, FastCapture reads what you captured, on this PC, with no model:
+
+| Captured | What the model gets |
+|---|---|
+| Your text | All of it |
+| A link | The page's main content as Markdown (navigation, ads, comments and footers left out), with its title, site and date. Fetched once, as a browser would but without cookies, within 10 s and 5 MB; at most 3 links per capture. |
+| A PDF | The text of each page. A page with almost no text (a scan) is rendered and sent as an image. |
+| A Word `.docx` | Its text, with headings, lists and tables |
+| Text, logs, code | Their text, in any common encoding. A log over 400 lines keeps its first and last 200. |
+| Screenshots and images | The images, scaled to at most 1,568 pixels on the long side |
+| Other files | Their name, type and size |
+
+Limits, so one capture can't cost much: 60,000 characters of material (your text doesn't count), 20 PDF pages and 8 images. Whatever is cut is named in the note's `truncated:` front matter. A page that can't be fetched (a 403, a site that needs JavaScript or a login) is noted, and the note is written from your text; a page that can't be reached yet (offline) is tried again later, three times at most.
+
+The model writes the note: a title, a one-line summary, the body, key points, tasks, the notes it relates to and the links you captured, with your attachments at the end.
+
+### Links and homes
+
+FastCapture keeps a keyword index of the notebook (on this PC, kept current as notes change). For each capture it looks up the notes your text, the pages' titles and the start of the material share the most words with, and offers the 30 best to the model as candidates. The model links the ones the capture really relates to under `## Related`, in the form FastPad's link completion uses, and may link a clearly new subject as a new note. Links to notes that weren't offered are dropped.
+
+The model also suggests a **home**, kept in `suggested_home:`: a **home note** among the candidates, one whose `type:` is in `capture.ini`'s `home_types` (`topic`, `project` and `moc` by default), or a **folder** holding candidates. Search matches words, not meaning: a note that says the same thing in other words won't be found.
+
+## Review and file in a keystroke
+
+<img src="docs/images/review.png" alt="The review window: notes waiting in the inbox with their suggested homes, and the selected note beside the list" width="800">
+
+The review window lists the notes waiting in your inbox, newest first, each with the home the model suggested (`→ Payments incidents`), and the captures still queued, being written or failed. A capture that failed shows why. The note, or the raw source, is shown beside the list. Notes you file, keep or discard leave the list.
 
 | Key | |
 |---|---|
@@ -69,12 +145,6 @@ Lists the notes waiting in your inbox, newest first, each with the home the mode
 
 The footer shows the keys that apply to the selected row. The tray icon's tooltip counts the notes waiting in the inbox.
 
-## Links and homes
-
-FastCapture keeps a keyword index of the notebook (on this PC, kept current as notes change). For each capture it looks up the notes your text, the pages' titles and the start of the material share the most words with, and offers the 30 best to the model as candidates. The model links the ones the capture really relates to under `## Related`, in the form FastPad's link completion uses, and may link a clearly new subject as a new note. Links to notes that weren't offered are dropped.
-
-The model also suggests a **home**, kept in `suggested_home:`: a **home note** among the candidates, one whose `type:` is in `capture.ini`'s `home_types` (`topic`, `project` and `moc` by default), or a **folder** holding candidates. Search matches words, not meaning: a note that says the same thing in other words won't be found.
-
 ### Filing
 
 - **Into a folder:** the note moves there, under a free name (` 2`, ` 3`… when the name is taken). Its links to its attachments are rewritten so they keep working.
@@ -86,60 +156,17 @@ The model also suggests a **home**, kept in `suggested_home:`: a **home note** a
 
 - Either way, `status:` becomes `filed` and `suggested_home:` goes; nothing else in the note's front matter changes. A home note that can't be written (it's locked, or gone) leaves the note in the inbox with the reason. Files are written atomically and read again if they change meanwhile, so an open FastPad tab takes the change as an outside edit.
 
-## What is read
+## Themes that match FastPad
 
-Before a note is written, FastCapture reads what you captured, on this PC, with no model:
-
-| Captured | What the model gets |
-|---|---|
-| Your text | All of it |
-| A link | The page's main content as Markdown (navigation, ads, comments and footers left out), with its title, site and date. Fetched once, as a browser would but without cookies, within 10 s and 5 MB; at most 3 links per capture. |
-| A PDF | The text of each page. A page with almost no text (a scan) is rendered and sent as an image. |
-| A Word `.docx` | Its text, with headings, lists and tables |
-| Text, logs, code | Their text, in any common encoding. A log over 400 lines keeps its first and last 200. |
-| Screenshots and images | The images, scaled to at most 1,568 pixels on the long side |
-| Other files | Their name, type and size |
-
-Limits, so one capture can't cost much: 60,000 characters of material (your text doesn't count), 20 PDF pages and 8 images. Whatever is cut is named in the note's `truncated:` front matter. A page that can't be fetched (a 403, a site that needs JavaScript or a login) is noted, and the note is written from your text; a page that can't be reached yet (offline) is tried again later, three times at most.
-
-## Where things go
-
-In the notebook (FastPad's conventions, read from `.fastpad\notebook.ini` and Obsidian's `.obsidian\app.json` when they exist; FastCapture never writes them):
-
-- `inbox\<title>.md` (`notebook.ini`'s `capture_folder`): the note the model wrote, with the capture's facts in front matter (`captured`, `capture_id`, `source` linking the raw source, `kind`, `url` and `site` for a capture of one link, `tags`, `summary`, `suggested_home`, `truncated` when something was cut, `status: inbox`, `model`), then the title, summary, body, key points, tasks, related notes (`## Related`), the links captured (`## Source`) and attachments. FastPad's own quick captures may share this folder; FastCapture's notes are the ones with `type: capture`. Filed notes move to their home.
-- `raw\YYYY-MM-DD HHmm <first words>.md`: each capture's raw source, never changed after it is written. Its front matter holds `type: raw`, `captured`, `kind`, `capture_id`, any `urls`, `source_url` for pasted web text and, when enabled, `source_window`.
-- `raw\<raw source's name>.page.md` (`.page 2.md`, …): each link's page as it was fetched, kept beside its raw source so the note can be written again without fetching it. A failed fetch is recorded there too, and replaced when **R** fetches it again.
-- `attachments\`: pasted images (as PNG) and copied files, linked from the raw source.
-- `.fastcapture\capture.ini` (optional): `raw_folder` (default `raw`) and `home_types` (default `topic, project, moc`): the `type:` values that make a note a home.
-
-On this PC:
-
-- `%AppData%\FastCapture\fastcapture.ini`: settings (below).
-- `%LocalAppData%\FastCapture\queue\`: one file per capture waiting to be processed.
-- `%LocalAppData%\FastCapture\draft\`: the capture box's draft.
-- `%LocalAppData%\FastCapture\index\<folder key>.cache`: the notebook's index, so it doesn't read every note at each start. It can be deleted at any time.
-- `%LocalAppData%\FastCapture\usage.txt`: the tokens cloud notes used, one line per day and model, as the APIs reported them. The last 13 months are kept.
-- `%LocalAppData%\FastCapture\claude-code\`: the empty folder Claude Code runs in, with the writing rules it is given (`rules.md`).
-- `%LocalAppData%\FastCapture\copilot\`: the empty folder the Copilot CLI runs in.
-- `%LocalAppData%\FastCapture\log\fastcapture.log`: diagnostics. It never holds what you captured.
-
-## Settings
-
-Tray menu › **Settings…** chooses how notes are written and the everyday options. **Open settings file** opens `fastcapture.ini` for the rest; changes apply when you save it.
-
-### Theme
+<img src="docs/images/themes.png" alt="Settings in the light and dark themes" width="800">
 
 FastCapture looks like [FastPad](https://github.com/coccor/FastPad), its sibling: the same light and dark colors, Segoe UI Variable on Windows 11, rounded fields and buttons, and one blue focus ring for the keyboard. **Theme** at the top of Settings is **System** (light or dark as Windows' apps are, and following Windows when it changes), **Light** or **Dark**. A choice shows at once in every open window; Cancel puts the saved one back. In high contrast FastCapture uses Windows' own colors, whatever the theme.
 
 Every window, the tray menu and FastCapture's questions are drawn in the theme. They stay keyboard-first and readable by screen readers: the controls are Windows' own, painted, and the menus are lists of named items.
 
-<img src="docs/images/settings-dark.png" alt="Settings in the dark theme" width="420"> <img src="docs/images/settings-light.png" alt="Settings in the light theme" width="420">
+## Local or Cloud
 
-<img src="docs/images/review-dark.png" alt="The review window in the dark theme" width="640">
-
-<img src="docs/images/capture-dark.png" alt="The capture box in the dark theme" width="420"> <img src="docs/images/menu-dark.png" alt="The tray menu in the dark theme" width="240">
-
-### Local or Cloud
+Tray menu › **Settings…** chooses how notes are written and the everyday options. **Open settings file** opens `fastcapture.ini` for the rest; changes apply when you save it.
 
 Notes are written by one model, never both:
 
@@ -157,7 +184,7 @@ Notes are written by one model, never both:
 
 ### What is sent
 
-For each capture: the writing rules, what you typed, what was read from its links and files (see [What is read](#what-is-read)), today's date, the notebook's name, the page pasted text came from and, when `capture_source` is on, the window title. Screenshots, images and scanned PDF pages go too, up to 8 per capture. So do the candidate notes: for each of up to 30, its name, folder, aliases, tags, type and the first 300 characters of its text; the folders they are in; and the notebook's 50 most used tags. Nothing else from your notebook is sent. In Local mode all of this stays on this PC.
+For each capture: the writing rules, what you typed, what was read from its links and files (see [A note, written for you](#a-note-written-for-you)), today's date, the notebook's name, the page pasted text came from and, when `capture_source` is on, the window title. Screenshots, images and scanned PDF pages go too, up to 8 per capture. So do the candidate notes: for each of up to 30, its name, folder, aliases, tags, type and the first 300 characters of its text; the folders they are in; and the notebook's 50 most used tags. Nothing else from your notebook is sent. In Local mode all of this stays on this PC.
 
 ### What Cloud costs
 
@@ -201,7 +228,30 @@ Settings shows the tokens cloud notes used today and this month, added up from w
 
 **Token cap** (empty for none) is the most tokens cloud notes may use in a month, like `2M` or `500k`. Cached tokens count in full, so it stops early rather than late. Once the month reaches it, processing pauses with a notification and captures wait in the queue; raising the cap, or the next month, lets them run. A note already being written is finished, so a month can go over by one capture.
 
-### The settings file
+## Where things go
+
+In the notebook (FastPad's conventions, read from `.fastpad\notebook.ini` and Obsidian's `.obsidian\app.json` when they exist; FastCapture never writes them):
+
+- `inbox\<title>.md` (`notebook.ini`'s `capture_folder`): the note the model wrote, with the capture's facts in front matter (`captured`, `capture_id`, `source` linking the raw source, `kind`, `url` and `site` for a capture of one link, `tags`, `summary`, `suggested_home`, `truncated` when something was cut, `status: inbox`, `model`), then the title, summary, body, key points, tasks, related notes (`## Related`), the links captured (`## Source`) and attachments. FastPad's own quick captures may share this folder; FastCapture's notes are the ones with `type: capture`. Filed notes move to their home.
+- `raw\YYYY-MM-DD HHmm <first words>.md`: each capture's raw source, never changed after it is written. Its front matter holds `type: raw`, `captured`, `kind`, `capture_id`, any `urls`, `source_url` for pasted web text and, when enabled, `source_window`.
+- `raw\<raw source's name>.page.md` (`.page 2.md`, …): each link's page as it was fetched, kept beside its raw source so the note can be written again without fetching it. A failed fetch is recorded there too, and replaced when **R** fetches it again.
+- `attachments\`: pasted images (as PNG) and copied files, linked from the raw source.
+- `.fastcapture\capture.ini` (optional): `raw_folder` (default `raw`) and `home_types` (default `topic, project, moc`): the `type:` values that make a note a home.
+
+On this PC:
+
+- `%AppData%\FastCapture\fastcapture.ini`: settings (below).
+- `%LocalAppData%\FastCapture\queue\`: one file per capture waiting to be processed.
+- `%LocalAppData%\FastCapture\draft\`: the capture box's draft.
+- `%LocalAppData%\FastCapture\index\<folder key>.cache`: the notebook's index, so it doesn't read every note at each start. It can be deleted at any time.
+- `%LocalAppData%\FastCapture\usage.txt`: the tokens cloud notes used, one line per day and model, as the APIs reported them. The last 13 months are kept.
+- `%LocalAppData%\FastCapture\claude-code\`: the empty folder Claude Code runs in, with the writing rules it is given (`rules.md`).
+- `%LocalAppData%\FastCapture\copilot\`: the empty folder the Copilot CLI runs in.
+- `%LocalAppData%\FastCapture\log\fastcapture.log`: diagnostics. It never holds what you captured.
+
+## Make it yours
+
+Everything in Settings is saved to `%AppData%\FastCapture\fastcapture.ini`, one `key=value` per line. **Open settings file** in the tray menu opens it; changes apply when you save it.
 
 | Key | Default | |
 |---|---|---|
@@ -233,7 +283,31 @@ Settings shows the tokens cloud notes used today and this month, added up from w
 
 In both modes, FastCapture fetches the pages of links you capture: one GET each, with no cookies, so it sees what anyone signed out sees. In Local mode those fetches are its only connections beyond this PC. In Cloud mode it also sends what is listed under [What is sent](#what-is-sent) to the provider you chose (Anthropic's API, the OpenAI-compatible one, Anthropic through your Claude Code, or GitHub and the model's provider through your Copilot CLI) over HTTPS, one request per capture, and nothing else; the notebook's index stays on this PC, and only the candidates' short descriptions go with a capture. Page content, file text and candidate notes are given to the model as material, never as instructions. The log records token counts, fetch failures and errors, never what you captured or your key.
 
-## Building
+## FAQ
+
+**Is it really free?** Yes. FastCapture is open source under the MIT License, with no paid tier, no ads
+and no data collection. A cloud model is paid to its provider, with your own key or plan; a model on
+your PC costs nothing.
+
+**Do I need FastPad?** No. FastCapture writes plain Markdown into a folder; any editor reads it.
+With FastPad installed, **E** in the review window opens notes in it, and FastCapture follows its
+notebook conventions.
+
+**Which model should I pick?** For privacy, a model on this PC (Local). For the best notes with the
+least setup, the Claude API. If you already pay for Claude Pro or Max, or have GitHub Copilot, the
+experimental Claude Code and Copilot options use that plan instead of a key.
+
+**What if I'm offline?** Captures are always saved first. Notes wait in the queue and are written
+when the model can be reached; pages are fetched again later.
+
+**Why the SmartScreen warning?** New, unsigned apps have no reputation with Microsoft yet. Every release
+publishes a SHA-256 checksum for each zip you can verify.
+
+If FastCapture keeps a thought from getting lost, **[star it on GitHub](https://github.com/coccor/FastCapture)**.
+It's the single best way to help others find it. Found a bug or missing something?
+[Open an issue](https://github.com/coccor/FastCapture/issues).
+
+## Building from source
 
 Requires Windows 10 1809 or later, the stable Rust toolchain with the MSVC target, and the Windows 10/11 SDK (for `rc.exe`, which embeds the manifest and icon).
 
@@ -247,8 +321,7 @@ cargo run --release --example bench
 
 `cargo run --release --example live_note -- [--dry-run] [--effort low|medium|high] [--claude-code MODEL] [--copilot MODEL] [--notebook PATH] [--attach PATH]… ["text"]` writes one real note with your settings (any cloud provider; `--effort` is for the Claude API only, and `--claude-code` and `--copilot` use your Claude Code or Copilot CLI whatever the settings say) into a scratch notebook and prints it with the time and the tokens used; links in the text are fetched, and `--notebook` offers that notebook's notes as candidates (it is only read). **In Cloud mode it costs money**, except with `--dry-run`, which prints what would be sent and stops. The tests never reach the internet.
 
-Third-party crates and their licenses are listed in [LICENSES.md](LICENSES.md).
-
 ## License
 
-MIT
+FastCapture is released under the [MIT License](LICENSE). The Rust crates it links are listed with
+their licenses in [`LICENSES.md`](LICENSES.md).

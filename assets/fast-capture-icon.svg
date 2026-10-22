@@ -1,0 +1,10 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256" width="256" height="256">
+  <title>Fast Capture</title>
+  <!-- A solid tile with the four capture corners and Fastpad's bolt cut out. -->
+  <path fill="#14B8A6" fill-rule="evenodd" d="M36 0H220A36 36 0 0 1 256 36V220A36 36 0 0 1 220 256H36A36 36 0 0 1 0 220V36A36 36 0 0 1 36 0Z
+           M34 90V68A34 34 0 0 1 68 34H90A10 10 0 0 1 90 54H68A14 14 0 0 0 54 68V90A10 10 0 0 1 34 90Z
+           M222 90V68A34 34 0 0 0 188 34H166A10 10 0 0 0 166 54H188A14 14 0 0 1 202 68V90A10 10 0 0 0 222 90Z
+           M222 166V188A34 34 0 0 1 188 222H166A10 10 0 0 1 166 202H188A14 14 0 0 0 202 188V166A10 10 0 0 1 222 166Z
+           M34 166V188A34 34 0 0 0 68 222H90A10 10 0 0 0 90 202H68A14 14 0 0 1 54 188V166A10 10 0 0 0 34 166Z
+           M110.5 70.6H160.9L139.9 116.8H166.5L97.9 185.4L115.4 133.6H89.5Z"/>
+</svg>
