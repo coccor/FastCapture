@@ -590,12 +590,13 @@ fn open_capture_box(window: HWND, source_window: Option<String>) {
         unsafe { SendMessageW(open, capture_box::WM_CAPTURE_AGAIN, 0, 0) };
         return;
     }
-    let Some((notebook, queue, notebooks, settings)) = with_app(|app| {
+    let Some((notebook, queue, notebooks, settings, autocorrect)) = with_app(|app| {
         (
             app.notebook.clone(),
             app.context.queue.clone(),
             app.settings.recent_notebooks.clone(),
             app.context.settings.clone(),
+            app.settings.autocorrect,
         )
     }) else {
         return;
@@ -620,6 +621,7 @@ fn open_capture_box(window: HWND, source_window: Option<String>) {
         draft_dir: crate::capture::draft::default_dir(),
         source_window,
         settings,
+        autocorrect,
     });
     if opened.is_none() {
         crate::log::line("capture box: could not open");
@@ -854,6 +856,7 @@ mod tests {
             draft_dir: Some(temp.join("draft")),
             source_window: None,
             settings: None,
+            autocorrect: false,
         })
         .unwrap();
         capture_box::paste_for_test(hwnd);

@@ -60,6 +60,7 @@ fn main() {
             draft_dir: None,
             source_window: None,
             settings: None,
+            autocorrect: true,
         })
         .expect("the box opens");
         open_times.push(started.elapsed());

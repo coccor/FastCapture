@@ -9,6 +9,7 @@
 //! to open); files arrive through `WM_DROPFILES` rather than an OLE drop target; and the 20 MB
 //! question is a message box.
 
+use super::autocorrect::{self, Correction};
 use super::controls;
 use super::frame;
 use super::theme::ramp::{self, TextStyle};
@@ -33,7 +34,9 @@ use windows_sys::Win32::System::DataExchange::{
     AddClipboardFormatListener, RemoveClipboardFormatListener,
 };
 use windows_sys::Win32::System::LibraryLoader::GetModuleHandleW;
-use windows_sys::Win32::UI::Controls::{EM_REPLACESEL, EM_SETMARGINS, EM_SETSEL, MARGINS};
+use windows_sys::Win32::UI::Controls::{
+    EM_GETSEL, EM_REPLACESEL, EM_SETMARGINS, EM_SETSEL, MARGINS,
+};
 use windows_sys::Win32::UI::HiDpi::GetDpiForWindow;
 use windows_sys::Win32::UI::Input::KeyboardAndMouse::{
     GetFocus, GetKeyState, SetFocus, VK_BACK, VK_CONTROL, VK_DELETE, VK_ESCAPE, VK_LEFT, VK_MENU,
@@ -311,6 +314,11 @@ struct CaptureBox {
     source_url: Option<String>,
     draft_dir: Option<PathBuf>,
     settings: Option<PathBuf>,
+    autocorrect: bool,
+    /// The typo autocorrect fixed last, for Ctrl+Z, until another key, click or paste.
+    last_fix: Option<Correction>,
+    /// The WM_CHAR of a Ctrl+Z that undid a fix must not undo in the edit too.
+    swallow_undo_char: bool,
     error: Option<String>,
     layout: Layout,
     snipping: bool,
@@ -369,6 +377,8 @@ pub struct Open {
     pub source_window: Option<String>,
     /// `fastcapture.ini`, where the box's size is kept; `None` keeps no size.
     pub settings: Option<PathBuf>,
+    /// Fix common English typos as they are typed.
+    pub autocorrect: bool,
 }
 
 /// Opens the box centered on the monitor under the mouse, with the last draft. Returns the
@@ -451,6 +461,9 @@ pub fn open(options: Open) -> Option<HWND> {
         source_url: restored.source_url,
         draft_dir: options.draft_dir,
         settings: options.settings,
+        autocorrect: options.autocorrect,
+        last_fix: None,
+        swallow_undo_char: false,
         error: None,
         layout: Layout::default(),
         snipping: false,
@@ -680,6 +693,86 @@ fn edit_text(edit: HWND) -> String {
     let copied = unsafe { GetWindowTextW(edit, buffer.as_mut_ptr(), buffer.len() as i32) };
     // The edit control's line breaks are CRLF; captures use LF.
     String::from_utf16_lossy(&buffer[..copied.max(0) as usize]).replace("\r\n", "\n")
+}
+
+/// The edit's text as it holds it: UTF-16, with CRLF line breaks.
+fn edit_units(edit: HWND) -> Vec<u16> {
+    let length = unsafe { GetWindowTextLengthW(edit) }.max(0) as usize;
+    let mut buffer = vec![0_u16; length + 1];
+    let copied = unsafe { GetWindowTextW(edit, buffer.as_mut_ptr(), buffer.len() as i32) };
+    buffer.truncate(copied.max(0) as usize);
+    buffer
+}
+
+/// The edit's selection, as UTF-16 offsets.
+fn selection(edit: HWND) -> (usize, usize) {
+    let (mut start, mut end) = (0_u32, 0_u32);
+    unsafe {
+        SendMessageW(
+            edit,
+            EM_GETSEL,
+            &raw mut start as usize,
+            &raw mut end as LPARAM,
+        )
+    };
+    (start as usize, end as usize)
+}
+
+/// Replaces `range` of the edit's text with `text`, out of the edit's own undo: the box's Ctrl+Z
+/// takes a fix back.
+fn replace_range(edit: HWND, range: std::ops::Range<usize>, text: &str) {
+    unsafe {
+        SendMessageW(edit, EM_SETSEL, range.start, range.end as LPARAM);
+        SendMessageW(edit, EM_REPLACESEL, 0, wide(text).as_ptr() as LPARAM);
+    }
+}
+
+/// A word boundary is about to be typed: fixes the word before the caret when Windows' English
+/// checker is sure of the fix.
+fn autocorrect_before(hwnd: HWND) {
+    let Some(capture) = state(hwnd) else {
+        return;
+    };
+    let edit = capture.edit;
+    let (start, end) = selection(edit);
+    if start != end {
+        return;
+    }
+    let units = edit_units(edit);
+    let before = String::from_utf16_lossy(&units[..end.min(units.len())]);
+    let Some(fix) = autocorrect::correction(&before, |word| {
+        crate::platform::spell::with_english(|speller| speller.replacement(word)).flatten()
+    }) else {
+        return;
+    };
+    replace_range(edit, fix.start..end, &fix.replacement);
+    capture.last_fix = Some(fix);
+}
+
+/// Ctrl+Z right after a fix: puts the typed word back. False when there is no such fix, and the
+/// edit undoes as usual.
+fn undo_fix(hwnd: HWND) -> bool {
+    let Some(capture) = state(hwnd) else {
+        return false;
+    };
+    let Some(fix) = capture.last_fix.take() else {
+        return false;
+    };
+    let edit = capture.edit;
+    let replacement: Vec<u16> = fix.replacement.encode_utf16().collect();
+    let end = fix.start + replacement.len();
+    let units = edit_units(edit);
+    // The fix, then the one boundary typed after it, with the caret right after that.
+    let intact = units.get(fix.start..end) == Some(&replacement[..])
+        && units.len() > end
+        && selection(edit) == (end + 1, end + 1);
+    if !intact {
+        return false;
+    }
+    replace_range(edit, fix.start..end, &fix.original);
+    let caret = fix.start + fix.original.encode_utf16().count() + 1;
+    unsafe { SendMessageW(edit, EM_SETSEL, caret, caret as LPARAM) };
+    true
 }
 
 /// What the box holds now.
@@ -1064,6 +1157,20 @@ unsafe extern "system" fn edit_proc(
     match message {
         WM_KEYDOWN => {
             let (ctrl, shift, alt) = modifiers();
+            let key = wparam as u16;
+            if key == u16::from(b'Z') && ctrl && !shift && !alt {
+                if undo_fix(hwnd)
+                    && let Some(capture) = state(hwnd)
+                {
+                    capture.swallow_undo_char = true;
+                    invalidate(hwnd);
+                    return 0;
+                }
+            } else if !matches!(key, VK_CONTROL | VK_SHIFT | VK_MENU)
+                && let Some(capture) = state(hwnd)
+            {
+                capture.last_fix = None;
+            }
             if let Some(action) = key_action(wparam as u16, ctrl, shift, alt) {
                 run(hwnd, action);
                 return 0;
@@ -1081,10 +1188,29 @@ unsafe extern "system" fn edit_proc(
             {
                 return 0;
             }
+            if ch == 0x1A
+                && let Some(capture) = state(hwnd)
+                && std::mem::take(&mut capture.swallow_undo_char)
+            {
+                return 0;
+            }
+            if autocorrect::is_boundary(ch)
+                && state(hwnd).is_some_and(|capture| capture.autocorrect)
+            {
+                autocorrect_before(hwnd);
+            }
             // Typing changes what the footer says the capture holds.
             invalidate(hwnd);
         }
+        WM_LBUTTONDOWN => {
+            if let Some(capture) = state(hwnd) {
+                capture.last_fix = None;
+            }
+        }
         WM_PASTE => {
+            if let Some(capture) = state(hwnd) {
+                capture.last_fix = None;
+            }
             if paste(hwnd, false) {
                 return 0;
             }
@@ -1527,7 +1653,18 @@ unsafe extern "system" fn box_proc(
 // ---------------------------------------------------------------------------------------------
 // Tests.
 
-/// Types `text` into the box, for tests elsewhere.
+/// Types `text` key by key into the box's edit, as WM_CHARs through its subclass.
+#[cfg(test)]
+pub(crate) fn type_for_test(hwnd: HWND, text: &str) {
+    let Some(edit) = state(hwnd).map(|capture| capture.edit) else {
+        return;
+    };
+    for unit in text.encode_utf16() {
+        unsafe { SendMessageW(edit, WM_CHAR, usize::from(unit), 0) };
+    }
+}
+
+/// Puts `text` in the box, for tests elsewhere.
 #[cfg(test)]
 pub(crate) fn set_text_for_test(hwnd: HWND, text: &str) {
     if let Some(capture) = state(hwnd) {
@@ -1752,6 +1889,119 @@ mod tests {
         }
     }
 
+    /// The autocorrect tests need Windows' English checker.
+    fn no_speller() -> bool {
+        let missing = crate::platform::spell::with_english(|_| ()).is_none();
+        if missing {
+            eprintln!("skipped: no en-US spell checker");
+        }
+        missing
+    }
+
+    /// A key pressed in the edit: its WM_KEYDOWN, as the keyboard sends it.
+    fn key_down(edit: HWND, key: u16) {
+        unsafe { SendMessageW(edit, WM_KEYDOWN, usize::from(key), 0) };
+    }
+
+    /// Ctrl+Z in the edit: WM_KEYDOWN with Ctrl held, then its WM_CHAR (0x1A).
+    fn press_ctrl_z(edit: HWND) {
+        use windows_sys::Win32::UI::Input::KeyboardAndMouse::{GetKeyboardState, SetKeyboardState};
+        let mut keys = [0u8; 256];
+        unsafe { GetKeyboardState(keys.as_mut_ptr()) };
+        let saved = keys;
+        keys[usize::from(VK_CONTROL)] = 0x80;
+        unsafe {
+            SetKeyboardState(keys.as_ptr());
+            SendMessageW(edit, WM_KEYDOWN, usize::from(b'Z'), 0);
+            SendMessageW(edit, WM_CHAR, 0x1A, 0);
+            SetKeyboardState(saved.as_ptr());
+        }
+    }
+
+    fn open_box_off(draft_dir: &Path) -> (HWND, Filed) {
+        open_box_full(draft_dir, None, None, false)
+    }
+
+    #[test]
+    fn a_typed_typo_is_fixed_and_ctrl_z_brings_it_back() {
+        if no_speller() {
+            return;
+        }
+        let drafts = temp("fix");
+        let (hwnd, _) = open_box(&drafts, None);
+        type_for_test(hwnd, "I think teh ");
+        let edit = state(hwnd).unwrap().edit;
+        assert_eq!(edit_text(edit), "I think the ");
+        press_ctrl_z(edit);
+        assert_eq!(edit_text(edit), "I think teh ");
+        unsafe { DestroyWindow(hwnd) };
+        draft::clear(&drafts);
+    }
+
+    #[test]
+    fn a_word_in_the_middle_is_fixed_in_place() {
+        if no_speller() {
+            return;
+        }
+        let drafts = temp("middle");
+        let (hwnd, _) = open_box(&drafts, None);
+        let edit = state(hwnd).unwrap().edit;
+        set_edit_text(edit, "say teh world");
+        unsafe { SendMessageW(edit, EM_SETSEL, 7, 7) };
+        type_for_test(hwnd, ",");
+        assert_eq!(edit_text(edit), "say the, world");
+        unsafe { DestroyWindow(hwnd) };
+        draft::clear(&drafts);
+    }
+
+    #[test]
+    fn fixes_land_after_non_ascii_text() {
+        if no_speller() {
+            return;
+        }
+        let drafts = temp("unicode");
+        let (hwnd, _) = open_box(&drafts, None);
+        type_for_test(hwnd, "café 😀 teh.");
+        assert_eq!(edit_text(state(hwnd).unwrap().edit), "café 😀 the.");
+        unsafe { DestroyWindow(hwnd) };
+        draft::clear(&drafts);
+    }
+
+    #[test]
+    fn ctrl_z_after_more_typing_does_not_bring_the_typo_back() {
+        if no_speller() {
+            return;
+        }
+        let drafts = temp("later");
+        let (hwnd, _) = open_box(&drafts, None);
+        let edit = state(hwnd).unwrap().edit;
+        type_for_test(hwnd, "teh ");
+        key_down(edit, u16::from(b'X'));
+        type_for_test(hwnd, "x");
+        press_ctrl_z(edit);
+        assert!(!edit_text(edit).contains("teh"), "{}", edit_text(edit));
+        unsafe { DestroyWindow(hwnd) };
+        draft::clear(&drafts);
+    }
+
+    #[test]
+    fn pasted_restored_and_switched_off_text_is_left_alone() {
+        if no_speller() {
+            return;
+        }
+        let drafts = temp("alone");
+        let (hwnd, _) = open_box(&drafts, None);
+        insert_text(hwnd, "teh ");
+        assert_eq!(edit_text(state(hwnd).unwrap().edit), "teh ");
+        unsafe { DestroyWindow(hwnd) };
+        draft::clear(&drafts);
+        let (hwnd, _) = open_box_off(&drafts);
+        type_for_test(hwnd, "teh ");
+        assert_eq!(edit_text(state(hwnd).unwrap().edit), "teh ");
+        unsafe { DestroyWindow(hwnd) };
+        draft::clear(&drafts);
+    }
+
     fn temp(name: &str) -> PathBuf {
         let dir =
             std::env::temp_dir().join(format!("fastcapture-box-{name}-{}", std::process::id()));
@@ -1760,18 +2010,19 @@ mod tests {
     }
 
     pub(super) fn open_box(draft_dir: &Path, fail: Option<&str>) -> (HWND, Filed) {
-        open_box_full(draft_dir, fail, None)
+        open_box_full(draft_dir, fail, None, true)
     }
 
     /// A box that keeps its size in `settings`.
     fn open_box_with(draft_dir: &Path, settings: Option<&Path>) -> (HWND, Filed) {
-        open_box_full(draft_dir, None, settings)
+        open_box_full(draft_dir, None, settings, true)
     }
 
     fn open_box_full(
         draft_dir: &Path,
         fail: Option<&str>,
         settings: Option<&Path>,
+        autocorrect: bool,
     ) -> (HWND, Filed) {
         let filed = Rc::new(RefCell::new(Vec::new()));
         let hwnd = open(Open {
@@ -1784,6 +2035,7 @@ mod tests {
             draft_dir: Some(draft_dir.to_path_buf()),
             source_window: Some("Grafana".to_owned()),
             settings: settings.map(Path::to_path_buf),
+            autocorrect,
         })
         .unwrap();
         (hwnd, filed)

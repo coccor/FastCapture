@@ -27,6 +27,8 @@ pub struct Settings {
     pub capture_hotkey: Option<KeyStroke>,
     pub clipboard_hotkey: Option<KeyStroke>,
     pub capture_source: bool,
+    /// Fix common English typos as you type in the capture box.
+    pub autocorrect: bool,
     pub start_at_sign_in: bool,
     /// Light, dark, or as Windows says.
     pub theme: ThemePreference,
@@ -122,6 +124,7 @@ impl Default for Settings {
             capture_hotkey: KeyStroke::parse(DEFAULT_CAPTURE_HOTKEY),
             clipboard_hotkey: None,
             capture_source: false,
+            autocorrect: true,
             start_at_sign_in: true,
             theme: ThemePreference::System,
             mode: None,
@@ -224,6 +227,7 @@ pub fn parse(text: &str) -> (Settings, Vec<Warning>) {
                 parse_hotkey(value).map(|hotkey| settings.clipboard_hotkey = hotkey)
             }
             "capture_source" => parse_bool(value).map(|on| settings.capture_source = on),
+            "autocorrect" => parse_bool(value).map(|on| settings.autocorrect = on),
             "start_at_sign_in" => parse_bool(value).map(|on| settings.start_at_sign_in = on),
             "theme" => ThemePreference::ALL
                 .into_iter()
@@ -424,6 +428,8 @@ pub fn starter_text() -> String {
         "# clipboard_hotkey=",
         "# Record the title of the window in front when you capture (it may contain private things).",
         "# capture_source=false",
+        "# Fix common typos as you type (English).",
+        "# autocorrect=on",
         "# start_at_sign_in=true",
         "",
     ]
@@ -479,10 +485,16 @@ mod tests {
         let (settings, warnings) = parse(&starter_text());
         assert_eq!(settings, Settings::default());
         assert!(warnings.is_empty(), "{warnings:?}");
+        assert!(settings.autocorrect);
         assert_eq!(
             settings.capture_hotkey.unwrap().to_string(),
             DEFAULT_CAPTURE_HOTKEY
         );
+    }
+
+    #[test]
+    fn autocorrect_can_be_turned_off() {
+        assert!(!parse("autocorrect=off\n").0.autocorrect);
     }
 
     #[test]

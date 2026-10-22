@@ -35,6 +35,8 @@ Type what the capture is about, then add what you want to keep with it:
 
 A line holding only an `http(s)://` address is recorded as a link. The footer shows what the capture holds ("Text + screenshot"). When pasted text came from a web page, the browser's note of that page is kept with it (`source_url`). The clipboard hotkey pastes the same way.
 
+Drag the box's edges or corners to resize it; it opens at the size you last left it. As you type, common English typos are fixed when you finish the word ("teh " becomes "the "); **Ctrl+Z** right after a fix puts back what you typed. Only words Windows' spell checker is sure of are changed, and never pasted text, web addresses, paths or #tags. Settings › **Fix common typos as I type (English)** turns it off.
+
 ### `fastcapture add`
 
 The same from scripts and agents, with no window:
