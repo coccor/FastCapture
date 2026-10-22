@@ -3,9 +3,9 @@
 //! paste images, snip and pick a notebook. It files nothing itself: a `Sink` does. The first
 //! half of the file is pure layout and key logic.
 //!
-//! Changes from FastPad's box: the title names the notebook and the mode, not a target; the
-//! footer names what was detected ("Screenshot + file"); Ctrl+N picks a notebook for this
-//! capture instead of cycling targets; there is no Ctrl+Shift+Enter (FastCapture has no editor
+//! Changes from FastPad's box: the title names the notebook, not a target, in a selector that
+//! (like Ctrl+N) picks a notebook or any folder for this capture instead of cycling targets; the
+//! footer names what was detected ("Screenshot + file"); there is no Ctrl+Shift+Enter (FastCapture has no editor
 //! to open); files arrive through `WM_DROPFILES` rather than an OLE drop target; and the 20 MB
 //! question is a message box.
 
@@ -64,6 +64,11 @@ pub const DEFAULT_SIZE_AT_96_DPI: (i32, i32) = (720, 420);
 pub const MIN_SIZE_AT_96_DPI: (i32, i32) = (420, 240);
 const PAD_AT_96_DPI: i32 = 12;
 const TITLE_AT_96_DPI: i32 = 34;
+/// The notebook selector: its gap above and below in the title band, the room before its text
+/// and the room its chevron takes.
+const SELECTOR_INSET_AT_96_DPI: i32 = 4;
+const SELECTOR_TEXT_AT_96_DPI: i32 = 8;
+const SELECTOR_CHEVRON_AT_96_DPI: i32 = 26;
 /// The edit never gets shorter than this, about two lines.
 const EDIT_FLOOR_AT_96_DPI: i32 = 40;
 /// Room above the edit's first line, and the edit's inner margins left and right.
@@ -140,6 +145,8 @@ pub struct Layout {
     pub width: i32,
     pub height: i32,
     pub title: RECT,
+    /// The notebook selector in the title band: click it (or Ctrl+N) for another notebook.
+    pub notebook: RECT,
     pub close: RECT,
     pub edit: RECT,
     /// One per attachment, wrapped onto as many rows as they need.
@@ -150,15 +157,17 @@ pub struct Layout {
 }
 
 /// Lays the box out in a client area `size` big, for chips `chip_widths` pixels wide (their
-/// text), with an error line or not. The footer and error keep to the bottom, the chips sit
-/// above them, and the edit takes the rest, down to its floor; chips that don't fit then are
-/// left empty (`RECT::default()`).
+/// text), with an error line or not. `title_widths` are the title's "Capture →" and the
+/// notebook's name, whose selector follows the one and is cut short before the close button.
+/// The footer and error keep to the bottom, the chips sit above them, and the edit takes the
+/// rest, down to its floor; chips that don't fit then are left empty (`RECT::default()`).
 pub fn layout(
     dpi: u32,
     size: (i32, i32),
     chip_widths: &[i32],
     has_error: bool,
     snip_width: i32,
+    title_widths: (i32, i32),
 ) -> Layout {
     let s = |v: i32| scale(v, dpi);
     let (width, height) = size;
@@ -174,6 +183,16 @@ pub fn layout(
     let close = RECT {
         left: width - s(TITLE_AT_96_DPI),
         ..title
+    };
+    let (prefix, name) = title_widths;
+    let selector_left = (pad + prefix + s(6)).min(close.left);
+    let notebook = RECT {
+        left: selector_left,
+        top: s(SELECTOR_INSET_AT_96_DPI),
+        right: (selector_left + s(SELECTOR_TEXT_AT_96_DPI) + name + s(SELECTOR_CHEVRON_AT_96_DPI))
+            .min(close.left - s(4))
+            .max(selector_left),
+        bottom: title.bottom - s(SELECTOR_INSET_AT_96_DPI),
     };
     let footer = RECT {
         left: pad,
@@ -237,6 +256,7 @@ pub fn layout(
         width,
         height,
         title,
+        notebook,
         close,
         edit,
         chips,
@@ -246,9 +266,20 @@ pub fn layout(
     }
 }
 
-/// The title band: where the capture goes.
-pub fn title_text(notebook: &str) -> String {
-    format!("Capture \u{2192} {notebook}")
+/// The title band says where the capture goes: this, then the notebook selector.
+pub const TITLE_PREFIX: &str = "Capture \u{2192}";
+
+/// The notebook menu's last entry: any folder, through Windows' folder dialog.
+const OTHER_FOLDER_LABEL: &str = "&Other folder\u{2026}";
+
+/// What the notebook menu offers: the recent notebooks, with the current one first when it isn't
+/// among them.
+pub fn notebook_choices(current: &Path, recent: Vec<PathBuf>) -> Vec<PathBuf> {
+    let mut notebooks = recent;
+    if !notebooks.iter().any(|known| known == current) {
+        notebooks.insert(0, current.to_path_buf());
+    }
+    notebooks
 }
 
 /// The window's accessible name.
@@ -651,6 +682,11 @@ fn relayout(hwnd: HWND) {
         )
         .collect();
     let snip = text_width(hwnd, capture.body_font, SNIP_LABEL) + scale(8, capture.dpi);
+    let name = notebook_name(&capture.notebook);
+    let title = (
+        text_width(hwnd, capture.title_font, TITLE_PREFIX),
+        text_width(hwnd, capture.title_font, &name),
+    );
     let mut client: RECT = unsafe { std::mem::zeroed() };
     unsafe { GetClientRect(hwnd, &mut client) };
     capture.layout = layout(
@@ -659,10 +695,10 @@ fn relayout(hwnd: HWND) {
         &widths,
         capture.error.is_some(),
         snip,
+        title,
     );
     capture.selected = capture.selected.min(capture.items.len());
     let edit = capture.layout.edit;
-    let name = notebook_name(&capture.notebook);
     unsafe {
         SetWindowPos(
             capture.edit,
@@ -997,21 +1033,56 @@ fn remove_item(hwnd: HWND, index: usize) {
     relayout(hwnd);
 }
 
-/// Ctrl+N: a menu of the recent notebooks, the current one checked, for this capture only.
+#[cfg(test)]
+thread_local! {
+    /// What tests choose in the notebook menu (0 closes it), and then in the folder dialog.
+    static MENU_ANSWER: std::cell::Cell<u32> = const { std::cell::Cell::new(0) };
+    static FOLDER_ANSWER: std::cell::RefCell<Option<PathBuf>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+fn ask_menu(hwnd: HWND, anchor: super::popup::Anchor, entries: &[super::popup::Entry<'_>]) -> u32 {
+    #[cfg(test)]
+    {
+        let _ = (hwnd, anchor, entries);
+        MENU_ANSWER.with(std::cell::Cell::get)
+    }
+    #[cfg(not(test))]
+    {
+        super::popup::menu(hwnd, anchor, entries)
+    }
+}
+
+fn ask_folder(hwnd: HWND) -> Option<PathBuf> {
+    #[cfg(test)]
+    {
+        let _ = hwnd;
+        FOLDER_ANSWER.with(|answer| answer.borrow_mut().take())
+    }
+    #[cfg(not(test))]
+    {
+        crate::platform::shell::pick_folder(hwnd, "Choose a notebook for this capture")
+    }
+}
+
+/// The notebook selector or Ctrl+N: a menu of the recent notebooks, the current one checked,
+/// then any other folder. The choice is for this capture only.
 fn pick_notebook(hwnd: HWND) {
     let Some(capture) = state(hwnd) else {
         return;
     };
-    let mut notebooks = capture.sink.notebooks();
-    if !notebooks.contains(&capture.notebook) {
-        notebooks.insert(0, capture.notebook.clone());
-    }
+    let notebooks = notebook_choices(&capture.notebook, capture.sink.notebooks());
     let labels: Vec<String> = notebooks
         .iter()
         .enumerate()
-        .map(|(index, notebook)| format!("&{} {}", index + 1, notebook_name(notebook)))
+        .map(|(index, notebook)| match index {
+            // Access keys 1 to 9; the rest are reached with the arrows.
+            0..9 => format!("&{} {}", index + 1, notebook_name(notebook)),
+            _ => notebook_name(notebook),
+        })
         .collect();
-    let entries: Vec<super::popup::Entry<'_>> = notebooks
+    let other = notebooks.len() as u32 + 1;
+    let mut entries: Vec<super::popup::Entry<'_>> = notebooks
         .iter()
         .zip(&labels)
         .enumerate()
@@ -1022,18 +1093,30 @@ fn pick_notebook(hwnd: HWND) {
             checked: *notebook == capture.notebook,
         })
         .collect();
-    let title = capture.layout.title;
+    entries.push(super::popup::Entry::Separator);
+    entries.push(super::popup::Entry::Item {
+        id: other,
+        text: OTHER_FOLDER_LABEL,
+        enabled: true,
+        checked: false,
+    });
     let mut at = POINT {
-        x: scale(PAD_AT_96_DPI, capture.dpi),
-        y: title.bottom,
+        x: capture.layout.notebook.left,
+        y: capture.layout.title.bottom,
     };
     unsafe { windows_sys::Win32::Graphics::Gdi::ClientToScreen(hwnd, &mut at) };
-    let chosen = super::popup::menu(hwnd, super::popup::Anchor::Below(at), &entries);
-    if chosen > 0
-        && let Some(notebook) = notebooks.get(chosen as usize - 1)
+    let chosen = ask_menu(hwnd, super::popup::Anchor::Below(at), &entries);
+    let notebook = if chosen == other {
+        ask_folder(hwnd)
+    } else {
+        (chosen as usize)
+            .checked_sub(1)
+            .and_then(|index| notebooks.get(index).cloned())
+    };
+    if let Some(notebook) = notebook
         && let Some(capture) = state(hwnd)
     {
-        capture.notebook = notebook.clone();
+        capture.notebook = notebook;
         relayout(hwnd);
     }
     if let Some(capture) = state(hwnd) {
@@ -1324,14 +1407,15 @@ fn draw(capture: &CaptureBox, dc: HDC, hwnd: HWND) {
     unsafe { SetTextColor(dc, colors.content_foreground) };
     draw_text(
         dc,
-        &title_text(&notebook_name(&capture.notebook)),
+        TITLE_PREFIX,
         &RECT {
             left: pad,
-            right: layout.close.left,
+            right: layout.notebook.left,
             ..layout.title
         },
         DT_LEFT | DT_END_ELLIPSIS,
     );
+    draw_selector(capture, dc, &layout.notebook);
     unsafe { SelectObject(dc, capture.body_font) };
     unsafe { SetTextColor(dc, colors.muted_foreground) };
     draw_text(dc, "\u{2715}", &layout.close, DT_CENTER);
@@ -1426,6 +1510,50 @@ fn draw(capture: &CaptureBox, dc: HDC, hwnd: HWND) {
     unsafe { SelectObject(dc, old) };
 }
 
+/// The notebook selector: a field like the settings' drop-downs, the notebook's name in it and a
+/// chevron at its end. Drawn with the title font selected.
+fn draw_selector(capture: &CaptureBox, dc: HDC, area: &RECT) {
+    if area.right <= area.left {
+        return;
+    }
+    let colors = capture.colors;
+    let dpi = capture.dpi;
+    let radius = super::paint::radius(&colors, theme::metrics::CONTROL_RADIUS, dpi);
+    super::paint::fill_bordered(
+        dc,
+        *area,
+        radius,
+        colors.content_background,
+        colors.stroke,
+        colors.strip_background,
+    );
+    let chevron = RECT {
+        left: (area.right - scale(SELECTOR_CHEVRON_AT_96_DPI, dpi)).max(area.left),
+        ..*area
+    };
+    unsafe { SetTextColor(dc, colors.content_foreground) };
+    draw_text(
+        dc,
+        &notebook_name(&capture.notebook),
+        &RECT {
+            left: area.left + scale(SELECTOR_TEXT_AT_96_DPI, dpi),
+            right: chevron.left,
+            ..*area
+        },
+        DT_LEFT | DT_END_ELLIPSIS,
+    );
+    let glyphs = ramp::icon_font(10, dpi);
+    super::paint::text(
+        dc,
+        super::paint::GLYPH_CHEVRON_DOWN,
+        chevron,
+        glyphs,
+        colors.muted_foreground,
+        super::paint::Align::Center,
+    );
+    unsafe { DeleteObject(glyphs) };
+}
+
 fn contains(rect: &RECT, x: i32, y: i32) -> bool {
     x >= rect.left && x < rect.right && y >= rect.top && y < rect.bottom
 }
@@ -1437,6 +1565,10 @@ fn clicked(hwnd: HWND, x: i32, y: i32) {
     let layout = capture.layout.clone();
     if contains(&layout.close, x, y) {
         close(hwnd);
+        return;
+    }
+    if contains(&layout.notebook, x, y) {
+        pick_notebook(hwnd);
         return;
     }
     if contains(&layout.snip, x, y) {
@@ -1531,6 +1663,7 @@ unsafe extern "system" fn box_proc(
             let drags = state(hwnd).is_some_and(|capture| {
                 contains(&capture.layout.title, point.x, point.y)
                     && !contains(&capture.layout.close, point.x, point.y)
+                    && !contains(&capture.layout.notebook, point.x, point.y)
             });
             if drags {
                 HTCAPTION as LRESULT
@@ -1782,12 +1915,12 @@ mod tests {
 
     #[test]
     fn the_edit_fills_what_the_strip_error_and_footer_leave() {
-        let plain = layout(96, (720, 420), &[], false, 160);
+        let plain = layout(96, (720, 420), &[], false, 160, (80, 60));
         assert_eq!((plain.width, plain.height), (720, 420));
         assert_eq!(plain.edit.top, 34 + 6);
         assert_eq!(plain.footer.bottom, 420 - 4);
         assert_eq!(plain.edit.bottom + 8, plain.footer.top);
-        let with = layout(96, (520, 420), &[150, 150, 150], true, 160);
+        let with = layout(96, (520, 420), &[150, 150, 150], true, 160, (80, 60));
         assert_eq!(with.chips[0].top, with.chips[1].top);
         assert!(
             with.chips[2].top > with.chips[1].top,
@@ -1798,12 +1931,17 @@ mod tests {
             "the edit gave the chips room"
         );
         assert!(with.error.unwrap().top >= with.chips[2].bottom);
-        assert_eq!(layout(192, (1440, 840), &[], false, 320).edit.top, 80);
+        assert_eq!(
+            layout(192, (1440, 840), &[], false, 320, (160, 120))
+                .edit
+                .top,
+            80
+        );
     }
 
     #[test]
     fn chips_that_do_not_fit_are_clipped_not_overlapping() {
-        let tight = layout(96, (420, 240), &[200; 12], true, 160);
+        let tight = layout(96, (420, 240), &[200; 12], true, 160, (80, 60));
         assert_eq!(tight.chips.len(), 12);
         assert_eq!(
             tight.edit.bottom - tight.edit.top,
@@ -1818,6 +1956,111 @@ mod tests {
             tight.chips.iter().any(|c| c.right == c.left),
             "some were clipped"
         );
+    }
+
+    #[test]
+    fn the_notebook_selector_follows_the_title_and_stops_before_the_close_button() {
+        let plain = layout(96, (720, 420), &[], false, 160, (80, 60));
+        assert_eq!(plain.notebook.left, 12 + 80 + 6);
+        assert_eq!(plain.notebook.right, plain.notebook.left + 8 + 60 + 26);
+        assert_eq!((plain.notebook.top, plain.notebook.bottom), (4, 30));
+        let long = layout(96, (420, 240), &[], false, 160, (80, 900));
+        assert_eq!(
+            long.notebook.right,
+            long.close.left - 4,
+            "a long name is cut short"
+        );
+    }
+
+    #[test]
+    fn the_notebook_menu_offers_the_current_notebook_once() {
+        let recent = vec![PathBuf::from(r"D:\Notes"), PathBuf::from(r"E:\Work")];
+        assert_eq!(
+            notebook_choices(Path::new(r"E:\Work"), recent.clone()),
+            recent
+        );
+        assert_eq!(
+            notebook_choices(Path::new(r"F:\New"), recent),
+            [
+                PathBuf::from(r"F:\New"),
+                PathBuf::from(r"D:\Notes"),
+                PathBuf::from(r"E:\Work")
+            ]
+        );
+    }
+
+    /// Clicks the box's notebook selector, the menu answering `entry` and the folder dialog
+    /// `folder`.
+    fn click_selector(hwnd: HWND, entry: u32, folder: Option<&str>) {
+        MENU_ANSWER.with(|answer| answer.set(entry));
+        FOLDER_ANSWER.with(|answer| *answer.borrow_mut() = folder.map(PathBuf::from));
+        let selector = state(hwnd).unwrap().layout.notebook;
+        let (x, y) = (
+            (selector.left + selector.right) / 2,
+            (selector.top + selector.bottom) / 2,
+        );
+        unsafe {
+            SendMessageW(
+                hwnd,
+                WM_LBUTTONDOWN,
+                0,
+                (((y as u32) << 16) | (x as u32 & 0xFFFF)) as isize,
+            )
+        };
+        MENU_ANSWER.with(|answer| answer.set(0));
+    }
+
+    #[test]
+    fn the_notebook_selector_changes_where_this_capture_goes() {
+        let drafts = temp("selector");
+        let (hwnd, filed) = open_box(&drafts, None);
+        let selector = state(hwnd).unwrap().layout.notebook;
+        let mut point = POINT {
+            x: selector.left + 1,
+            y: (selector.top + selector.bottom) / 2,
+        };
+        unsafe { windows_sys::Win32::Graphics::Gdi::ClientToScreen(hwnd, &mut point) };
+        let hit = unsafe {
+            SendMessageW(
+                hwnd,
+                WM_NCHITTEST,
+                0,
+                (((point.y as u32) << 16) | (point.x as u32 & 0xFFFF)) as isize,
+            )
+        };
+        assert_eq!(
+            hit, HTCLIENT as isize,
+            "the selector clicks, it doesn't drag"
+        );
+        click_selector(hwnd, 0, None);
+        assert_eq!(
+            state(hwnd).unwrap().notebook,
+            Path::new(r"D:\Notes"),
+            "closed"
+        );
+        click_selector(hwnd, 2, None);
+        assert_eq!(state(hwnd).unwrap().notebook, Path::new(r"E:\Work"));
+        set_edit_text(state(hwnd).unwrap().edit, "to work");
+        submit(hwnd);
+        assert_eq!(filed.borrow()[0].1, PathBuf::from(r"E:\Work"));
+        draft::clear(&drafts);
+    }
+
+    #[test]
+    fn any_folder_can_be_picked_from_the_notebook_menu() {
+        let drafts = temp("other");
+        let (hwnd, _) = open_box(&drafts, None);
+        // The two recent notebooks, then "Other folder…".
+        click_selector(hwnd, 3, None);
+        assert_eq!(
+            state(hwnd).unwrap().notebook,
+            Path::new(r"D:\Notes"),
+            "cancelled"
+        );
+        click_selector(hwnd, 3, Some(r"F:\Elsewhere"));
+        assert_eq!(state(hwnd).unwrap().notebook, Path::new(r"F:\Elsewhere"));
+        unsafe { DestroyWindow(hwnd) };
+        draft::clear(&drafts);
     }
 
     #[test]
@@ -1868,7 +2111,6 @@ mod tests {
 
     #[test]
     fn the_title_footer_and_chips_say_what_and_where() {
-        assert_eq!(title_text("Work notes"), "Capture \u{2192} Work notes");
         assert_eq!(accessible_name("Work notes"), "Capture to Work notes");
         assert_eq!(notebook_name(Path::new(r"D:\Work notes")), "Work notes");
         assert_eq!(chip_label(&Attachment::Png(Vec::new()), 1), "Image 2");
@@ -2135,7 +2377,7 @@ mod tests {
             sink: Box::new(Recorder {
                 filed: filed.clone(),
                 fail: fail.map(str::to_owned),
-                notebooks: vec![PathBuf::from(r"D:\Notes")],
+                notebooks: vec![PathBuf::from(r"D:\Notes"), PathBuf::from(r"E:\Work")],
             }),
             notebook: PathBuf::from(r"D:\Notes"),
             draft_dir: Some(draft_dir.to_path_buf()),

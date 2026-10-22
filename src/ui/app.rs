@@ -565,6 +565,30 @@ struct BoxSink {
     window: SendHwnd,
     queue: Option<PathBuf>,
     notebooks: Vec<PathBuf>,
+    /// `fastcapture.ini`, where a notebook new to the picker is remembered.
+    settings: Option<PathBuf>,
+}
+
+impl BoxSink {
+    /// A capture went to `notebook`, picked in the box: the picker offers it from now on. The
+    /// capture notebook stays as Settings has it.
+    fn remember(&mut self, notebook: &Path) {
+        if self.notebooks.iter().any(|known| known == notebook) {
+            return;
+        }
+        self.notebooks.insert(0, notebook.to_path_buf());
+        self.notebooks
+            .truncate(crate::config::settings::RECENT_LIMIT);
+        if let Some(path) = &self.settings {
+            let mut file = SettingsFile::load(path);
+            file.remember_notebook(notebook);
+            if let Err(error) = file.save(path) {
+                crate::log::line(&format!("capture box: {error}"));
+            }
+        }
+        let recent = self.notebooks.clone();
+        with_app(|app| app.settings.recent_notebooks = recent);
+    }
 }
 
 impl capture_box::Sink for BoxSink {
@@ -578,6 +602,7 @@ impl capture_box::Sink for BoxSink {
         if filed.is_ok() {
             index_notebook(notebook);
             wake_worker();
+            self.remember(notebook);
         }
         unsafe { PostMessageW(self.window.get(), WM_APP_QUEUE, 0, 0) };
         filed.map(|_| ()).map_err(|error| error.to_string())
@@ -616,6 +641,7 @@ fn open_capture_box(window: HWND, source_window: Option<String>) {
             window: SendHwnd::new(window),
             queue,
             notebooks,
+            settings: settings.clone(),
         }),
         notebook,
         draft_dir: crate::capture::draft::default_dir(),
@@ -851,6 +877,7 @@ mod tests {
                 window: SendHwnd::new(std::ptr::null_mut()),
                 queue: Some(queue.clone()),
                 notebooks: Vec::new(),
+                settings: Some(temp.join("fastcapture.ini")),
             }),
             notebook: notebook.clone(),
             draft_dir: Some(temp.join("draft")),
@@ -863,6 +890,13 @@ mod tests {
         capture_box::set_text_for_test(hwnd, "lag spikes during ledger batch??");
         capture_box::run_for_test(hwnd, capture_box::Action::Submit);
         assert_eq!(unsafe { IsWindow(hwnd) }, 0, "the box closed");
+        let (settings, _) = SettingsFile::load(&temp.join("fastcapture.ini")).settings();
+        assert_eq!(
+            settings.recent_notebooks,
+            std::slice::from_ref(&notebook),
+            "the picker offers it now"
+        );
+        assert_eq!(settings.notebook, None, "Settings' notebook is left alone");
 
         let raws = raw_sources(&notebook, Path::new("raw"));
         assert_eq!(raws.len(), 1);

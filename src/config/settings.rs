@@ -389,6 +389,12 @@ impl SettingsFile {
 
     /// Makes `notebook` the capture notebook and the first of the recent ones.
     pub fn choose_notebook(&mut self, notebook: &Path) {
+        self.set("notebook", &notebook.to_string_lossy());
+        self.remember_notebook(notebook);
+    }
+
+    /// Makes `notebook` the first of the recent ones; the capture notebook stays as it is.
+    pub fn remember_notebook(&mut self, notebook: &Path) {
         let (settings, _) = self.settings();
         let mut recent = vec![notebook.to_path_buf()];
         recent.extend(
@@ -398,7 +404,6 @@ impl SettingsFile {
                 .filter(|known| known != notebook),
         );
         recent.truncate(RECENT_LIMIT);
-        self.set("notebook", &notebook.to_string_lossy());
         let values: Vec<String> = recent
             .iter()
             .map(|path| path.to_string_lossy().into_owned())
@@ -684,6 +689,19 @@ openai_accepted=OpenRouter.ai
         );
         file.set_all("recent_notebook", &[]);
         assert!(!file.text().contains("recent_notebook"));
+    }
+
+    #[test]
+    fn a_remembered_notebook_comes_first_but_is_not_the_capture_notebook() {
+        let mut file =
+            SettingsFile::from_text("notebook=D:\\Notes\r\nrecent_notebook=D:\\Notes\r\n");
+        file.remember_notebook(Path::new(r"E:\Work"));
+        let (settings, _) = file.settings();
+        assert_eq!(settings.notebook, Some(PathBuf::from(r"D:\Notes")));
+        assert_eq!(
+            settings.recent_notebooks,
+            [PathBuf::from(r"E:\Work"), PathBuf::from(r"D:\Notes")]
+        );
     }
 
     #[test]
