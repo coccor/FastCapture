@@ -1918,11 +1918,14 @@ mod tests {
         }
     }
 
-    /// The autocorrect tests need Windows' English checker.
+    /// The autocorrect tests need Windows' English checker with its autocorrect list, which
+    /// Windows Server (CI's runners) lacks.
     fn no_speller() -> bool {
-        let missing = crate::platform::spell::with_english(|_| ()).is_none();
+        let missing = crate::platform::spell::with_english(|s| s.replacement("teh"))
+            .flatten()
+            .is_none();
         if missing {
-            eprintln!("skipped: no en-US spell checker");
+            eprintln!("skipped: no en-US autocorrect list");
         }
         missing
     }
