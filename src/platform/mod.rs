@@ -11,6 +11,7 @@ pub mod png;
 pub mod random;
 pub mod saver;
 pub mod shell;
+pub mod spell;
 pub mod startup;
 pub mod tray;
 pub mod watch;

@@ -144,26 +144,32 @@ impl Layout {
         if let Some(target) = button {
             return target;
         }
-        if let Some(border) = border {
-            let (left, right) = (x < border, x >= width - border);
-            let (top, bottom) = (y < border, y >= height - border);
-            match (left, right, top, bottom) {
-                (true, _, true, _) => return Target::TopLeft,
-                (_, true, true, _) => return Target::TopRight,
-                (true, _, _, true) => return Target::BottomLeft,
-                (_, true, _, true) => return Target::BottomRight,
-                (true, ..) => return Target::Left,
-                (_, true, ..) => return Target::Right,
-                (_, _, true, _) => return Target::Top,
-                (_, _, _, true) => return Target::Bottom,
-                _ => {}
-            }
+        if let Some(target) = border.and_then(|border| edge(x, y, width, height, border)) {
+            return target;
         }
         if y >= 0 && y < self.height {
             Target::Caption
         } else {
             Target::Client
         }
+    }
+}
+
+/// The resizing edge or corner (`x`, `y`) is on in a window `width` × `height` whose edges are
+/// `border` wide, or `None` inside them.
+pub fn edge(x: i32, y: i32, width: i32, height: i32, border: i32) -> Option<Target> {
+    let (left, right) = (x < border, x >= width - border);
+    let (top, bottom) = (y < border, y >= height - border);
+    match (left, right, top, bottom) {
+        (true, _, true, _) => Some(Target::TopLeft),
+        (_, true, true, _) => Some(Target::TopRight),
+        (true, _, _, true) => Some(Target::BottomLeft),
+        (_, true, _, true) => Some(Target::BottomRight),
+        (true, ..) => Some(Target::Left),
+        (_, true, ..) => Some(Target::Right),
+        (_, _, true, _) => Some(Target::Top),
+        (_, _, _, true) => Some(Target::Bottom),
+        _ => None,
     }
 }
 
@@ -550,6 +556,14 @@ mod tests {
         let dialog = Layout::new(400, 96, Buttons::default());
         assert!(dialog.minimize.is_none() && dialog.maximize.is_none());
         assert_eq!(dialog.title.right, dialog.close.left);
+    }
+
+    #[test]
+    fn edges_resize_and_the_middle_does_not() {
+        assert_eq!(edge(0, 0, 500, 300, 6), Some(Target::TopLeft));
+        assert_eq!(edge(499, 150, 500, 300, 6), Some(Target::Right));
+        assert_eq!(edge(250, 299, 500, 300, 6), Some(Target::Bottom));
+        assert_eq!(edge(250, 150, 500, 300, 6), None);
     }
 
     #[test]

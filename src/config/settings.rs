@@ -27,6 +27,8 @@ pub struct Settings {
     pub capture_hotkey: Option<KeyStroke>,
     pub clipboard_hotkey: Option<KeyStroke>,
     pub capture_source: bool,
+    /// Fix common English typos as you type in the capture box.
+    pub autocorrect: bool,
     pub start_at_sign_in: bool,
     /// Light, dark, or as Windows says.
     pub theme: ThemePreference,
@@ -122,6 +124,7 @@ impl Default for Settings {
             capture_hotkey: KeyStroke::parse(DEFAULT_CAPTURE_HOTKEY),
             clipboard_hotkey: None,
             capture_source: false,
+            autocorrect: true,
             start_at_sign_in: true,
             theme: ThemePreference::System,
             mode: None,
@@ -224,6 +227,7 @@ pub fn parse(text: &str) -> (Settings, Vec<Warning>) {
                 parse_hotkey(value).map(|hotkey| settings.clipboard_hotkey = hotkey)
             }
             "capture_source" => parse_bool(value).map(|on| settings.capture_source = on),
+            "autocorrect" => parse_bool(value).map(|on| settings.autocorrect = on),
             "start_at_sign_in" => parse_bool(value).map(|on| settings.start_at_sign_in = on),
             "theme" => ThemePreference::ALL
                 .into_iter()
@@ -312,7 +316,7 @@ pub fn parse(text: &str) -> (Settings, Vec<Warning>) {
 
 /// Keys FastCapture writes itself that `parse` doesn't read, such as window placement.
 fn is_reserved(key: &str) -> bool {
-    key.starts_with("review_")
+    key.starts_with("review_") || matches!(key, "capture_width" | "capture_height")
 }
 
 /// The file's text, kept line by line so FastCapture can change one setting and leave the rest.
@@ -385,6 +389,12 @@ impl SettingsFile {
 
     /// Makes `notebook` the capture notebook and the first of the recent ones.
     pub fn choose_notebook(&mut self, notebook: &Path) {
+        self.set("notebook", &notebook.to_string_lossy());
+        self.remember_notebook(notebook);
+    }
+
+    /// Makes `notebook` the first of the recent ones; the capture notebook stays as it is.
+    pub fn remember_notebook(&mut self, notebook: &Path) {
         let (settings, _) = self.settings();
         let mut recent = vec![notebook.to_path_buf()];
         recent.extend(
@@ -394,7 +404,6 @@ impl SettingsFile {
                 .filter(|known| known != notebook),
         );
         recent.truncate(RECENT_LIMIT);
-        self.set("notebook", &notebook.to_string_lossy());
         let values: Vec<String> = recent
             .iter()
             .map(|path| path.to_string_lossy().into_owned())
@@ -424,6 +433,8 @@ pub fn starter_text() -> String {
         "# clipboard_hotkey=",
         "# Record the title of the window in front when you capture (it may contain private things).",
         "# capture_source=false",
+        "# Fix common typos as you type (English).",
+        "# autocorrect=on",
         "# start_at_sign_in=true",
         "",
     ]
@@ -479,10 +490,24 @@ mod tests {
         let (settings, warnings) = parse(&starter_text());
         assert_eq!(settings, Settings::default());
         assert!(warnings.is_empty(), "{warnings:?}");
+        assert!(settings.autocorrect);
         assert_eq!(
             settings.capture_hotkey.unwrap().to_string(),
             DEFAULT_CAPTURE_HOTKEY
         );
+    }
+
+    #[test]
+    fn the_capture_boxs_size_is_not_an_unknown_key() {
+        let (_, warnings) = parse("capture_width=900\ncapture_height=500\n");
+        assert!(warnings.is_empty(), "{warnings:?}");
+        let (_, warnings) = parse("capture_hotky=Ctrl+Alt+C\n");
+        assert_eq!(warnings.len(), 1, "a typo is still named");
+    }
+
+    #[test]
+    fn autocorrect_can_be_turned_off() {
+        assert!(!parse("autocorrect=off\n").0.autocorrect);
     }
 
     #[test]
@@ -664,6 +689,19 @@ openai_accepted=OpenRouter.ai
         );
         file.set_all("recent_notebook", &[]);
         assert!(!file.text().contains("recent_notebook"));
+    }
+
+    #[test]
+    fn a_remembered_notebook_comes_first_but_is_not_the_capture_notebook() {
+        let mut file =
+            SettingsFile::from_text("notebook=D:\\Notes\r\nrecent_notebook=D:\\Notes\r\n");
+        file.remember_notebook(Path::new(r"E:\Work"));
+        let (settings, _) = file.settings();
+        assert_eq!(settings.notebook, Some(PathBuf::from(r"D:\Notes")));
+        assert_eq!(
+            settings.recent_notebooks,
+            [PathBuf::from(r"E:\Work"), PathBuf::from(r"D:\Notes")]
+        );
     }
 
     #[test]
