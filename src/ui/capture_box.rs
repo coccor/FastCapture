@@ -25,14 +25,14 @@ use windows_sys::Win32::Graphics::Gdi::{
     BeginPaint, CreateSolidBrush, DT_CALCRECT, DT_CENTER, DT_END_ELLIPSIS, DT_LEFT, DT_NOPREFIX,
     DT_RIGHT, DT_SINGLELINE, DT_VCENTER, DeleteObject, DrawTextW, EndPaint, FillRect, FrameRect,
     GetDC, GetMonitorInfoW, HBRUSH, HDC, HFONT, InvalidateRect, MONITOR_DEFAULTTONEAREST,
-    MONITORINFO, MonitorFromPoint, PAINTSTRUCT, ReleaseDC, ScreenToClient, SelectObject,
-    SetBkColor, SetBkMode, SetTextColor, TRANSPARENT,
+    MONITORINFO, MonitorFromPoint, MonitorFromWindow, PAINTSTRUCT, ReleaseDC, ScreenToClient,
+    SelectObject, SetBkColor, SetBkMode, SetTextColor, TRANSPARENT,
 };
 use windows_sys::Win32::System::DataExchange::{
     AddClipboardFormatListener, RemoveClipboardFormatListener,
 };
 use windows_sys::Win32::System::LibraryLoader::GetModuleHandleW;
-use windows_sys::Win32::UI::Controls::{EM_REPLACESEL, EM_SETSEL, MARGINS};
+use windows_sys::Win32::UI::Controls::{EM_REPLACESEL, EM_SETMARGINS, EM_SETSEL, MARGINS};
 use windows_sys::Win32::UI::HiDpi::GetDpiForWindow;
 use windows_sys::Win32::UI::Input::KeyboardAndMouse::{
     GetFocus, GetKeyState, SetFocus, VK_BACK, VK_CONTROL, VK_DELETE, VK_ESCAPE, VK_LEFT, VK_MENU,
@@ -42,22 +42,29 @@ use windows_sys::Win32::UI::Shell::{
     DefSubclassProc, DragAcceptFiles, DragFinish, HDROP, RemoveWindowSubclass, SetWindowSubclass,
 };
 use windows_sys::Win32::UI::WindowsAndMessaging::{
-    CreateWindowExW, DefWindowProcW, DestroyWindow, ES_AUTOVSCROLL, ES_MULTILINE, ES_WANTRETURN,
-    FindWindowW, GWLP_USERDATA, GetCursorPos, GetForegroundWindow, GetWindowLongPtrW,
-    GetWindowRect, GetWindowTextLengthW, GetWindowTextW, HTCAPTION, HTCLIENT, IDC_ARROW, IsWindow,
-    KillTimer, LoadCursorW, RegisterClassW, SW_HIDE, SW_SHOW, SWP_NOACTIVATE, SWP_NOZORDER,
-    SendMessageW, SetForegroundWindow, SetTimer, SetWindowLongPtrW, SetWindowPos, SetWindowTextW,
-    ShowWindow, WM_APP, WM_CHAR, WM_CLIPBOARDUPDATE, WM_CLOSE, WM_CTLCOLOREDIT, WM_DESTROY,
-    WM_DROPFILES, WM_ERASEBKGND, WM_KEYDOWN, WM_LBUTTONDOWN, WM_NCCALCSIZE, WM_NCDESTROY,
-    WM_NCHITTEST, WM_PAINT, WM_PASTE, WM_SETFOCUS, WM_SETFONT, WM_TIMER, WNDCLASSW, WS_CAPTION,
+    CreateWindowExW, DefWindowProcW, DestroyWindow, EC_LEFTMARGIN, EC_RIGHTMARGIN, ES_AUTOVSCROLL,
+    ES_MULTILINE, ES_WANTRETURN, FindWindowW, GWLP_USERDATA, GetClientRect, GetCursorPos,
+    GetForegroundWindow, GetWindowLongPtrW, GetWindowTextLengthW, GetWindowTextW, HTCAPTION,
+    HTCLIENT, IDC_ARROW, IsWindow, KillTimer, LoadCursorW, MINMAXINFO, RegisterClassW, SW_HIDE,
+    SW_SHOW, SWP_NOACTIVATE, SWP_NOZORDER, SendMessageW, SetForegroundWindow, SetTimer,
+    SetWindowLongPtrW, SetWindowPos, SetWindowTextW, ShowWindow, WM_APP, WM_CHAR,
+    WM_CLIPBOARDUPDATE, WM_CLOSE, WM_CTLCOLOREDIT, WM_DESTROY, WM_DROPFILES, WM_ERASEBKGND,
+    WM_GETMINMAXINFO, WM_KEYDOWN, WM_LBUTTONDOWN, WM_NCCALCSIZE, WM_NCDESTROY, WM_NCHITTEST,
+    WM_PAINT, WM_PASTE, WM_SETFOCUS, WM_SETFONT, WM_SIZE, WM_TIMER, WNDCLASSW, WS_CAPTION,
     WS_CHILD, WS_CLIPCHILDREN, WS_EX_ACCEPTFILES, WS_EX_TOPMOST, WS_POPUP, WS_TABSTOP, WS_VISIBLE,
     WS_VSCROLL,
 };
 
-const WIDTH_AT_96_DPI: i32 = 520;
+/// The box's size when it has none saved, and the smallest it can be made.
+pub const DEFAULT_SIZE_AT_96_DPI: (i32, i32) = (720, 420);
+pub const MIN_SIZE_AT_96_DPI: (i32, i32) = (420, 240);
 const PAD_AT_96_DPI: i32 = 12;
 const TITLE_AT_96_DPI: i32 = 34;
-const EDIT_AT_96_DPI: i32 = 92;
+/// The edit never gets shorter than this, about two lines.
+const EDIT_FLOOR_AT_96_DPI: i32 = 40;
+/// Room above the edit's first line, and the edit's inner margins left and right.
+const EDIT_TOP_GAP_AT_96_DPI: i32 = 6;
+const EDIT_MARGIN_AT_96_DPI: i32 = 8;
 const CHIP_HEIGHT_AT_96_DPI: i32 = 30;
 const CHIP_GAP_AT_96_DPI: i32 = 8;
 const CHIP_MAX_AT_96_DPI: i32 = 220;
@@ -138,11 +145,22 @@ pub struct Layout {
     pub snip: RECT,
 }
 
-/// Lays the box out for chips `chip_widths` pixels wide (their text), with an error line or not.
-pub fn layout(dpi: u32, chip_widths: &[i32], has_error: bool, snip_width: i32) -> Layout {
+/// Lays the box out in a client area `size` big, for chips `chip_widths` pixels wide (their
+/// text), with an error line or not. The footer and error keep to the bottom, the chips sit
+/// above them, and the edit takes the rest, down to its floor; chips that don't fit then are
+/// left empty (`RECT::default()`).
+pub fn layout(
+    dpi: u32,
+    size: (i32, i32),
+    chip_widths: &[i32],
+    has_error: bool,
+    snip_width: i32,
+) -> Layout {
     let s = |v: i32| scale(v, dpi);
-    let width = s(WIDTH_AT_96_DPI);
+    let (width, height) = size;
     let pad = s(PAD_AT_96_DPI);
+    let gap = s(CHIP_GAP_AT_96_DPI);
+    let chip_height = s(CHIP_HEIGHT_AT_96_DPI);
     let title = RECT {
         left: 0,
         top: 0,
@@ -153,48 +171,58 @@ pub fn layout(dpi: u32, chip_widths: &[i32], has_error: bool, snip_width: i32) -
         left: width - s(TITLE_AT_96_DPI),
         ..title
     };
-    let edit = RECT {
+    let footer = RECT {
         left: pad,
-        top: title.bottom,
+        top: height - s(4) - s(FOOTER_AT_96_DPI),
         right: width - pad,
-        bottom: title.bottom + s(EDIT_AT_96_DPI),
+        bottom: height - s(4),
     };
-    let mut y = edit.bottom + s(CHIP_GAP_AT_96_DPI);
+    let error = has_error.then(|| RECT {
+        left: pad,
+        top: footer.top - s(ERROR_AT_96_DPI),
+        right: width - pad,
+        bottom: footer.top,
+    });
+    let below = error.map_or(footer.top, |line| line.top);
+    // The chips wrapped into rows, at x and a row number.
     let mut x = pad;
-    let mut chips = Vec::new();
+    let mut row = 0;
+    let mut placed = Vec::new();
     for text in chip_widths {
         let chip = (text + s(CHIP_REMOVE_AT_96_DPI) + s(PAD_AT_96_DPI)).min(s(CHIP_MAX_AT_96_DPI));
         if x > pad && x + chip > width - pad {
             x = pad;
-            y += s(CHIP_HEIGHT_AT_96_DPI) + s(CHIP_GAP_AT_96_DPI);
+            row += 1;
         }
-        chips.push(RECT {
-            left: x,
-            top: y,
-            right: x + chip,
-            bottom: y + s(CHIP_HEIGHT_AT_96_DPI),
-        });
-        x += chip + s(CHIP_GAP_AT_96_DPI);
+        placed.push((x, chip, row));
+        x += chip + gap;
     }
-    if !chips.is_empty() {
-        y += s(CHIP_HEIGHT_AT_96_DPI) + s(CHIP_GAP_AT_96_DPI);
-    }
-    let error = has_error.then(|| {
-        let line = RECT {
-            left: pad,
-            top: y,
-            right: width - pad,
-            bottom: y + s(ERROR_AT_96_DPI),
-        };
-        y = line.bottom;
-        line
-    });
-    let footer = RECT {
+    let rows = if placed.is_empty() { 0 } else { row + 1 };
+    let strip = rows * (chip_height + gap);
+    let edit_top = title.bottom + s(EDIT_TOP_GAP_AT_96_DPI);
+    let edit_bottom = (below - strip - gap).max(edit_top + s(EDIT_FLOOR_AT_96_DPI));
+    let edit = RECT {
         left: pad,
-        top: y,
+        top: edit_top,
         right: width - pad,
-        bottom: y + s(FOOTER_AT_96_DPI),
+        bottom: edit_bottom,
     };
+    let chips = placed
+        .into_iter()
+        .map(|(x, chip, row)| {
+            let top = edit.bottom + gap + row * (chip_height + gap);
+            if top + chip_height > below {
+                RECT::default()
+            } else {
+                RECT {
+                    left: x,
+                    top,
+                    right: x + chip,
+                    bottom: top + chip_height,
+                }
+            }
+        })
+        .collect();
     let snip = RECT {
         left: pad,
         top: footer.top,
@@ -203,7 +231,7 @@ pub fn layout(dpi: u32, chip_widths: &[i32], has_error: bool, snip_width: i32) -
     };
     Layout {
         width,
-        height: footer.bottom + s(4),
+        height,
         title,
         close,
         edit,
@@ -394,6 +422,7 @@ pub fn open(options: Open) -> Option<HWND> {
     let title_font = ramp::font(TextStyle::Heading, dpi);
     unsafe {
         SendMessageW(edit, WM_SETFONT, body_font as usize, 0);
+        set_margins(edit, dpi);
         SetWindowSubclass(edit, Some(edit_proc), EDIT_HOOK, hwnd as usize);
         DragAcceptFiles(hwnd, 1);
     }
@@ -426,8 +455,8 @@ pub fn open(options: Open) -> Option<HWND> {
     });
     unsafe { SetWindowLongPtrW(hwnd, GWLP_USERDATA, Box::into_raw(state) as isize) };
     set_edit_text(edit, &restored.text);
-    relayout(hwnd);
     place(hwnd, cursor);
+    relayout(hwnd);
     // Rounded and dark as the theme says; the 1 px frame extension keeps DWM's shadow on a
     // window without a border.
     frame::apply_theme(hwnd, &colors);
@@ -459,12 +488,14 @@ fn show(hwnd: HWND) {
     }
 }
 
-/// Centers the box on the work area of the monitor at `point`, a third of the way down.
+/// Sizes the box and centers it on the work area of the monitor at `point`, a third of the way
+/// down.
 fn place(hwnd: HWND, point: POINT) {
     let Some(capture) = state(hwnd) else {
         return;
     };
-    let (width, height) = (capture.layout.width, capture.layout.height);
+    let s = |v: i32| scale(v, capture.dpi);
+    let (width, height) = (s(DEFAULT_SIZE_AT_96_DPI.0), s(DEFAULT_SIZE_AT_96_DPI.1));
     let mut monitor: MONITORINFO = unsafe { std::mem::zeroed() };
     monitor.cbSize = size_of::<MONITORINFO>() as u32;
     unsafe {
@@ -513,7 +544,7 @@ fn text_width(hwnd: HWND, font: HFONT, text: &str) -> i32 {
     rect.right - rect.left
 }
 
-/// Lays the box out again for its attachments and error, keeping its top-left corner.
+/// Lays the box out again for its size, attachments and error.
 fn relayout(hwnd: HWND) {
     let Some(capture) = state(hwnd) else {
         return;
@@ -529,10 +560,17 @@ fn relayout(hwnd: HWND) {
         )
         .collect();
     let snip = text_width(hwnd, capture.body_font, SNIP_LABEL) + scale(8, capture.dpi);
-    capture.layout = layout(capture.dpi, &widths, capture.error.is_some(), snip);
+    let mut client: RECT = unsafe { std::mem::zeroed() };
+    unsafe { GetClientRect(hwnd, &mut client) };
+    capture.layout = layout(
+        capture.dpi,
+        (client.right - client.left, client.bottom - client.top),
+        &widths,
+        capture.error.is_some(),
+        snip,
+    );
     capture.selected = capture.selected.min(capture.items.len());
     let edit = capture.layout.edit;
-    let (width, height) = (capture.layout.width, capture.layout.height);
     let name = notebook_name(&capture.notebook);
     unsafe {
         SetWindowPos(
@@ -544,20 +582,22 @@ fn relayout(hwnd: HWND) {
             edit.bottom - edit.top,
             SWP_NOZORDER | SWP_NOACTIVATE,
         );
-        let mut frame: RECT = std::mem::zeroed();
-        GetWindowRect(hwnd, &mut frame);
-        SetWindowPos(
-            hwnd,
-            std::ptr::null_mut(),
-            frame.left,
-            frame.top,
-            width,
-            height,
-            SWP_NOZORDER | SWP_NOACTIVATE,
-        );
         SetWindowTextW(hwnd, wide(&accessible_name(&name)).as_ptr());
         InvalidateRect(hwnd, std::ptr::null(), 1);
     }
+}
+
+/// The edit's inner margins, so text keeps off its edges.
+fn set_margins(edit: HWND, dpi: u32) {
+    let margin = scale(EDIT_MARGIN_AT_96_DPI, dpi) as usize;
+    unsafe {
+        SendMessageW(
+            edit,
+            EM_SETMARGINS,
+            (EC_LEFTMARGIN | EC_RIGHTMARGIN) as usize,
+            (margin | (margin << 16)) as isize,
+        )
+    };
 }
 
 fn set_edit_text(edit: HWND, text: &str) {
@@ -1086,6 +1126,10 @@ fn draw(capture: &CaptureBox, dc: HDC, hwnd: HWND) {
     unsafe { SetTextColor(dc, colors.muted_foreground) };
     draw_text(dc, "\u{2715}", &layout.close, DT_CENTER);
     for (index, chip) in layout.chips.iter().enumerate() {
+        if chip.right <= chip.left {
+            // Clipped: no room for it in a box this small.
+            continue;
+        }
         let selected = strip_focused && capture.selected == index;
         fill(
             dc,
@@ -1191,14 +1235,15 @@ fn clicked(hwnd: HWND, x: i32, y: i32) {
     }
     let remove = scale(CHIP_REMOVE_AT_96_DPI, capture.dpi);
     if let Some(index) = layout.chips.iter().position(|chip| {
-        contains(
-            &RECT {
-                left: chip.right - remove,
-                ..*chip
-            },
-            x,
-            y,
-        )
+        chip.right > chip.left
+            && contains(
+                &RECT {
+                    left: chip.right - remove,
+                    ..*chip
+                },
+                x,
+                y,
+            )
     }) {
         remove_item(hwnd, index);
     }
@@ -1262,6 +1307,13 @@ unsafe extern "system" fn box_proc(
                 y: ((lparam >> 16) & 0xFFFF) as i16 as i32,
             };
             unsafe { ScreenToClient(hwnd, &mut point) };
+            if let Some(capture) = state(hwnd) {
+                let (width, height) = (capture.layout.width, capture.layout.height);
+                let border = frame::resize_border(capture.dpi);
+                if let Some(edge) = frame::edge(point.x, point.y, width, height, border) {
+                    return edge.code() as LRESULT;
+                }
+            }
             let drags = state(hwnd).is_some_and(|capture| {
                 contains(&capture.layout.title, point.x, point.y)
                     && !contains(&capture.layout.close, point.x, point.y)
@@ -1271,6 +1323,32 @@ unsafe extern "system" fn box_proc(
             } else {
                 HTCLIENT as LRESULT
             }
+        }
+        WM_GETMINMAXINFO => {
+            let Some(capture) = state(hwnd) else {
+                return 0;
+            };
+            let info = unsafe { &mut *(lparam as *mut MINMAXINFO) };
+            info.ptMinTrackSize.x = scale(MIN_SIZE_AT_96_DPI.0, capture.dpi);
+            info.ptMinTrackSize.y = scale(MIN_SIZE_AT_96_DPI.1, capture.dpi);
+            let mut monitor: MONITORINFO = unsafe { std::mem::zeroed() };
+            monitor.cbSize = size_of::<MONITORINFO>() as u32;
+            let found = unsafe {
+                GetMonitorInfoW(
+                    MonitorFromWindow(hwnd, MONITOR_DEFAULTTONEAREST),
+                    &mut monitor,
+                )
+            };
+            if found != 0 {
+                let work = monitor.rcWork;
+                info.ptMaxTrackSize.x = work.right - work.left;
+                info.ptMaxTrackSize.y = work.bottom - work.top;
+            }
+            0
+        }
+        WM_SIZE => {
+            relayout(hwnd);
+            0
         }
         WM_LBUTTONDOWN => {
             clicked(
@@ -1393,6 +1471,7 @@ mod tests {
     use super::*;
     use std::cell::RefCell;
     use std::rc::Rc;
+    use windows_sys::Win32::UI::WindowsAndMessaging::GetWindowRect;
 
     #[test]
     fn keys_map_to_the_box_actions() {
@@ -1454,22 +1533,89 @@ mod tests {
     }
 
     #[test]
-    fn the_strip_appears_only_with_attachments_and_wraps() {
-        let plain = layout(96, &[], false, 120);
-        assert_eq!(plain.width, 520);
-        assert!(plain.chips.is_empty());
-        assert_eq!(plain.footer.top, plain.edit.bottom + 8);
-
-        let with = layout(96, &[200, 200, 200], true, 120);
-        assert_eq!(with.chips.len(), 3);
+    fn the_edit_fills_what_the_strip_error_and_footer_leave() {
+        let plain = layout(96, (720, 420), &[], false, 160);
+        assert_eq!((plain.width, plain.height), (720, 420));
+        assert_eq!(plain.edit.top, 34 + 6);
+        assert_eq!(plain.footer.bottom, 420 - 4);
+        assert_eq!(plain.edit.bottom + 8, plain.footer.top);
+        let with = layout(96, (520, 420), &[150, 150, 150], true, 160);
         assert_eq!(with.chips[0].top, with.chips[1].top);
-        assert!(with.chips[2].top > with.chips[1].top, "the third wraps");
-        assert!(with.chips.iter().all(|chip| chip.right <= 520 - 12));
-        let error = with.error.unwrap();
-        assert!(error.top >= with.chips[2].bottom);
-        assert!(with.height > plain.height);
+        assert!(
+            with.chips[2].top > with.chips[1].top,
+            "the third wraps at 520"
+        );
+        assert!(
+            with.edit.bottom < plain.edit.bottom,
+            "the edit gave the chips room"
+        );
+        assert!(with.error.unwrap().top >= with.chips[2].bottom);
+        assert_eq!(layout(192, (1440, 840), &[], false, 320).edit.top, 80);
+    }
 
-        assert_eq!(layout(192, &[], false, 240).width, 1040);
+    #[test]
+    fn chips_that_do_not_fit_are_clipped_not_overlapping() {
+        let tight = layout(96, (420, 240), &[200; 12], true, 160);
+        assert_eq!(tight.chips.len(), 12);
+        assert_eq!(
+            tight.edit.bottom - tight.edit.top,
+            40,
+            "the edit keeps its floor"
+        );
+        let error = tight.error.unwrap();
+        for chip in tight.chips.iter().filter(|c| c.right > c.left) {
+            assert!(chip.bottom <= error.top, "{} > {}", chip.bottom, error.top);
+        }
+        assert!(
+            tight.chips.iter().any(|c| c.right == c.left),
+            "some were clipped"
+        );
+    }
+
+    #[test]
+    fn the_box_resizes_from_its_edges_and_keeps_a_minimum() {
+        use windows_sys::Win32::UI::WindowsAndMessaging::{
+            HTBOTTOMRIGHT, MINMAXINFO, SWP_NOMOVE, WM_GETMINMAXINFO,
+        };
+        let drafts = temp("resize");
+        let (hwnd, _) = open_box(&drafts, None);
+        let mut frame: RECT = unsafe { std::mem::zeroed() };
+        unsafe { GetWindowRect(hwnd, &mut frame) };
+        let at = |x: i32, y: i32| unsafe {
+            SendMessageW(
+                hwnd,
+                WM_NCHITTEST,
+                0,
+                (((y as u32) << 16) | (x as u32 & 0xFFFF)) as isize,
+            )
+        };
+        assert_eq!(
+            at(frame.right - 1, frame.bottom - 1),
+            HTBOTTOMRIGHT as isize
+        );
+        let mut info: MINMAXINFO = unsafe { std::mem::zeroed() };
+        unsafe { SendMessageW(hwnd, WM_GETMINMAXINFO, 0, &raw mut info as isize) };
+        let dpi = state(hwnd).unwrap().dpi;
+        assert_eq!(info.ptMinTrackSize.x, scale(420, dpi));
+        unsafe {
+            SetWindowPos(
+                hwnd,
+                std::ptr::null_mut(),
+                0,
+                0,
+                scale(900, dpi),
+                scale(600, dpi),
+                SWP_NOMOVE | SWP_NOZORDER,
+            )
+        };
+        let capture = state(hwnd).unwrap();
+        assert_eq!(
+            capture.layout.width,
+            scale(900, dpi),
+            "WM_SIZE laid it out again"
+        );
+        unsafe { DestroyWindow(hwnd) };
+        draft::clear(&drafts);
     }
 
     #[test]
