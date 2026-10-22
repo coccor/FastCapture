@@ -316,7 +316,7 @@ pub fn parse(text: &str) -> (Settings, Vec<Warning>) {
 
 /// Keys FastCapture writes itself that `parse` doesn't read, such as window placement.
 fn is_reserved(key: &str) -> bool {
-    key.starts_with("review_")
+    key.starts_with("review_") || matches!(key, "capture_width" | "capture_height")
 }
 
 /// The file's text, kept line by line so FastCapture can change one setting and leave the rest.
@@ -490,6 +490,14 @@ mod tests {
             settings.capture_hotkey.unwrap().to_string(),
             DEFAULT_CAPTURE_HOTKEY
         );
+    }
+
+    #[test]
+    fn the_capture_boxs_size_is_not_an_unknown_key() {
+        let (_, warnings) = parse("capture_width=900\ncapture_height=500\n");
+        assert!(warnings.is_empty(), "{warnings:?}");
+        let (_, warnings) = parse("capture_hotky=Ctrl+Alt+C\n");
+        assert_eq!(warnings.len(), 1, "a typo is still named");
     }
 
     #[test]

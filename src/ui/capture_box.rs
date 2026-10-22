@@ -53,10 +53,10 @@ use windows_sys::Win32::UI::WindowsAndMessaging::{
     SW_HIDE, SW_SHOW, SWP_NOACTIVATE, SWP_NOZORDER, SendMessageW, SetForegroundWindow, SetTimer,
     SetWindowLongPtrW, SetWindowPos, SetWindowTextW, ShowWindow, WM_APP, WM_CHAR,
     WM_CLIPBOARDUPDATE, WM_CLOSE, WM_CTLCOLOREDIT, WM_DESTROY, WM_DPICHANGED, WM_DROPFILES,
-    WM_ERASEBKGND, WM_EXITSIZEMOVE, WM_GETMINMAXINFO, WM_KEYDOWN, WM_LBUTTONDOWN, WM_NCCALCSIZE,
-    WM_NCDESTROY, WM_NCHITTEST, WM_PAINT, WM_PASTE, WM_SETFOCUS, WM_SETFONT, WM_SIZE, WM_TIMER,
-    WNDCLASSW, WS_CAPTION, WS_CHILD, WS_CLIPCHILDREN, WS_EX_ACCEPTFILES, WS_EX_TOPMOST, WS_POPUP,
-    WS_TABSTOP, WS_VISIBLE, WS_VSCROLL,
+    WM_ENTERSIZEMOVE, WM_ERASEBKGND, WM_EXITSIZEMOVE, WM_GETMINMAXINFO, WM_KEYDOWN, WM_LBUTTONDOWN,
+    WM_NCCALCSIZE, WM_NCDESTROY, WM_NCHITTEST, WM_PAINT, WM_PASTE, WM_SETFOCUS, WM_SETFONT,
+    WM_SIZE, WM_TIMER, WNDCLASSW, WS_CAPTION, WS_CHILD, WS_CLIPCHILDREN, WS_EX_ACCEPTFILES,
+    WS_EX_TOPMOST, WS_POPUP, WS_TABSTOP, WS_VISIBLE, WS_VSCROLL,
 };
 
 /// The box's size when it has none saved, and the smallest it can be made.
@@ -314,6 +314,8 @@ struct CaptureBox {
     source_url: Option<String>,
     draft_dir: Option<PathBuf>,
     settings: Option<PathBuf>,
+    /// The box's size when a move or resize began: only a new size is saved.
+    size_before_drag: Option<(i32, i32)>,
     autocorrect: bool,
     /// The typo autocorrect fixed last, for Ctrl+Z, until another key, click or paste.
     last_fix: Option<Correction>,
@@ -461,6 +463,7 @@ pub fn open(options: Open) -> Option<HWND> {
         source_url: restored.source_url,
         draft_dir: options.draft_dir,
         settings: options.settings,
+        size_before_drag: None,
         autocorrect: options.autocorrect,
         last_fix: None,
         swallow_undo_char: false,
@@ -559,16 +562,21 @@ fn saved_size(settings: Option<&Path>) -> Option<(i32, i32)> {
     Some((number("capture_width")?, number("capture_height")?))
 }
 
+fn window_size(hwnd: HWND) -> (i32, i32) {
+    let mut rect: RECT = unsafe { std::mem::zeroed() };
+    unsafe { GetWindowRect(hwnd, &mut rect) };
+    (rect.right - rect.left, rect.bottom - rect.top)
+}
+
 /// Keeps the box's size (not its place: it opens where you are) in `fastcapture.ini`.
 fn save_size(hwnd: HWND, settings: Option<&Path>) {
     let Some(path) = settings else {
         return;
     };
-    let mut rect: RECT = unsafe { std::mem::zeroed() };
-    unsafe { GetWindowRect(hwnd, &mut rect) };
+    let (width, height) = window_size(hwnd);
     let mut file = SettingsFile::load(path);
-    file.set("capture_width", &(rect.right - rect.left).to_string());
-    file.set("capture_height", &(rect.bottom - rect.top).to_string());
+    file.set("capture_width", &width.to_string());
+    file.set("capture_height", &height.to_string());
     if let Err(error) = file.save(path) {
         crate::log::line(&format!("capture box: {error}"));
     }
@@ -762,15 +770,21 @@ fn undo_fix(hwnd: HWND) -> bool {
     let replacement: Vec<u16> = fix.replacement.encode_utf16().collect();
     let end = fix.start + replacement.len();
     let units = edit_units(edit);
-    // The fix, then the one boundary typed after it, with the caret right after that.
+    // The boundary typed after the fix: one character, or the CRLF Enter puts in.
+    let boundary = if units.get(end..end + 2) == Some(&[0x0D, 0x0A][..]) {
+        2
+    } else {
+        1
+    };
+    // The fix, then that boundary, with the caret right after it.
     let intact = units.get(fix.start..end) == Some(&replacement[..])
-        && units.len() > end
-        && selection(edit) == (end + 1, end + 1);
+        && units.len() >= end + boundary
+        && selection(edit) == (end + boundary, end + boundary);
     if !intact {
         return false;
     }
     replace_range(edit, fix.start..end, &fix.original);
-    let caret = fix.start + fix.original.encode_utf16().count() + 1;
+    let caret = fix.start + fix.original.encode_utf16().count() + boundary;
     unsafe { SendMessageW(edit, EM_SETSEL, caret, caret as LPARAM) };
     true
 }
@@ -1504,6 +1518,10 @@ unsafe extern "system" fn box_proc(
             };
             unsafe { ScreenToClient(hwnd, &mut point) };
             if let Some(capture) = state(hwnd) {
+                // The close button keeps its target to the corner, as the frame's buttons do.
+                if contains(&capture.layout.close, point.x, point.y) {
+                    return HTCLIENT as LRESULT;
+                }
                 let (width, height) = (capture.layout.width, capture.layout.height);
                 let border = frame::resize_border(capture.dpi);
                 if let Some(edge) = frame::edge(point.x, point.y, width, height, border) {
@@ -1546,8 +1564,19 @@ unsafe extern "system" fn box_proc(
             relayout(hwnd);
             0
         }
-        WM_EXITSIZEMOVE => {
+        WM_ENTERSIZEMOVE => {
             if let Some(capture) = state(hwnd) {
+                capture.size_before_drag = Some(window_size(hwnd));
+            }
+            0
+        }
+        WM_EXITSIZEMOVE => {
+            if let Some(capture) = state(hwnd)
+                && capture
+                    .size_before_drag
+                    .take()
+                    .is_some_and(|size| size != window_size(hwnd))
+            {
                 save_size(hwnd, capture.settings.as_deref());
             }
             0
@@ -1939,6 +1968,80 @@ mod tests {
     }
 
     #[test]
+    fn ctrl_z_after_a_fix_made_by_enter_keeps_the_line_break() {
+        if no_speller() {
+            return;
+        }
+        let drafts = temp("enter");
+        let (hwnd, _) = open_box(&drafts, None);
+        let edit = state(hwnd).unwrap().edit;
+        type_for_test(hwnd, "teh\r");
+        assert_eq!(edit_text(edit), "the\n");
+        press_ctrl_z(edit);
+        assert_eq!(edit_text(edit), "teh\n");
+        unsafe { DestroyWindow(hwnd) };
+        draft::clear(&drafts);
+    }
+
+    #[test]
+    fn all_capitals_are_left_alone_as_windows_does() {
+        if no_speller() {
+            return;
+        }
+        let drafts = temp("caps");
+        let (hwnd, _) = open_box(&drafts, None);
+        type_for_test(hwnd, "CNA ADN Teh ");
+        assert_eq!(edit_text(state(hwnd).unwrap().edit), "CNA ADN The ");
+        unsafe { DestroyWindow(hwnd) };
+        draft::clear(&drafts);
+    }
+
+    #[test]
+    fn the_close_button_keeps_its_corner() {
+        let drafts = temp("corner");
+        let (hwnd, _) = open_box(&drafts, None);
+        let mut frame: RECT = unsafe { std::mem::zeroed() };
+        unsafe { GetWindowRect(hwnd, &mut frame) };
+        let (x, y) = (frame.right - 1, frame.top + 1);
+        let hit = unsafe {
+            SendMessageW(
+                hwnd,
+                WM_NCHITTEST,
+                0,
+                (((y as u32) << 16) | (x as u32 & 0xFFFF)) as isize,
+            )
+        };
+        assert_eq!(hit, HTCLIENT as isize);
+        unsafe { DestroyWindow(hwnd) };
+        draft::clear(&drafts);
+    }
+
+    #[test]
+    fn moving_the_box_does_not_rewrite_its_size() {
+        use windows_sys::Win32::UI::WindowsAndMessaging::SWP_NOSIZE;
+        let drafts = temp("move");
+        std::fs::create_dir_all(&drafts).unwrap();
+        let ini = drafts.join("fastcapture.ini");
+        let (hwnd, _) = open_box_with(&drafts, Some(&ini));
+        unsafe {
+            SendMessageW(hwnd, WM_ENTERSIZEMOVE, 0, 0);
+            SetWindowPos(
+                hwnd,
+                std::ptr::null_mut(),
+                10,
+                10,
+                0,
+                0,
+                SWP_NOSIZE | SWP_NOZORDER,
+            );
+            SendMessageW(hwnd, WM_EXITSIZEMOVE, 0, 0);
+            DestroyWindow(hwnd);
+        }
+        assert!(!ini.exists(), "a move writes nothing");
+        draft::clear(&drafts);
+    }
+
+    #[test]
     fn a_word_in_the_middle_is_fixed_in_place() {
         if no_speller() {
             return;
@@ -2079,6 +2182,7 @@ mod tests {
         let (hwnd, _) = open_box_with(&drafts, Some(&ini));
         let dpi = state(hwnd).unwrap().dpi;
         unsafe {
+            SendMessageW(hwnd, WM_ENTERSIZEMOVE, 0, 0);
             SetWindowPos(
                 hwnd,
                 std::ptr::null_mut(),

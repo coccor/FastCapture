@@ -66,10 +66,12 @@ pub struct Correction {
     pub replacement: String,
 }
 
-/// The fix for the word before the caret, when `lookup` (given the word in lower case) has one.
+/// The fix for the word before the caret, when `lookup` (given the word as typed) has one. The
+/// word goes as typed so Windows' own rules apply: it leaves words in all capitals alone, as
+/// acronyms ("CNA" is not "can").
 pub fn correction(before: &str, lookup: impl FnOnce(&str) -> Option<String>) -> Option<Correction> {
     let word = word_before(before)?;
-    let replacement = match_case(word, &lookup(&word.to_lowercase())?);
+    let replacement = match_case(word, &lookup(word)?);
     (replacement != word).then(|| Correction {
         start: before[..before.len() - word.len()].encode_utf16().count(),
         original: word.to_owned(),
@@ -119,7 +121,7 @@ mod tests {
 
     #[test]
     fn a_correction_names_the_word_by_its_utf16_offset() {
-        let fix = correction("café 😀 Teh", |w| (w == "teh").then(|| "the".into())).unwrap();
+        let fix = correction("café 😀 Teh", |w| (w == "Teh").then(|| "the".into())).unwrap();
         assert_eq!(fix.start, "café 😀 ".encode_utf16().count());
         assert_eq!(
             (fix.original.as_str(), fix.replacement.as_str()),
