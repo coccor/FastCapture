@@ -108,7 +108,7 @@ In the notebook (FastPad's conventions, read from `.fastpad\notebook.ini` and Ob
 - `raw\YYYY-MM-DD HHmm <first words>.md`: each capture's raw source, never changed after it is written. Its front matter holds `type: raw`, `captured`, `kind`, `capture_id`, any `urls`, `source_url` for pasted web text and, when enabled, `source_window`.
 - `raw\<raw source's name>.page.md` (`.page 2.md`, …): each link's page as it was fetched, kept beside its raw source so the note can be written again without fetching it. A failed fetch is recorded there too, and replaced when **R** fetches it again.
 - `attachments\`: pasted images (as PNG) and copied files, linked from the raw source.
-- `.fastcapture\capture.ini` (optional): `raw_folder` (default `raw`) and `home_types` (default `topic, project, moc`): the `type:` values that make a note a home.
+- `.fastcapture\capture.ini` (optional): `raw_folder` (default `raw`), `home_types` (default `topic, project, moc`): the `type:` values that make a note a home, and `repos`: the repos the notebook covers, by root folder or remote (`C:/Projects/Payments, github.com/acme/payments`), so coding agents find it.
 
 On this PC:
 
