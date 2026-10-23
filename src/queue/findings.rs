@@ -59,24 +59,43 @@ pub fn classify(text: &str) -> Option<Finding> {
     }
 }
 
-/// The settled notes in `root`'s capture folder that are findings and have no job yet get one,
-/// at `now` (milliseconds since 1970), stamped `captured` when the note doesn't say. Returns
-/// the jobs added, and whether a finding is still being written (so look again soon).
-pub fn adopt(store: &Store, root: &Path, now: u64, captured: &str) -> (Vec<Job>, bool) {
+/// Whether `a` and `b` name the same folder, whatever their case, separators or trailing
+/// separator.
+pub fn same_folder(a: &Path, b: &Path) -> bool {
+    let key = |path: &Path| {
+        path.to_string_lossy()
+            .replace('/', "\\")
+            .trim_end_matches('\\')
+            .to_lowercase()
+    };
+    key(a) == key(b)
+}
+
+/// The settled notes in `root`'s capture folder that are findings and have no job among `jobs`
+/// get one, added to `jobs` and `store`, at `now` (milliseconds since 1970), stamped `captured`
+/// when the note doesn't say. A job knows a note where it is now; a discarded finding's job
+/// keeps only the very file it recycled, should it be put back. Returns the jobs added, and
+/// whether a finding is still being written (so look again soon).
+pub fn adopt(
+    store: &Store,
+    jobs: &mut Vec<Job>,
+    root: &Path,
+    now: u64,
+    captured: &str,
+) -> (Vec<Job>, bool) {
     let folder = Conventions::load(root).capture_folder().to_path_buf();
     let Ok(entries) = std::fs::read_dir(root.join(&folder)) else {
         return (Vec::new(), false);
     };
-    let jobs = store.list();
     let key = |path: &Path| path.to_string_lossy().to_lowercase();
     let known: Vec<String> = jobs
         .iter()
-        .filter(|job| job.notebook == root)
-        .flat_map(|job| {
-            job.note
-                .iter()
-                .map(|note| key(&note.path))
-                .chain(job.finding.then(|| key(&job.raw)))
+        .filter(|job| same_folder(&job.notebook, root))
+        .filter_map(|job| {
+            let note = job.note.as_ref()?;
+            let recycled = job.finding && job.state == State::Discarded;
+            (!recycled || Stamp::of(&root.join(&note.path)) == Some(note.stamp))
+                .then(|| key(&note.path))
         })
         .collect();
     let mut added = Vec::new();
@@ -97,13 +116,15 @@ pub fn adopt(store: &Store, root: &Path, now: u64, captured: &str) -> (Vec<Job>,
         let Some(stamp) = Stamp::of(&absolute) else {
             continue;
         };
-        let Ok(text) = std::fs::read_to_string(&absolute) else {
+        let Some(text) = super::store::read_head(&absolute) else {
             continue;
         };
         let Some(finding) = classify(&text) else {
             continue;
         };
-        if now.saturating_sub(stamp.modified_ms) < SETTLE_MS {
+        // Either way: a time far ahead of the clock (a note synced from a PC whose clock runs
+        // fast) doesn't hold it back for good.
+        if now.abs_diff(stamp.modified_ms) < SETTLE_MS {
             settling = true;
             continue;
         }
@@ -126,7 +147,10 @@ pub fn adopt(store: &Store, root: &Path, now: u64, captured: &str) -> (Vec<Job>,
             }
         }
         match store.put(&job) {
-            Ok(()) => added.push(job),
+            Ok(()) => {
+                jobs.push(job.clone());
+                added.push(job);
+            }
             Err(error) => crate::log::line(&format!("queue: {error}")),
         }
     }
@@ -198,6 +222,23 @@ mod tests {
         assert_eq!(classify("---\ntitle: never closed\n"), None);
     }
 
+    impl Temp {
+        /// Looks in the notebook, spelled `root`, at `now`, with the queue as it is.
+        fn look_in(&self, root: &Path, now: u64) -> (Vec<Job>, bool) {
+            let store = self.store();
+            let mut jobs = store.list();
+            adopt(&store, &mut jobs, root, now, "2026-10-23T15:00")
+        }
+
+        fn look(&self, now: u64) -> (Vec<Job>, bool) {
+            self.look_in(&self.notebook(), now)
+        }
+
+        fn stamp(&self, name: &str) -> Stamp {
+            Stamp::of(&self.notebook().join("inbox").join(name)).unwrap()
+        }
+    }
+
     #[test]
     fn a_settled_finding_gets_one_job_and_an_unreadable_one_a_failed_job() {
         let temp = Temp::new("adopt");
@@ -207,8 +248,7 @@ mod tests {
             "Plain.md",
             "---\ntype: capture\nstatus: inbox\n---\n# Plain\n",
         );
-        let store = temp.store();
-        let (added, settling) = adopt(&store, &temp.notebook(), LATER, "2026-10-23T15:00");
+        let (added, settling) = temp.look(LATER);
         assert!(!settling);
         let summary: Vec<(String, State, String)> = added
             .iter()
@@ -252,39 +292,78 @@ mod tests {
             std::fs::read_to_string(temp.notebook().join(r"inbox\Lag.md")).unwrap(),
             FINDING
         );
-        // A second look adds nothing.
-        let (again, _) = adopt(&store, &temp.notebook(), LATER, "2026-10-23T15:01");
-        assert!(again.is_empty());
-        assert_eq!(store.list().len(), 2);
+        // A second look adds nothing, nor does the notebook spelled another way.
+        assert!(temp.look(LATER).0.is_empty());
+        let shouted = PathBuf::from(format!(
+            "{}\\",
+            temp.notebook().to_string_lossy().to_uppercase()
+        ));
+        assert!(temp.look_in(&shouted, LATER).0.is_empty());
+        assert_eq!(temp.store().list().len(), 2);
     }
 
     #[test]
-    fn a_finding_still_being_written_waits() {
+    fn one_look_at_two_spellings_of_a_notebook_adopts_once() {
+        let temp = Temp::new("spellings");
+        temp.write("Lag.md", FINDING);
+        let store = temp.store();
+        let mut jobs = store.list();
+        let shouted = PathBuf::from(temp.notebook().to_string_lossy().to_uppercase());
+        let (first, _) = adopt(&store, &mut jobs, &temp.notebook(), LATER, "x");
+        let (second, _) = adopt(&store, &mut jobs, &shouted, LATER, "x");
+        assert_eq!((first.len(), second.len()), (1, 0));
+    }
+
+    #[test]
+    fn a_finding_still_being_written_waits_but_one_from_the_future_doesnt() {
         let temp = Temp::new("settling");
         temp.write("Lag.md", FINDING);
-        let written = Stamp::of(&temp.notebook().join(r"inbox\Lag.md"))
-            .unwrap()
-            .modified_ms;
-        let store = temp.store();
-        let (added, settling) = adopt(&store, &temp.notebook(), written + 500, "x");
+        let written = temp.stamp("Lag.md").modified_ms;
+        let (added, settling) = temp.look(written + 500);
         assert!(added.is_empty() && settling);
-        let (added, settling) = adopt(&store, &temp.notebook(), written + SETTLE_MS, "x");
-        assert_eq!(added.len(), 1);
+        let (added, settling) = temp.look(written - 500);
+        assert!(added.is_empty() && settling, "a clock a little behind");
+        let (added, settling) = temp.look(written - 3_600_000);
+        assert_eq!(added.len(), 1, "written an hour ahead of this clock");
         assert!(!settling);
     }
 
     #[test]
-    fn a_finding_whose_job_moved_it_is_not_adopted_again() {
-        let temp = Temp::new("known");
+    fn a_new_finding_named_like_a_filed_one_is_adopted() {
+        let temp = Temp::new("filed");
         temp.write("Lag.md", FINDING);
-        let store = temp.store();
-        let (added, _) = adopt(&store, &temp.notebook(), LATER, "x");
-        // Filed elsewhere, then put back by hand under the name its job knows.
+        let (added, _) = temp.look(LATER);
+        // Filed: the note moved, and its job with it.
+        let filed = temp.notebook().join(r"Payments\Lag.md");
+        std::fs::create_dir_all(filed.parent().unwrap()).unwrap();
+        std::fs::rename(temp.notebook().join(r"inbox\Lag.md"), &filed).unwrap();
         let mut job = added[0].clone();
-        job.note = None;
+        job.state = State::Done;
+        job.note = Some(Written {
+            path: PathBuf::from(r"Payments\Lag.md"),
+            stamp: Stamp::of(&filed).unwrap(),
+        });
+        temp.store().put(&job).unwrap();
+        // Weeks later, a finding with the same title.
+        temp.write("Lag.md", &FINDING.replace("worse.", "worse again."));
+        let (again, _) = temp.look(LATER);
+        assert_eq!(again.len(), 1);
+        assert_ne!(again[0].capture_id, job.capture_id);
+    }
+
+    #[test]
+    fn a_discarded_finding_put_back_stays_discarded_but_a_new_one_by_its_name_is_adopted() {
+        let temp = Temp::new("discarded");
+        temp.write("Lag.md", FINDING);
+        let (added, _) = temp.look(LATER);
+        let mut job = added[0].clone();
         job.state = State::Discarded;
-        store.put(&job).unwrap();
-        let (again, _) = adopt(&store, &temp.notebook(), LATER, "x");
-        assert!(again.is_empty());
+        temp.store().put(&job).unwrap();
+        // The very file, back from the Recycle Bin.
+        assert!(temp.look(LATER).0.is_empty());
+        // Another finding under the same name.
+        temp.write("Lag.md", &FINDING.replace("worse.", "much worse."));
+        assert_ne!(Some(temp.stamp("Lag.md")), job.note.map(|note| note.stamp));
+        assert_eq!(temp.look(LATER).0.len(), 1);
     }
 }

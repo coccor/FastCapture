@@ -265,7 +265,7 @@ fn strip_comment(value: &str) -> &str {
     }
 }
 
-/// A value as YAML means it: `"text"` without its quotes and escapes (`\"`, `\\`, `\n`, …),
+/// A value as it was meant: `"text"` without its quotes and the escapes `\"`, `\\` and `\/`,
 /// `'text'` without its quotes and with `''` as `'`, anything else as it is.
 fn unescape(value: &str) -> String {
     if value.len() >= 2 && value.starts_with('\'') && value.ends_with('\'') {
@@ -281,12 +281,14 @@ fn unescape(value: &str) -> String {
             text.push(c);
             continue;
         }
+        // Only the escapes FastCapture writes: a lone backslash, as in a Windows path someone
+        // typed (`C:\Projects\new`), stays as it is.
         match chars.next() {
-            Some('n') => text.push('\n'),
-            Some('t') => text.push('\t'),
-            Some('r') => text.push('\r'),
-            Some('0') => text.push('\0'),
-            Some(other) => text.push(other),
+            Some(escaped @ ('"' | '\\' | '/')) => text.push(escaped),
+            Some(other) => {
+                text.push('\\');
+                text.push(other);
+            }
             None => text.push('\\'),
         }
     }
@@ -381,6 +383,8 @@ mod tests {
             r#"tags: ["say \"hi\", then go", b]"#,
             "\n",
             r"plain: C:\Users",
+            "\n",
+            r#"typed: "Fails under C:\Projects\new\tests and caf\u00e9\0""#,
             "\n---\n",
         ))
         .unwrap();
@@ -402,6 +406,10 @@ mod tests {
             Some(&list(&[r#"say "hi", then go"#, "b"]))
         );
         assert_eq!(front.get("plain"), Some(&text(r"C:\Users")));
+        assert_eq!(
+            front.get("typed"),
+            Some(&text(r"Fails under C:\Projects\new\tests and caf\u00e9\0"))
+        );
     }
 
     #[test]

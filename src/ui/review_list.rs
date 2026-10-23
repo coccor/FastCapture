@@ -120,6 +120,10 @@ pub fn rows(
     let mut rows = Vec::new();
     let mut gone = Vec::new();
     for job in jobs {
+        // A discarded finding's note is in the Recycle Bin; its job stays, unlisted, to know it.
+        if job.finding && job.state == State::Discarded {
+            continue;
+        }
         let source = match (&job.note, job.finding) {
             (Some(note), true) => &note.path,
             _ => &job.raw,

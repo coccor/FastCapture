@@ -124,7 +124,10 @@ impl Factory for FromSettings {
             .into_iter()
             .chain(settings.recent_notebooks)
         {
-            if !notebooks.contains(&notebook) {
+            if !notebooks
+                .iter()
+                .any(|known| crate::queue::findings::same_folder(known, &notebook))
+            {
                 notebooks.push(notebook);
             }
         }

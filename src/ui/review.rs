@@ -873,7 +873,11 @@ fn discard_selected(hwnd: HWND) {
     if let Some(job) = store.get(&row.capture_id) {
         let mut discarded = job.clone();
         discarded.state = State::Discarded;
-        discarded.note = None;
+        // A finding's job keeps the note it recycled, so that very file, put back, isn't
+        // taken for a new finding.
+        if !discarded.finding {
+            discarded.note = None;
+        }
         discarded.regenerate = false;
         save_job(&store, &discarded);
         if let Ok(undo) = before {
@@ -1771,6 +1775,18 @@ mod tests {
         assert!(notebook.join(&path).exists());
         assert_eq!(titles(hwnd), ["Lag"]);
 
+        // Del recycles it, and its job stays to say so; Ctrl+Z brings both back.
+        select_titled(hwnd, "Lag");
+        discard_selected(hwnd);
+        assert!(!notebook.join(&path).exists());
+        assert!(titles(hwnd).is_empty());
+        let discarded = store.get("FINDING1").unwrap();
+        assert_eq!(discarded.state, State::Discarded);
+        assert_eq!(discarded.note.unwrap().path, path);
+        undo_last(hwnd);
+        assert!(notebook.join(&path).exists());
+        assert_eq!(titles(hwnd), ["Lag"]);
+
         // R places it again without asking, even after an edit: its words aren't replaced.
         std::fs::write(
             notebook.join(&path),
@@ -1784,8 +1800,9 @@ mod tests {
 
         // Shift+Del recycles the note alone.
         select_titled(hwnd, "Lag");
+        let before = seen.borrow().recycled.len();
         recycle_selected(hwnd);
-        assert_eq!(seen.borrow().recycled, [notebook.join(&path)]);
+        assert_eq!(seen.borrow().recycled[before..], [notebook.join(&path)]);
         assert!(store.get("FINDING1").is_none());
         assert!(notebook.join(r"Payments\Incidents\Earlier.md").exists());
 

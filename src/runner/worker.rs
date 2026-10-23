@@ -13,7 +13,7 @@ use crate::queue::findings;
 use crate::queue::{State, Store};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Condvar, Mutex};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 /// The longest the worker sleeps without a reason, in case a job arrived some other way.
 const IDLE_CHECK: Duration = Duration::from_secs(60);
@@ -227,6 +227,8 @@ fn run(
     changed: &dyn Fn(),
 ) {
     let mut backend: Option<Box<dyn Backend>> = None;
+    let mut scanned: Option<Instant> = None;
+    let mut settling = false;
     loop {
         let (stop, rebuild, paused, paused_until) = match shared.signals.lock() {
             Ok(mut signals) => {
@@ -256,7 +258,11 @@ fn run(
         if rebuild {
             backend = None;
         }
-        let settling = adopt_findings(store, factory, changed);
+        // At most every few seconds, not between every two jobs.
+        if scanned.is_none_or(|at| at.elapsed() >= SETTLE_CHECK) {
+            settling = adopt_findings(store, factory, changed);
+            scanned = Some(Instant::now());
+        }
         let idle = if settling { SETTLE_CHECK } else { IDLE_CHECK };
         if let Some(reason) = paused {
             set_status(shared, Status::Paused(reason), changed);
@@ -364,16 +370,17 @@ fn adopt_findings(store: &Store, factory: &dyn Factory, changed: &dyn Fn()) -> b
     let now = process::now_ms();
     let mut settling = false;
     let mut added = 0;
+    let mut jobs = store.list();
     for notebook in factory.notebooks() {
-        let (jobs, waiting) = findings::adopt(store, &notebook, now, &captured);
-        for job in &jobs {
+        let (new, waiting) = findings::adopt(store, &mut jobs, &notebook, now, &captured);
+        for job in &new {
             crate::log::line(&format!(
                 "queue: finding {} in {}",
                 job.raw.display(),
                 notebook.display()
             ));
         }
-        added += jobs.len();
+        added += new.len();
         settling |= waiting;
     }
     if added > 0 {

@@ -54,19 +54,21 @@ pub fn set_status(text: &str, status: &str) -> Option<String> {
 }
 
 /// `text` with `suggested_home: <home>` (`home` already quoted) in place of any earlier one,
-/// just before `status:`, or the closing `---` when there is none. `None` when the note has no
-/// front matter.
-pub fn set_suggested_home(text: &str, home: &str) -> Option<String> {
+/// just before `status:`, or the closing `---` when there is none; with no `home`, without
+/// one. `None` when the note has no front matter.
+pub fn set_suggested_home(text: &str, home: Option<&str>) -> Option<String> {
     let front = frontmatter::parse(text)?;
     let head = &text[..front.body_start];
-    let mut output = String::with_capacity(text.len() + home.len() + 20);
+    let mut output = String::with_capacity(text.len() + 40);
     let lines: Vec<&str> = head.split_inclusive('\n').collect();
     let newline = if lines.first().is_some_and(|line| line.ends_with("\r\n")) {
         "\r\n"
     } else {
         "\n"
     };
-    let line = format!("suggested_home: {home}{newline}");
+    let line = home.map_or_else(String::new, |home| {
+        format!("suggested_home: {home}{newline}")
+    });
     let mut written = false;
     let mut skipping = false;
     for (index, current) in lines.iter().enumerate() {
@@ -154,20 +156,24 @@ mod tests {
     #[test]
     fn a_suggested_home_goes_before_the_status_and_replaces_the_last_one() {
         let note = "---\r\ntype: finding\r\nstatus: inbox\r\n---\r\n\r\n# Lag\r\n";
-        let placed = set_suggested_home(note, "\"[[Payments incidents]]\"").unwrap();
+        let placed = set_suggested_home(note, Some("\"[[Payments incidents]]\"")).unwrap();
         assert_eq!(
             placed,
             "---\r\ntype: finding\r\nsuggested_home: \"[[Payments incidents]]\"\r\nstatus: inbox\r\n---\r\n\r\n# Lag\r\n"
         );
         assert_eq!(
-            set_suggested_home(&placed, "\"Payments/\"").unwrap(),
+            set_suggested_home(&placed, Some("\"Payments/\"")).unwrap(),
             "---\r\ntype: finding\r\nsuggested_home: \"Payments/\"\r\nstatus: inbox\r\n---\r\n\r\n# Lag\r\n"
         );
+        assert_eq!(set_suggested_home(&placed, None).unwrap(), note);
         assert_eq!(
-            set_suggested_home("---\ntype: finding\n---\nBody", "\"Payments/\"").unwrap(),
+            set_suggested_home("---\ntype: finding\n---\nBody", Some("\"Payments/\"")).unwrap(),
             "---\ntype: finding\nsuggested_home: \"Payments/\"\n---\nBody"
         );
-        assert_eq!(set_suggested_home("# No front matter\n", "\"x\""), None);
+        assert_eq!(
+            set_suggested_home("# No front matter\n", Some("\"x\"")),
+            None
+        );
     }
 
     #[test]

@@ -3,16 +3,18 @@
 //! the inbox (you filed or kept it meanwhile) is left as it is.
 
 use super::reply::{HOME_FOLDER, NoteJson};
-use super::write::{ReplaceError, Stamp, Written};
+use super::write::{self, ReplaceError, Stamp, Written};
 use crate::file::front;
-use crate::platform::saver;
+use crate::notebook::frontmatter;
 use crate::queue::findings::{self, Finding};
 use std::path::Path;
 
-/// `text` with a `- [[name]]` line under `## Related` for each of `names` it doesn't link yet:
-/// after the section's last line when it has one, else in a new section at the end.
+/// `text` with a `- [[name]]` line under `## Related` for each of `names` its body doesn't link
+/// yet (a link in the front matter, such as its `suggested_home:`, doesn't count): after the
+/// section's last line when it has one, else in a new section at the end.
 pub fn add_related(text: &str, names: &[String]) -> String {
-    let lower = text.to_lowercase();
+    let body_start = frontmatter::parse(text).map_or(0, |front| front.body_start);
+    let lower = text[body_start..].to_lowercase();
     let mut missing: Vec<&String> = Vec::new();
     for name in names {
         let target = format!("[[{}", name.to_lowercase());
@@ -67,27 +69,20 @@ pub fn add_related(text: &str, names: &[String]) -> String {
     output
 }
 
-/// Places the finding at `path` (relative to `root`) with `note`'s home and links (new notes
-/// aren't linked). Returns the note as it is after. `Edited` when it changed while being
-/// placed, so it can be tried again.
+/// Places the finding at `path` (relative to `root`) with `note`'s home, or without one when it
+/// has none, and its links (new notes aren't linked). Returns the note as it is after. `Edited`
+/// when it changed while being placed, so it can be tried again.
 pub fn place(root: &Path, path: &Path, note: &NoteJson) -> Result<Written, ReplaceError> {
     let absolute = root.join(path);
-    let read = || {
-        let stamp = Stamp::of(&absolute);
-        let text = std::fs::read_to_string(&absolute);
-        match (stamp, text) {
-            (Some(stamp), Ok(text)) => Ok((stamp, text)),
-            (_, Err(error)) => Err(ReplaceError::Failed(format!(
-                "FastCapture could not read {}: {error}",
-                absolute.display()
-            ))),
-            (None, Ok(_)) => Err(ReplaceError::Failed(format!(
-                "{} vanished while being read",
-                absolute.display()
-            ))),
-        }
+    let unreadable = |error: String| {
+        ReplaceError::Failed(format!(
+            "FastCapture could not read {}: {error}",
+            absolute.display()
+        ))
     };
-    let (stamp, text) = read()?;
+    // The stamp first: a change while reading then shows when the note is replaced.
+    let stamp = Stamp::of(&absolute).ok_or_else(|| unreadable("it is gone".to_owned()))?;
+    let text = std::fs::read_to_string(&absolute).map_err(|error| unreadable(error.to_string()))?;
     let unchanged = Written {
         path: path.to_path_buf(),
         stamp,
@@ -95,45 +90,26 @@ pub fn place(root: &Path, path: &Path, note: &NoteJson) -> Result<Written, Repla
     if !matches!(findings::classify(&text), Some(Finding::Ready { .. })) {
         return Ok(unchanged);
     }
-    let mut placed = text.clone();
-    if let Some(home) = &note.home {
+    let home = note.home.as_ref().map(|home| {
         let value = if home.kind == HOME_FOLDER {
             home.note.clone()
         } else {
             format!("[[{}]]", home.note)
         };
-        if let Some(with_home) =
-            front::set_suggested_home(&placed, &crate::capture::raw::quoted(&value))
-        {
-            placed = with_home;
-        }
-    }
+        crate::capture::raw::quoted(&value)
+    });
+    let placed = front::set_suggested_home(&text, home.as_deref()).unwrap_or_else(|| text.clone());
     let links: Vec<String> = note
         .links
         .iter()
         .filter(|link| !link.new)
         .map(|link| link.note.clone())
         .collect();
-    placed = add_related(&placed, &links);
+    let placed = add_related(&placed, &links);
     if placed == text {
         return Ok(unchanged);
     }
-    if Stamp::of(&absolute) != Some(stamp) {
-        return Err(ReplaceError::Edited);
-    }
-    saver::save_atomic(&absolute, placed.as_bytes()).map_err(|error| {
-        ReplaceError::Failed(format!(
-            "FastCapture could not save {}: {error}",
-            absolute.display()
-        ))
-    })?;
-    let stamp = Stamp::of(&absolute).ok_or_else(|| {
-        ReplaceError::Failed(format!("{} vanished after writing", absolute.display()))
-    })?;
-    Ok(Written {
-        path: path.to_path_buf(),
-        stamp,
-    })
+    write::replace(root, &unchanged, &placed)
 }
 
 #[cfg(test)]
@@ -221,6 +197,33 @@ mod tests {
         assert_eq!(
             std::fs::read_to_string(temp.0.join(r"inbox\Lag.md")).unwrap(),
             "---\ntype: finding\nauthor: claude-code\nsuggested_home: \"[[Payments incidents]]\"\nstatus: inbox\n---\n\n# Lag\n\nWhat we tried.\n\n## Related\n\n- [[Ledger batch]]\n"
+        );
+    }
+
+    #[test]
+    fn the_home_topic_is_linked_too_and_placing_again_without_a_home_clears_it() {
+        let text = "---\ntype: finding\nstatus: inbox\n---\n\n# Lag\n";
+        let temp = temp("home-link", text);
+        let path = Path::new(r"inbox\Lag.md");
+        let mut note = reply();
+        note.links.insert(
+            0,
+            Link {
+                note: "Payments incidents".to_owned(),
+                new: false,
+            },
+        );
+        place(&temp.0, path, &note).unwrap();
+        assert_eq!(
+            std::fs::read_to_string(temp.0.join(path)).unwrap(),
+            "---\ntype: finding\nsuggested_home: \"[[Payments incidents]]\"\nstatus: inbox\n---\n\n# Lag\n\n## Related\n\n- [[Payments incidents]]\n- [[Ledger batch]]\n"
+        );
+        // Placed again, the model no longer sees a home: the old one goes, the links stay.
+        note.home = None;
+        place(&temp.0, path, &note).unwrap();
+        assert_eq!(
+            std::fs::read_to_string(temp.0.join(path)).unwrap(),
+            "---\ntype: finding\nstatus: inbox\n---\n\n# Lag\n\n## Related\n\n- [[Payments incidents]]\n- [[Ledger batch]]\n"
         );
     }
 

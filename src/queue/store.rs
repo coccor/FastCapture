@@ -201,7 +201,7 @@ pub fn raw_sources(root: &Path, raw_folder: &Path) -> Vec<RawFound> {
 }
 
 /// The first 16 KB of a file as text, enough for its front matter.
-fn read_head(path: &Path) -> Option<String> {
+pub(super) fn read_head(path: &Path) -> Option<String> {
     use std::io::Read;
     let mut bytes = Vec::new();
     std::fs::File::open(path)

@@ -242,11 +242,7 @@ pub fn build_with(job: &Job, today: &str, index: Option<&Snapshot>) -> Result<No
         .map(|index| related(index, &query, &conventions, own_note))
         .unwrap_or_default();
 
-    let notebook_name = job
-        .notebook
-        .file_name()
-        .map(|name| name.to_string_lossy().into_owned())
-        .unwrap_or_else(|| job.notebook.display().to_string());
+    let notebook_name = notebook_name(&job.notebook);
     let user_text = prompt::user_turn(&Turn {
         today,
         notebook: &notebook_name,
@@ -285,17 +281,8 @@ pub fn build_with(job: &Job, today: &str, index: Option<&Snapshot>) -> Result<No
             fallback_title,
             links: source_links,
             truncated: budget.truncated().to_vec(),
-            candidates: related
-                .candidates
-                .iter()
-                .map(|candidate| candidate.name.clone())
-                .collect(),
-            home_notes: related
-                .candidates
-                .iter()
-                .filter(|candidate| candidate.home)
-                .map(|candidate| candidate.name.clone())
-                .collect(),
+            candidates: related.names(),
+            home_notes: related.home_names(),
             home_folders: related.home_folders,
         },
     })
@@ -343,11 +330,7 @@ pub fn build_placing(
     if note.len() < text.len() {
         note.push_str("\n…");
     }
-    let notebook_name = job
-        .notebook
-        .file_name()
-        .map(|name| name.to_string_lossy().into_owned())
-        .unwrap_or_else(|| job.notebook.display().to_string());
+    let notebook_name = notebook_name(&job.notebook);
     let user_text = prompt::placing_turn(&prompt::Placing {
         today,
         notebook: &notebook_name,
@@ -370,17 +353,8 @@ pub fn build_placing(
             fallback_title: title,
             links: Vec::new(),
             truncated: Vec::new(),
-            candidates: related
-                .candidates
-                .iter()
-                .map(|candidate| candidate.name.clone())
-                .collect(),
-            home_notes: related
-                .candidates
-                .iter()
-                .filter(|candidate| candidate.home)
-                .map(|candidate| candidate.name.clone())
-                .collect(),
+            candidates: related.names(),
+            home_notes: related.home_names(),
             home_folders: related.home_folders,
         },
     })
@@ -392,6 +366,33 @@ struct Related {
     candidates: Vec<Candidate>,
     home_folders: Vec<String>,
     tags: Vec<String>,
+}
+
+impl Related {
+    /// The candidates' names: what a reply may link to.
+    fn names(&self) -> Vec<String> {
+        self.candidates
+            .iter()
+            .map(|candidate| candidate.name.clone())
+            .collect()
+    }
+
+    /// The names of the candidates that are home notes: what a reply may file it under.
+    fn home_names(&self) -> Vec<String> {
+        self.candidates
+            .iter()
+            .filter(|candidate| candidate.home)
+            .map(|candidate| candidate.name.clone())
+            .collect()
+    }
+}
+
+/// The notebook's name, as the model is told it: its folder's name.
+fn notebook_name(notebook: &Path) -> String {
+    notebook
+        .file_name()
+        .map(|name| name.to_string_lossy().into_owned())
+        .unwrap_or_else(|| notebook.display().to_string())
 }
 
 /// The best matches for `query` in `index`, never `own_note` (the capture's note, when it is
