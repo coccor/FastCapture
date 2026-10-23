@@ -564,6 +564,8 @@ fn main() {
             notebook: std::path::PathBuf::from(r"C:\Notes"),
             draft_dir: None,
             source_window: Some("Grafana".to_owned()),
+            settings: None,
+            autocorrect: true,
         });
     } else if std::env::args().nth(2).as_deref() == Some("home") {
         let option = |label: &str, detail: &str| fastcapture::file::home::HomeOption {

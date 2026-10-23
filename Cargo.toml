@@ -1,6 +1,6 @@
 [package]
 name = "fastcapture"
-version = "0.1.1"
+version = "0.1.2"
 edition = "2024"
 description = "Capture anything on Windows and turn it into well-written Markdown notes."
 license = "MIT"
@@ -17,6 +17,7 @@ windows = { version = "=0.62.2", default-features = false, features = [
     "Storage",
     "Storage_Streams",
     "Win32_Foundation",
+    "Win32_Globalization",
     "Win32_Graphics_Imaging",
     "Win32_System_Com",
     "Win32_System_Com_StructuredStorage",

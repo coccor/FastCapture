@@ -3,12 +3,13 @@
 //! paste images, snip and pick a notebook. It files nothing itself: a `Sink` does. The first
 //! half of the file is pure layout and key logic.
 //!
-//! Changes from FastPad's box: the title names the notebook and the mode, not a target; the
-//! footer names what was detected ("Screenshot + file"); Ctrl+N picks a notebook for this
-//! capture instead of cycling targets; there is no Ctrl+Shift+Enter (FastCapture has no editor
+//! Changes from FastPad's box: the title names the notebook, not a target, in a selector that
+//! (like Ctrl+N) picks a notebook or any folder for this capture instead of cycling targets; the
+//! footer names what was detected ("Screenshot + file"); there is no Ctrl+Shift+Enter (FastCapture has no editor
 //! to open); files arrive through `WM_DROPFILES` rather than an OLE drop target; and the 20 MB
 //! question is a message box.
 
+use super::autocorrect::{self, Correction};
 use super::controls;
 use super::frame;
 use super::theme::ramp::{self, TextStyle};
@@ -16,6 +17,7 @@ use super::theme::{self, Palette, scale};
 use crate::capture::detect;
 use crate::capture::file::LARGE_FILE_BYTES;
 use crate::capture::{Attachment, Capture, draft};
+use crate::config::settings::SettingsFile;
 use std::path::{Path, PathBuf};
 use windows_sys::Win32::Foundation::{
     ERROR_CLASS_ALREADY_EXISTS, GetLastError, HWND, LPARAM, LRESULT, POINT, RECT, WPARAM,
@@ -25,14 +27,16 @@ use windows_sys::Win32::Graphics::Gdi::{
     BeginPaint, CreateSolidBrush, DT_CALCRECT, DT_CENTER, DT_END_ELLIPSIS, DT_LEFT, DT_NOPREFIX,
     DT_RIGHT, DT_SINGLELINE, DT_VCENTER, DeleteObject, DrawTextW, EndPaint, FillRect, FrameRect,
     GetDC, GetMonitorInfoW, HBRUSH, HDC, HFONT, InvalidateRect, MONITOR_DEFAULTTONEAREST,
-    MONITORINFO, MonitorFromPoint, PAINTSTRUCT, ReleaseDC, ScreenToClient, SelectObject,
-    SetBkColor, SetBkMode, SetTextColor, TRANSPARENT,
+    MONITORINFO, MonitorFromPoint, MonitorFromWindow, PAINTSTRUCT, ReleaseDC, ScreenToClient,
+    SelectObject, SetBkColor, SetBkMode, SetTextColor, TRANSPARENT,
 };
 use windows_sys::Win32::System::DataExchange::{
     AddClipboardFormatListener, RemoveClipboardFormatListener,
 };
 use windows_sys::Win32::System::LibraryLoader::GetModuleHandleW;
-use windows_sys::Win32::UI::Controls::{EM_REPLACESEL, EM_SETSEL, MARGINS};
+use windows_sys::Win32::UI::Controls::{
+    EM_GETSEL, EM_REPLACESEL, EM_SETMARGINS, EM_SETSEL, MARGINS,
+};
 use windows_sys::Win32::UI::HiDpi::GetDpiForWindow;
 use windows_sys::Win32::UI::Input::KeyboardAndMouse::{
     GetFocus, GetKeyState, SetFocus, VK_BACK, VK_CONTROL, VK_DELETE, VK_ESCAPE, VK_LEFT, VK_MENU,
@@ -42,22 +46,34 @@ use windows_sys::Win32::UI::Shell::{
     DefSubclassProc, DragAcceptFiles, DragFinish, HDROP, RemoveWindowSubclass, SetWindowSubclass,
 };
 use windows_sys::Win32::UI::WindowsAndMessaging::{
-    CreateWindowExW, DefWindowProcW, DestroyWindow, ES_AUTOVSCROLL, ES_MULTILINE, ES_WANTRETURN,
-    FindWindowW, GWLP_USERDATA, GetCursorPos, GetForegroundWindow, GetWindowLongPtrW,
-    GetWindowRect, GetWindowTextLengthW, GetWindowTextW, HTCAPTION, HTCLIENT, IDC_ARROW, IsWindow,
-    KillTimer, LoadCursorW, RegisterClassW, SW_HIDE, SW_SHOW, SWP_NOACTIVATE, SWP_NOZORDER,
-    SendMessageW, SetForegroundWindow, SetTimer, SetWindowLongPtrW, SetWindowPos, SetWindowTextW,
-    ShowWindow, WM_APP, WM_CHAR, WM_CLIPBOARDUPDATE, WM_CLOSE, WM_CTLCOLOREDIT, WM_DESTROY,
-    WM_DROPFILES, WM_ERASEBKGND, WM_KEYDOWN, WM_LBUTTONDOWN, WM_NCCALCSIZE, WM_NCDESTROY,
-    WM_NCHITTEST, WM_PAINT, WM_PASTE, WM_SETFOCUS, WM_SETFONT, WM_TIMER, WNDCLASSW, WS_CAPTION,
-    WS_CHILD, WS_CLIPCHILDREN, WS_EX_ACCEPTFILES, WS_EX_TOPMOST, WS_POPUP, WS_TABSTOP, WS_VISIBLE,
-    WS_VSCROLL,
+    CreateWindowExW, DefWindowProcW, DestroyWindow, EC_LEFTMARGIN, EC_RIGHTMARGIN, ES_AUTOVSCROLL,
+    ES_MULTILINE, ES_WANTRETURN, FindWindowW, GWLP_USERDATA, GetClientRect, GetCursorPos,
+    GetForegroundWindow, GetWindowLongPtrW, GetWindowRect, GetWindowTextLengthW, GetWindowTextW,
+    HTCAPTION, HTCLIENT, IDC_ARROW, IsWindow, KillTimer, LoadCursorW, MINMAXINFO, RegisterClassW,
+    SW_HIDE, SW_SHOW, SWP_NOACTIVATE, SWP_NOZORDER, SendMessageW, SetForegroundWindow, SetTimer,
+    SetWindowLongPtrW, SetWindowPos, SetWindowTextW, ShowWindow, WM_APP, WM_CHAR,
+    WM_CLIPBOARDUPDATE, WM_CLOSE, WM_CTLCOLOREDIT, WM_DESTROY, WM_DPICHANGED, WM_DROPFILES,
+    WM_ENTERSIZEMOVE, WM_ERASEBKGND, WM_EXITSIZEMOVE, WM_GETMINMAXINFO, WM_KEYDOWN, WM_LBUTTONDOWN,
+    WM_NCCALCSIZE, WM_NCDESTROY, WM_NCHITTEST, WM_PAINT, WM_PASTE, WM_SETFOCUS, WM_SETFONT,
+    WM_SIZE, WM_TIMER, WNDCLASSW, WS_CAPTION, WS_CHILD, WS_CLIPCHILDREN, WS_EX_ACCEPTFILES,
+    WS_EX_TOPMOST, WS_POPUP, WS_TABSTOP, WS_VISIBLE, WS_VSCROLL,
 };
 
-const WIDTH_AT_96_DPI: i32 = 520;
+/// The box's size when it has none saved, and the smallest it can be made.
+pub const DEFAULT_SIZE_AT_96_DPI: (i32, i32) = (720, 420);
+pub const MIN_SIZE_AT_96_DPI: (i32, i32) = (420, 240);
 const PAD_AT_96_DPI: i32 = 12;
 const TITLE_AT_96_DPI: i32 = 34;
-const EDIT_AT_96_DPI: i32 = 92;
+/// The notebook selector: its gap above and below in the title band, the room before its text
+/// and the room its chevron takes.
+const SELECTOR_INSET_AT_96_DPI: i32 = 4;
+const SELECTOR_TEXT_AT_96_DPI: i32 = 8;
+const SELECTOR_CHEVRON_AT_96_DPI: i32 = 26;
+/// The edit never gets shorter than this, about two lines.
+const EDIT_FLOOR_AT_96_DPI: i32 = 40;
+/// Room above the edit's first line, and the edit's inner margins left and right.
+const EDIT_TOP_GAP_AT_96_DPI: i32 = 6;
+const EDIT_MARGIN_AT_96_DPI: i32 = 8;
 const CHIP_HEIGHT_AT_96_DPI: i32 = 30;
 const CHIP_GAP_AT_96_DPI: i32 = 8;
 const CHIP_MAX_AT_96_DPI: i32 = 220;
@@ -129,6 +145,8 @@ pub struct Layout {
     pub width: i32,
     pub height: i32,
     pub title: RECT,
+    /// The notebook selector in the title band: click it (or Ctrl+N) for another notebook.
+    pub notebook: RECT,
     pub close: RECT,
     pub edit: RECT,
     /// One per attachment, wrapped onto as many rows as they need.
@@ -138,11 +156,24 @@ pub struct Layout {
     pub snip: RECT,
 }
 
-/// Lays the box out for chips `chip_widths` pixels wide (their text), with an error line or not.
-pub fn layout(dpi: u32, chip_widths: &[i32], has_error: bool, snip_width: i32) -> Layout {
+/// Lays the box out in a client area `size` big, for chips `chip_widths` pixels wide (their
+/// text), with an error line or not. `title_widths` are the title's "Capture →" and the
+/// notebook's name, whose selector follows the one and is cut short before the close button.
+/// The footer and error keep to the bottom, the chips sit above them, and the edit takes the
+/// rest, down to its floor; chips that don't fit then are left empty (`RECT::default()`).
+pub fn layout(
+    dpi: u32,
+    size: (i32, i32),
+    chip_widths: &[i32],
+    has_error: bool,
+    snip_width: i32,
+    title_widths: (i32, i32),
+) -> Layout {
     let s = |v: i32| scale(v, dpi);
-    let width = s(WIDTH_AT_96_DPI);
+    let (width, height) = size;
     let pad = s(PAD_AT_96_DPI);
+    let gap = s(CHIP_GAP_AT_96_DPI);
+    let chip_height = s(CHIP_HEIGHT_AT_96_DPI);
     let title = RECT {
         left: 0,
         top: 0,
@@ -153,48 +184,68 @@ pub fn layout(dpi: u32, chip_widths: &[i32], has_error: bool, snip_width: i32) -
         left: width - s(TITLE_AT_96_DPI),
         ..title
     };
-    let edit = RECT {
-        left: pad,
-        top: title.bottom,
-        right: width - pad,
-        bottom: title.bottom + s(EDIT_AT_96_DPI),
+    let (prefix, name) = title_widths;
+    let selector_left = (pad + prefix + s(6)).min(close.left);
+    let notebook = RECT {
+        left: selector_left,
+        top: s(SELECTOR_INSET_AT_96_DPI),
+        right: (selector_left + s(SELECTOR_TEXT_AT_96_DPI) + name + s(SELECTOR_CHEVRON_AT_96_DPI))
+            .min(close.left - s(4))
+            .max(selector_left),
+        bottom: title.bottom - s(SELECTOR_INSET_AT_96_DPI),
     };
-    let mut y = edit.bottom + s(CHIP_GAP_AT_96_DPI);
+    let footer = RECT {
+        left: pad,
+        top: height - s(4) - s(FOOTER_AT_96_DPI),
+        right: width - pad,
+        bottom: height - s(4),
+    };
+    let error = has_error.then(|| RECT {
+        left: pad,
+        top: footer.top - s(ERROR_AT_96_DPI),
+        right: width - pad,
+        bottom: footer.top,
+    });
+    let below = error.map_or(footer.top, |line| line.top);
+    // The chips wrapped into rows, at x and a row number.
     let mut x = pad;
-    let mut chips = Vec::new();
+    let mut row = 0;
+    let mut placed = Vec::new();
     for text in chip_widths {
         let chip = (text + s(CHIP_REMOVE_AT_96_DPI) + s(PAD_AT_96_DPI)).min(s(CHIP_MAX_AT_96_DPI));
         if x > pad && x + chip > width - pad {
             x = pad;
-            y += s(CHIP_HEIGHT_AT_96_DPI) + s(CHIP_GAP_AT_96_DPI);
+            row += 1;
         }
-        chips.push(RECT {
-            left: x,
-            top: y,
-            right: x + chip,
-            bottom: y + s(CHIP_HEIGHT_AT_96_DPI),
-        });
-        x += chip + s(CHIP_GAP_AT_96_DPI);
+        placed.push((x, chip, row));
+        x += chip + gap;
     }
-    if !chips.is_empty() {
-        y += s(CHIP_HEIGHT_AT_96_DPI) + s(CHIP_GAP_AT_96_DPI);
-    }
-    let error = has_error.then(|| {
-        let line = RECT {
-            left: pad,
-            top: y,
-            right: width - pad,
-            bottom: y + s(ERROR_AT_96_DPI),
-        };
-        y = line.bottom;
-        line
-    });
-    let footer = RECT {
+    let rows = if placed.is_empty() { 0 } else { row + 1 };
+    let strip = rows * (chip_height + gap);
+    let edit_top = title.bottom + s(EDIT_TOP_GAP_AT_96_DPI);
+    let edit_bottom = (below - strip - gap).max(edit_top + s(EDIT_FLOOR_AT_96_DPI));
+    let edit = RECT {
         left: pad,
-        top: y,
+        top: edit_top,
         right: width - pad,
-        bottom: y + s(FOOTER_AT_96_DPI),
+        bottom: edit_bottom,
     };
+    let chips = placed
+        .into_iter()
+        .map(|(x, chip, row)| {
+            let top = edit.bottom + gap + row * (chip_height + gap);
+            if top + chip_height > below {
+                RECT::default()
+            } else {
+                RECT {
+                    left: x,
+                    top,
+                    right: x + chip,
+                    bottom: top + chip_height,
+                }
+            }
+        })
+        .collect();
     let snip = RECT {
         left: pad,
         top: footer.top,
@@ -203,8 +254,9 @@ pub fn layout(dpi: u32, chip_widths: &[i32], has_error: bool, snip_width: i32) -
     };
     Layout {
         width,
-        height: footer.bottom + s(4),
+        height,
         title,
+        notebook,
         close,
         edit,
         chips,
@@ -214,9 +266,20 @@ pub fn layout(dpi: u32, chip_widths: &[i32], has_error: bool, snip_width: i32) -
     }
 }
 
-/// The title band: where the capture goes.
-pub fn title_text(notebook: &str) -> String {
-    format!("Capture \u{2192} {notebook}")
+/// The title band says where the capture goes: this, then the notebook selector.
+pub const TITLE_PREFIX: &str = "Capture \u{2192}";
+
+/// The notebook menu's last entry: any folder, through Windows' folder dialog.
+const OTHER_FOLDER_LABEL: &str = "&Other folder\u{2026}";
+
+/// What the notebook menu offers: the recent notebooks, with the current one first when it isn't
+/// among them.
+pub fn notebook_choices(current: &Path, recent: Vec<PathBuf>) -> Vec<PathBuf> {
+    let mut notebooks = recent;
+    if !notebooks.iter().any(|known| known == current) {
+        notebooks.insert(0, current.to_path_buf());
+    }
+    notebooks
 }
 
 /// The window's accessible name.
@@ -281,6 +344,14 @@ struct CaptureBox {
     /// The page the last rich text pasted came from.
     source_url: Option<String>,
     draft_dir: Option<PathBuf>,
+    settings: Option<PathBuf>,
+    /// The box's size when a move or resize began: only a new size is saved.
+    size_before_drag: Option<(i32, i32)>,
+    autocorrect: bool,
+    /// The typo autocorrect fixed last, for Ctrl+Z, until another key, click or paste.
+    last_fix: Option<Correction>,
+    /// The WM_CHAR of a Ctrl+Z that undid a fix must not undo in the edit too.
+    swallow_undo_char: bool,
     error: Option<String>,
     layout: Layout,
     snipping: bool,
@@ -337,6 +408,10 @@ pub struct Open {
     pub draft_dir: Option<PathBuf>,
     /// The window that was in front when the hotkey was pressed.
     pub source_window: Option<String>,
+    /// `fastcapture.ini`, where the box's size is kept; `None` keeps no size.
+    pub settings: Option<PathBuf>,
+    /// Fix common English typos as they are typed.
+    pub autocorrect: bool,
 }
 
 /// Opens the box centered on the monitor under the mouse, with the last draft. Returns the
@@ -394,6 +469,7 @@ pub fn open(options: Open) -> Option<HWND> {
     let title_font = ramp::font(TextStyle::Heading, dpi);
     unsafe {
         SendMessageW(edit, WM_SETFONT, body_font as usize, 0);
+        set_margins(edit, dpi);
         SetWindowSubclass(edit, Some(edit_proc), EDIT_HOOK, hwnd as usize);
         DragAcceptFiles(hwnd, 1);
     }
@@ -417,6 +493,11 @@ pub fn open(options: Open) -> Option<HWND> {
         source_window: options.source_window,
         source_url: restored.source_url,
         draft_dir: options.draft_dir,
+        settings: options.settings,
+        size_before_drag: None,
+        autocorrect: options.autocorrect,
+        last_fix: None,
+        swallow_undo_char: false,
         error: None,
         layout: Layout::default(),
         snipping: false,
@@ -426,8 +507,8 @@ pub fn open(options: Open) -> Option<HWND> {
     });
     unsafe { SetWindowLongPtrW(hwnd, GWLP_USERDATA, Box::into_raw(state) as isize) };
     set_edit_text(edit, &restored.text);
-    relayout(hwnd);
     place(hwnd, cursor);
+    relayout(hwnd);
     // Rounded and dark as the theme says; the 1 px frame extension keeps DWM's shadow on a
     // window without a border.
     frame::apply_theme(hwnd, &colors);
@@ -459,12 +540,12 @@ fn show(hwnd: HWND) {
     }
 }
 
-/// Centers the box on the work area of the monitor at `point`, a third of the way down.
+/// Sizes the box and centers it on the work area of the monitor at `point`, a third of the way
+/// down.
 fn place(hwnd: HWND, point: POINT) {
     let Some(capture) = state(hwnd) else {
         return;
     };
-    let (width, height) = (capture.layout.width, capture.layout.height);
     let mut monitor: MONITORINFO = unsafe { std::mem::zeroed() };
     monitor.cbSize = size_of::<MONITORINFO>() as u32;
     unsafe {
@@ -474,6 +555,7 @@ fn place(hwnd: HWND, point: POINT) {
         )
     };
     let work = monitor.rcWork;
+    let (width, height) = initial_size(saved_size(capture.settings.as_deref()), capture.dpi, work);
     let left = work.left + ((work.right - work.left) - width).max(0) / 2;
     let top = work.top + ((work.bottom - work.top) - height).max(0) / 3;
     unsafe {
@@ -487,6 +569,77 @@ fn place(hwnd: HWND, point: POINT) {
             SWP_NOZORDER | SWP_NOACTIVATE,
         )
     };
+}
+
+/// The size the box opens at: the saved one when it is at least the smallest the box can be,
+/// else the default, and never bigger than the work area `work`.
+pub fn initial_size(saved: Option<(i32, i32)>, dpi: u32, work: RECT) -> (i32, i32) {
+    let s = |v: i32| scale(v, dpi);
+    let (width, height) = saved
+        .filter(|&(width, height)| {
+            width >= s(MIN_SIZE_AT_96_DPI.0) && height >= s(MIN_SIZE_AT_96_DPI.1)
+        })
+        .unwrap_or((s(DEFAULT_SIZE_AT_96_DPI.0), s(DEFAULT_SIZE_AT_96_DPI.1)));
+    (
+        width.min(work.right - work.left),
+        height.min(work.bottom - work.top),
+    )
+}
+
+/// The box's last size, from `fastcapture.ini`, when both numbers are there.
+fn saved_size(settings: Option<&Path>) -> Option<(i32, i32)> {
+    let file = SettingsFile::load(settings?);
+    let number = |key: &str| file.value(key)?.parse::<i32>().ok();
+    Some((number("capture_width")?, number("capture_height")?))
+}
+
+fn window_size(hwnd: HWND) -> (i32, i32) {
+    let mut rect: RECT = unsafe { std::mem::zeroed() };
+    unsafe { GetWindowRect(hwnd, &mut rect) };
+    (rect.right - rect.left, rect.bottom - rect.top)
+}
+
+/// Keeps the box's size (not its place: it opens where you are) in `fastcapture.ini`.
+fn save_size(hwnd: HWND, settings: Option<&Path>) {
+    let Some(path) = settings else {
+        return;
+    };
+    let (width, height) = window_size(hwnd);
+    let mut file = SettingsFile::load(path);
+    file.set("capture_width", &width.to_string());
+    file.set("capture_height", &height.to_string());
+    if let Err(error) = file.save(path) {
+        crate::log::line(&format!("capture box: {error}"));
+    }
+}
+
+/// Follows the box to a monitor with another scale: the size Windows suggests, the fonts and
+/// the margins at the new DPI.
+fn change_dpi(hwnd: HWND, dpi: u32, suggested: &RECT) {
+    let Some(capture) = state(hwnd) else {
+        return;
+    };
+    capture.dpi = dpi;
+    let title_font = ramp::font(TextStyle::Heading, dpi);
+    let body_font = ramp::font(TextStyle::Body, dpi);
+    unsafe {
+        DeleteObject(std::mem::replace(&mut capture.title_font, title_font));
+        DeleteObject(std::mem::replace(&mut capture.body_font, body_font));
+        SendMessageW(capture.edit, WM_SETFONT, body_font as usize, 0);
+    }
+    set_margins(capture.edit, dpi);
+    unsafe {
+        SetWindowPos(
+            hwnd,
+            std::ptr::null_mut(),
+            suggested.left,
+            suggested.top,
+            suggested.right - suggested.left,
+            suggested.bottom - suggested.top,
+            SWP_NOZORDER | SWP_NOACTIVATE,
+        )
+    };
+    relayout(hwnd);
 }
 
 fn text_width(hwnd: HWND, font: HFONT, text: &str) -> i32 {
@@ -513,7 +666,7 @@ fn text_width(hwnd: HWND, font: HFONT, text: &str) -> i32 {
     rect.right - rect.left
 }
 
-/// Lays the box out again for its attachments and error, keeping its top-left corner.
+/// Lays the box out again for its size, attachments and error.
 fn relayout(hwnd: HWND) {
     let Some(capture) = state(hwnd) else {
         return;
@@ -529,11 +682,23 @@ fn relayout(hwnd: HWND) {
         )
         .collect();
     let snip = text_width(hwnd, capture.body_font, SNIP_LABEL) + scale(8, capture.dpi);
-    capture.layout = layout(capture.dpi, &widths, capture.error.is_some(), snip);
+    let name = notebook_name(&capture.notebook);
+    let title = (
+        text_width(hwnd, capture.title_font, TITLE_PREFIX),
+        text_width(hwnd, capture.title_font, &name),
+    );
+    let mut client: RECT = unsafe { std::mem::zeroed() };
+    unsafe { GetClientRect(hwnd, &mut client) };
+    capture.layout = layout(
+        capture.dpi,
+        (client.right - client.left, client.bottom - client.top),
+        &widths,
+        capture.error.is_some(),
+        snip,
+        title,
+    );
     capture.selected = capture.selected.min(capture.items.len());
     let edit = capture.layout.edit;
-    let (width, height) = (capture.layout.width, capture.layout.height);
-    let name = notebook_name(&capture.notebook);
     unsafe {
         SetWindowPos(
             capture.edit,
@@ -544,20 +709,22 @@ fn relayout(hwnd: HWND) {
             edit.bottom - edit.top,
             SWP_NOZORDER | SWP_NOACTIVATE,
         );
-        let mut frame: RECT = std::mem::zeroed();
-        GetWindowRect(hwnd, &mut frame);
-        SetWindowPos(
-            hwnd,
-            std::ptr::null_mut(),
-            frame.left,
-            frame.top,
-            width,
-            height,
-            SWP_NOZORDER | SWP_NOACTIVATE,
-        );
         SetWindowTextW(hwnd, wide(&accessible_name(&name)).as_ptr());
         InvalidateRect(hwnd, std::ptr::null(), 1);
     }
+}
+
+/// The edit's inner margins, so text keeps off its edges.
+fn set_margins(edit: HWND, dpi: u32) {
+    let margin = scale(EDIT_MARGIN_AT_96_DPI, dpi) as usize;
+    unsafe {
+        SendMessageW(
+            edit,
+            EM_SETMARGINS,
+            (EC_LEFTMARGIN | EC_RIGHTMARGIN) as usize,
+            (margin | (margin << 16)) as isize,
+        )
+    };
 }
 
 fn set_edit_text(edit: HWND, text: &str) {
@@ -570,6 +737,92 @@ fn edit_text(edit: HWND) -> String {
     let copied = unsafe { GetWindowTextW(edit, buffer.as_mut_ptr(), buffer.len() as i32) };
     // The edit control's line breaks are CRLF; captures use LF.
     String::from_utf16_lossy(&buffer[..copied.max(0) as usize]).replace("\r\n", "\n")
+}
+
+/// The edit's text as it holds it: UTF-16, with CRLF line breaks.
+fn edit_units(edit: HWND) -> Vec<u16> {
+    let length = unsafe { GetWindowTextLengthW(edit) }.max(0) as usize;
+    let mut buffer = vec![0_u16; length + 1];
+    let copied = unsafe { GetWindowTextW(edit, buffer.as_mut_ptr(), buffer.len() as i32) };
+    buffer.truncate(copied.max(0) as usize);
+    buffer
+}
+
+/// The edit's selection, as UTF-16 offsets.
+fn selection(edit: HWND) -> (usize, usize) {
+    let (mut start, mut end) = (0_u32, 0_u32);
+    unsafe {
+        SendMessageW(
+            edit,
+            EM_GETSEL,
+            &raw mut start as usize,
+            &raw mut end as LPARAM,
+        )
+    };
+    (start as usize, end as usize)
+}
+
+/// Replaces `range` of the edit's text with `text`, out of the edit's own undo: the box's Ctrl+Z
+/// takes a fix back.
+fn replace_range(edit: HWND, range: std::ops::Range<usize>, text: &str) {
+    unsafe {
+        SendMessageW(edit, EM_SETSEL, range.start, range.end as LPARAM);
+        SendMessageW(edit, EM_REPLACESEL, 0, wide(text).as_ptr() as LPARAM);
+    }
+}
+
+/// A word boundary is about to be typed: fixes the word before the caret when Windows' English
+/// checker is sure of the fix.
+fn autocorrect_before(hwnd: HWND) {
+    let Some(capture) = state(hwnd) else {
+        return;
+    };
+    let edit = capture.edit;
+    let (start, end) = selection(edit);
+    if start != end {
+        return;
+    }
+    let units = edit_units(edit);
+    let before = String::from_utf16_lossy(&units[..end.min(units.len())]);
+    let Some(fix) = autocorrect::correction(&before, |word| {
+        crate::platform::spell::with_english(|speller| speller.replacement(word)).flatten()
+    }) else {
+        return;
+    };
+    replace_range(edit, fix.start..end, &fix.replacement);
+    capture.last_fix = Some(fix);
+}
+
+/// Ctrl+Z right after a fix: puts the typed word back. False when there is no such fix, and the
+/// edit undoes as usual.
+fn undo_fix(hwnd: HWND) -> bool {
+    let Some(capture) = state(hwnd) else {
+        return false;
+    };
+    let Some(fix) = capture.last_fix.take() else {
+        return false;
+    };
+    let edit = capture.edit;
+    let replacement: Vec<u16> = fix.replacement.encode_utf16().collect();
+    let end = fix.start + replacement.len();
+    let units = edit_units(edit);
+    // The boundary typed after the fix: one character, or the CRLF Enter puts in.
+    let boundary = if units.get(end..end + 2) == Some(&[0x0D, 0x0A][..]) {
+        2
+    } else {
+        1
+    };
+    // The fix, then that boundary, with the caret right after it.
+    let intact = units.get(fix.start..end) == Some(&replacement[..])
+        && units.len() >= end + boundary
+        && selection(edit) == (end + boundary, end + boundary);
+    if !intact {
+        return false;
+    }
+    replace_range(edit, fix.start..end, &fix.original);
+    let caret = fix.start + fix.original.encode_utf16().count() + boundary;
+    unsafe { SendMessageW(edit, EM_SETSEL, caret, caret as LPARAM) };
+    true
 }
 
 /// What the box holds now.
@@ -780,21 +1033,56 @@ fn remove_item(hwnd: HWND, index: usize) {
     relayout(hwnd);
 }
 
-/// Ctrl+N: a menu of the recent notebooks, the current one checked, for this capture only.
+#[cfg(test)]
+thread_local! {
+    /// What tests choose in the notebook menu (0 closes it), and then in the folder dialog.
+    static MENU_ANSWER: std::cell::Cell<u32> = const { std::cell::Cell::new(0) };
+    static FOLDER_ANSWER: std::cell::RefCell<Option<PathBuf>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+fn ask_menu(hwnd: HWND, anchor: super::popup::Anchor, entries: &[super::popup::Entry<'_>]) -> u32 {
+    #[cfg(test)]
+    {
+        let _ = (hwnd, anchor, entries);
+        MENU_ANSWER.with(std::cell::Cell::get)
+    }
+    #[cfg(not(test))]
+    {
+        super::popup::menu(hwnd, anchor, entries)
+    }
+}
+
+fn ask_folder(hwnd: HWND) -> Option<PathBuf> {
+    #[cfg(test)]
+    {
+        let _ = hwnd;
+        FOLDER_ANSWER.with(|answer| answer.borrow_mut().take())
+    }
+    #[cfg(not(test))]
+    {
+        crate::platform::shell::pick_folder(hwnd, "Choose a notebook for this capture")
+    }
+}
+
+/// The notebook selector or Ctrl+N: a menu of the recent notebooks, the current one checked,
+/// then any other folder. The choice is for this capture only.
 fn pick_notebook(hwnd: HWND) {
     let Some(capture) = state(hwnd) else {
         return;
     };
-    let mut notebooks = capture.sink.notebooks();
-    if !notebooks.contains(&capture.notebook) {
-        notebooks.insert(0, capture.notebook.clone());
-    }
+    let notebooks = notebook_choices(&capture.notebook, capture.sink.notebooks());
     let labels: Vec<String> = notebooks
         .iter()
         .enumerate()
-        .map(|(index, notebook)| format!("&{} {}", index + 1, notebook_name(notebook)))
+        .map(|(index, notebook)| match index {
+            // Access keys 1 to 9; the rest are reached with the arrows.
+            0..9 => format!("&{} {}", index + 1, notebook_name(notebook)),
+            _ => notebook_name(notebook),
+        })
         .collect();
-    let entries: Vec<super::popup::Entry<'_>> = notebooks
+    let other = notebooks.len() as u32 + 1;
+    let mut entries: Vec<super::popup::Entry<'_>> = notebooks
         .iter()
         .zip(&labels)
         .enumerate()
@@ -805,18 +1093,30 @@ fn pick_notebook(hwnd: HWND) {
             checked: *notebook == capture.notebook,
         })
         .collect();
-    let title = capture.layout.title;
+    entries.push(super::popup::Entry::Separator);
+    entries.push(super::popup::Entry::Item {
+        id: other,
+        text: OTHER_FOLDER_LABEL,
+        enabled: true,
+        checked: false,
+    });
     let mut at = POINT {
-        x: scale(PAD_AT_96_DPI, capture.dpi),
-        y: title.bottom,
+        x: capture.layout.notebook.left,
+        y: capture.layout.title.bottom,
     };
     unsafe { windows_sys::Win32::Graphics::Gdi::ClientToScreen(hwnd, &mut at) };
-    let chosen = super::popup::menu(hwnd, super::popup::Anchor::Below(at), &entries);
-    if chosen > 0
-        && let Some(notebook) = notebooks.get(chosen as usize - 1)
+    let chosen = ask_menu(hwnd, super::popup::Anchor::Below(at), &entries);
+    let notebook = if chosen == other {
+        ask_folder(hwnd)
+    } else {
+        (chosen as usize)
+            .checked_sub(1)
+            .and_then(|index| notebooks.get(index).cloned())
+    };
+    if let Some(notebook) = notebook
         && let Some(capture) = state(hwnd)
     {
-        capture.notebook = notebook.clone();
+        capture.notebook = notebook;
         relayout(hwnd);
     }
     if let Some(capture) = state(hwnd) {
@@ -954,6 +1254,20 @@ unsafe extern "system" fn edit_proc(
     match message {
         WM_KEYDOWN => {
             let (ctrl, shift, alt) = modifiers();
+            let key = wparam as u16;
+            if key == u16::from(b'Z') && ctrl && !shift && !alt {
+                if undo_fix(hwnd)
+                    && let Some(capture) = state(hwnd)
+                {
+                    capture.swallow_undo_char = true;
+                    invalidate(hwnd);
+                    return 0;
+                }
+            } else if !matches!(key, VK_CONTROL | VK_SHIFT | VK_MENU)
+                && let Some(capture) = state(hwnd)
+            {
+                capture.last_fix = None;
+            }
             if let Some(action) = key_action(wparam as u16, ctrl, shift, alt) {
                 run(hwnd, action);
                 return 0;
@@ -971,10 +1285,29 @@ unsafe extern "system" fn edit_proc(
             {
                 return 0;
             }
+            if ch == 0x1A
+                && let Some(capture) = state(hwnd)
+                && std::mem::take(&mut capture.swallow_undo_char)
+            {
+                return 0;
+            }
+            if autocorrect::is_boundary(ch)
+                && state(hwnd).is_some_and(|capture| capture.autocorrect)
+            {
+                autocorrect_before(hwnd);
+            }
             // Typing changes what the footer says the capture holds.
             invalidate(hwnd);
         }
+        WM_LBUTTONDOWN => {
+            if let Some(capture) = state(hwnd) {
+                capture.last_fix = None;
+            }
+        }
         WM_PASTE => {
+            if let Some(capture) = state(hwnd) {
+                capture.last_fix = None;
+            }
             if paste(hwnd, false) {
                 return 0;
             }
@@ -1074,18 +1407,23 @@ fn draw(capture: &CaptureBox, dc: HDC, hwnd: HWND) {
     unsafe { SetTextColor(dc, colors.content_foreground) };
     draw_text(
         dc,
-        &title_text(&notebook_name(&capture.notebook)),
+        TITLE_PREFIX,
         &RECT {
             left: pad,
-            right: layout.close.left,
+            right: layout.notebook.left,
             ..layout.title
         },
         DT_LEFT | DT_END_ELLIPSIS,
     );
+    draw_selector(capture, dc, &layout.notebook);
     unsafe { SelectObject(dc, capture.body_font) };
     unsafe { SetTextColor(dc, colors.muted_foreground) };
     draw_text(dc, "\u{2715}", &layout.close, DT_CENTER);
     for (index, chip) in layout.chips.iter().enumerate() {
+        if chip.right <= chip.left {
+            // Clipped: no room for it in a box this small.
+            continue;
+        }
         let selected = strip_focused && capture.selected == index;
         fill(
             dc,
@@ -1172,6 +1510,50 @@ fn draw(capture: &CaptureBox, dc: HDC, hwnd: HWND) {
     unsafe { SelectObject(dc, old) };
 }
 
+/// The notebook selector: a field like the settings' drop-downs, the notebook's name in it and a
+/// chevron at its end. Drawn with the title font selected.
+fn draw_selector(capture: &CaptureBox, dc: HDC, area: &RECT) {
+    if area.right <= area.left {
+        return;
+    }
+    let colors = capture.colors;
+    let dpi = capture.dpi;
+    let radius = super::paint::radius(&colors, theme::metrics::CONTROL_RADIUS, dpi);
+    super::paint::fill_bordered(
+        dc,
+        *area,
+        radius,
+        colors.content_background,
+        colors.stroke,
+        colors.strip_background,
+    );
+    let chevron = RECT {
+        left: (area.right - scale(SELECTOR_CHEVRON_AT_96_DPI, dpi)).max(area.left),
+        ..*area
+    };
+    unsafe { SetTextColor(dc, colors.content_foreground) };
+    draw_text(
+        dc,
+        &notebook_name(&capture.notebook),
+        &RECT {
+            left: area.left + scale(SELECTOR_TEXT_AT_96_DPI, dpi),
+            right: chevron.left,
+            ..*area
+        },
+        DT_LEFT | DT_END_ELLIPSIS,
+    );
+    let glyphs = ramp::icon_font(10, dpi);
+    super::paint::text(
+        dc,
+        super::paint::GLYPH_CHEVRON_DOWN,
+        chevron,
+        glyphs,
+        colors.muted_foreground,
+        super::paint::Align::Center,
+    );
+    unsafe { DeleteObject(glyphs) };
+}
+
 fn contains(rect: &RECT, x: i32, y: i32) -> bool {
     x >= rect.left && x < rect.right && y >= rect.top && y < rect.bottom
 }
@@ -1185,20 +1567,25 @@ fn clicked(hwnd: HWND, x: i32, y: i32) {
         close(hwnd);
         return;
     }
+    if contains(&layout.notebook, x, y) {
+        pick_notebook(hwnd);
+        return;
+    }
     if contains(&layout.snip, x, y) {
         start_snip(hwnd);
         return;
     }
     let remove = scale(CHIP_REMOVE_AT_96_DPI, capture.dpi);
     if let Some(index) = layout.chips.iter().position(|chip| {
-        contains(
-            &RECT {
-                left: chip.right - remove,
-                ..*chip
-            },
-            x,
-            y,
-        )
+        chip.right > chip.left
+            && contains(
+                &RECT {
+                    left: chip.right - remove,
+                    ..*chip
+                },
+                x,
+                y,
+            )
     }) {
         remove_item(hwnd, index);
     }
@@ -1262,15 +1649,77 @@ unsafe extern "system" fn box_proc(
                 y: ((lparam >> 16) & 0xFFFF) as i16 as i32,
             };
             unsafe { ScreenToClient(hwnd, &mut point) };
+            if let Some(capture) = state(hwnd) {
+                // The close button keeps its target to the corner, as the frame's buttons do.
+                if contains(&capture.layout.close, point.x, point.y) {
+                    return HTCLIENT as LRESULT;
+                }
+                let (width, height) = (capture.layout.width, capture.layout.height);
+                let border = frame::resize_border(capture.dpi);
+                if let Some(edge) = frame::edge(point.x, point.y, width, height, border) {
+                    return edge.code() as LRESULT;
+                }
+            }
             let drags = state(hwnd).is_some_and(|capture| {
                 contains(&capture.layout.title, point.x, point.y)
                     && !contains(&capture.layout.close, point.x, point.y)
+                    && !contains(&capture.layout.notebook, point.x, point.y)
             });
             if drags {
                 HTCAPTION as LRESULT
             } else {
                 HTCLIENT as LRESULT
             }
+        }
+        WM_GETMINMAXINFO => {
+            let Some(capture) = state(hwnd) else {
+                return 0;
+            };
+            let info = unsafe { &mut *(lparam as *mut MINMAXINFO) };
+            info.ptMinTrackSize.x = scale(MIN_SIZE_AT_96_DPI.0, capture.dpi);
+            info.ptMinTrackSize.y = scale(MIN_SIZE_AT_96_DPI.1, capture.dpi);
+            let mut monitor: MONITORINFO = unsafe { std::mem::zeroed() };
+            monitor.cbSize = size_of::<MONITORINFO>() as u32;
+            let found = unsafe {
+                GetMonitorInfoW(
+                    MonitorFromWindow(hwnd, MONITOR_DEFAULTTONEAREST),
+                    &mut monitor,
+                )
+            };
+            if found != 0 {
+                let work = monitor.rcWork;
+                info.ptMaxTrackSize.x = work.right - work.left;
+                info.ptMaxTrackSize.y = work.bottom - work.top;
+            }
+            0
+        }
+        WM_SIZE => {
+            relayout(hwnd);
+            0
+        }
+        WM_ENTERSIZEMOVE => {
+            if let Some(capture) = state(hwnd) {
+                capture.size_before_drag = Some(window_size(hwnd));
+            }
+            0
+        }
+        WM_EXITSIZEMOVE => {
+            if let Some(capture) = state(hwnd)
+                && capture
+                    .size_before_drag
+                    .take()
+                    .is_some_and(|size| size != window_size(hwnd))
+            {
+                save_size(hwnd, capture.settings.as_deref());
+            }
+            0
+        }
+        WM_DPICHANGED => {
+            if lparam != 0 {
+                let suggested = unsafe { *(lparam as *const RECT) };
+                change_dpi(hwnd, ((wparam >> 16) & 0xFFFF) as u32, &suggested);
+            }
+            0
         }
         WM_LBUTTONDOWN => {
             clicked(
@@ -1366,7 +1815,18 @@ unsafe extern "system" fn box_proc(
 // ---------------------------------------------------------------------------------------------
 // Tests.
 
-/// Types `text` into the box, for tests elsewhere.
+/// Types `text` key by key into the box's edit, as WM_CHARs through its subclass.
+#[cfg(test)]
+pub(crate) fn type_for_test(hwnd: HWND, text: &str) {
+    let Some(edit) = state(hwnd).map(|capture| capture.edit) else {
+        return;
+    };
+    for unit in text.encode_utf16() {
+        unsafe { SendMessageW(edit, WM_CHAR, usize::from(unit), 0) };
+    }
+}
+
+/// Puts `text` in the box, for tests elsewhere.
 #[cfg(test)]
 pub(crate) fn set_text_for_test(hwnd: HWND, text: &str) {
     if let Some(capture) = state(hwnd) {
@@ -1454,27 +1914,203 @@ mod tests {
     }
 
     #[test]
-    fn the_strip_appears_only_with_attachments_and_wraps() {
-        let plain = layout(96, &[], false, 120);
-        assert_eq!(plain.width, 520);
-        assert!(plain.chips.is_empty());
-        assert_eq!(plain.footer.top, plain.edit.bottom + 8);
-
-        let with = layout(96, &[200, 200, 200], true, 120);
-        assert_eq!(with.chips.len(), 3);
+    fn the_edit_fills_what_the_strip_error_and_footer_leave() {
+        let plain = layout(96, (720, 420), &[], false, 160, (80, 60));
+        assert_eq!((plain.width, plain.height), (720, 420));
+        assert_eq!(plain.edit.top, 34 + 6);
+        assert_eq!(plain.footer.bottom, 420 - 4);
+        assert_eq!(plain.edit.bottom + 8, plain.footer.top);
+        let with = layout(96, (520, 420), &[150, 150, 150], true, 160, (80, 60));
         assert_eq!(with.chips[0].top, with.chips[1].top);
-        assert!(with.chips[2].top > with.chips[1].top, "the third wraps");
-        assert!(with.chips.iter().all(|chip| chip.right <= 520 - 12));
-        let error = with.error.unwrap();
-        assert!(error.top >= with.chips[2].bottom);
-        assert!(with.height > plain.height);
+        assert!(
+            with.chips[2].top > with.chips[1].top,
+            "the third wraps at 520"
+        );
+        assert!(
+            with.edit.bottom < plain.edit.bottom,
+            "the edit gave the chips room"
+        );
+        assert!(with.error.unwrap().top >= with.chips[2].bottom);
+        assert_eq!(
+            layout(192, (1440, 840), &[], false, 320, (160, 120))
+                .edit
+                .top,
+            80
+        );
+    }
 
-        assert_eq!(layout(192, &[], false, 240).width, 1040);
+    #[test]
+    fn chips_that_do_not_fit_are_clipped_not_overlapping() {
+        let tight = layout(96, (420, 240), &[200; 12], true, 160, (80, 60));
+        assert_eq!(tight.chips.len(), 12);
+        assert_eq!(
+            tight.edit.bottom - tight.edit.top,
+            40,
+            "the edit keeps its floor"
+        );
+        let error = tight.error.unwrap();
+        for chip in tight.chips.iter().filter(|c| c.right > c.left) {
+            assert!(chip.bottom <= error.top, "{} > {}", chip.bottom, error.top);
+        }
+        assert!(
+            tight.chips.iter().any(|c| c.right == c.left),
+            "some were clipped"
+        );
+    }
+
+    #[test]
+    fn the_notebook_selector_follows_the_title_and_stops_before_the_close_button() {
+        let plain = layout(96, (720, 420), &[], false, 160, (80, 60));
+        assert_eq!(plain.notebook.left, 12 + 80 + 6);
+        assert_eq!(plain.notebook.right, plain.notebook.left + 8 + 60 + 26);
+        assert_eq!((plain.notebook.top, plain.notebook.bottom), (4, 30));
+        let long = layout(96, (420, 240), &[], false, 160, (80, 900));
+        assert_eq!(
+            long.notebook.right,
+            long.close.left - 4,
+            "a long name is cut short"
+        );
+    }
+
+    #[test]
+    fn the_notebook_menu_offers_the_current_notebook_once() {
+        let recent = vec![PathBuf::from(r"D:\Notes"), PathBuf::from(r"E:\Work")];
+        assert_eq!(
+            notebook_choices(Path::new(r"E:\Work"), recent.clone()),
+            recent
+        );
+        assert_eq!(
+            notebook_choices(Path::new(r"F:\New"), recent),
+            [
+                PathBuf::from(r"F:\New"),
+                PathBuf::from(r"D:\Notes"),
+                PathBuf::from(r"E:\Work")
+            ]
+        );
+    }
+
+    /// Clicks the box's notebook selector, the menu answering `entry` and the folder dialog
+    /// `folder`.
+    fn click_selector(hwnd: HWND, entry: u32, folder: Option<&str>) {
+        MENU_ANSWER.with(|answer| answer.set(entry));
+        FOLDER_ANSWER.with(|answer| *answer.borrow_mut() = folder.map(PathBuf::from));
+        let selector = state(hwnd).unwrap().layout.notebook;
+        let (x, y) = (
+            (selector.left + selector.right) / 2,
+            (selector.top + selector.bottom) / 2,
+        );
+        unsafe {
+            SendMessageW(
+                hwnd,
+                WM_LBUTTONDOWN,
+                0,
+                (((y as u32) << 16) | (x as u32 & 0xFFFF)) as isize,
+            )
+        };
+        MENU_ANSWER.with(|answer| answer.set(0));
+    }
+
+    #[test]
+    fn the_notebook_selector_changes_where_this_capture_goes() {
+        let drafts = temp("selector");
+        let (hwnd, filed) = open_box(&drafts, None);
+        let selector = state(hwnd).unwrap().layout.notebook;
+        let mut point = POINT {
+            x: selector.left + 1,
+            y: (selector.top + selector.bottom) / 2,
+        };
+        unsafe { windows_sys::Win32::Graphics::Gdi::ClientToScreen(hwnd, &mut point) };
+        let hit = unsafe {
+            SendMessageW(
+                hwnd,
+                WM_NCHITTEST,
+                0,
+                (((point.y as u32) << 16) | (point.x as u32 & 0xFFFF)) as isize,
+            )
+        };
+        assert_eq!(
+            hit, HTCLIENT as isize,
+            "the selector clicks, it doesn't drag"
+        );
+        click_selector(hwnd, 0, None);
+        assert_eq!(
+            state(hwnd).unwrap().notebook,
+            Path::new(r"D:\Notes"),
+            "closed"
+        );
+        click_selector(hwnd, 2, None);
+        assert_eq!(state(hwnd).unwrap().notebook, Path::new(r"E:\Work"));
+        set_edit_text(state(hwnd).unwrap().edit, "to work");
+        submit(hwnd);
+        assert_eq!(filed.borrow()[0].1, PathBuf::from(r"E:\Work"));
+        draft::clear(&drafts);
+    }
+
+    #[test]
+    fn any_folder_can_be_picked_from_the_notebook_menu() {
+        let drafts = temp("other");
+        let (hwnd, _) = open_box(&drafts, None);
+        // The two recent notebooks, then "Other folder…".
+        click_selector(hwnd, 3, None);
+        assert_eq!(
+            state(hwnd).unwrap().notebook,
+            Path::new(r"D:\Notes"),
+            "cancelled"
+        );
+        click_selector(hwnd, 3, Some(r"F:\Elsewhere"));
+        assert_eq!(state(hwnd).unwrap().notebook, Path::new(r"F:\Elsewhere"));
+        unsafe { DestroyWindow(hwnd) };
+        draft::clear(&drafts);
+    }
+
+    #[test]
+    fn the_box_resizes_from_its_edges_and_keeps_a_minimum() {
+        use windows_sys::Win32::UI::WindowsAndMessaging::{
+            HTBOTTOMRIGHT, MINMAXINFO, SWP_NOMOVE, WM_GETMINMAXINFO,
+        };
+        let drafts = temp("resize");
+        let (hwnd, _) = open_box(&drafts, None);
+        let mut frame: RECT = unsafe { std::mem::zeroed() };
+        unsafe { GetWindowRect(hwnd, &mut frame) };
+        let at = |x: i32, y: i32| unsafe {
+            SendMessageW(
+                hwnd,
+                WM_NCHITTEST,
+                0,
+                (((y as u32) << 16) | (x as u32 & 0xFFFF)) as isize,
+            )
+        };
+        assert_eq!(
+            at(frame.right - 1, frame.bottom - 1),
+            HTBOTTOMRIGHT as isize
+        );
+        let mut info: MINMAXINFO = unsafe { std::mem::zeroed() };
+        unsafe { SendMessageW(hwnd, WM_GETMINMAXINFO, 0, &raw mut info as isize) };
+        let dpi = state(hwnd).unwrap().dpi;
+        assert_eq!(info.ptMinTrackSize.x, scale(420, dpi));
+        unsafe {
+            SetWindowPos(
+                hwnd,
+                std::ptr::null_mut(),
+                0,
+                0,
+                scale(900, dpi),
+                scale(600, dpi),
+                SWP_NOMOVE | SWP_NOZORDER,
+            )
+        };
+        let capture = state(hwnd).unwrap();
+        assert_eq!(
+            capture.layout.width,
+            scale(900, dpi),
+            "WM_SIZE laid it out again"
+        );
+        unsafe { DestroyWindow(hwnd) };
+        draft::clear(&drafts);
     }
 
     #[test]
     fn the_title_footer_and_chips_say_what_and_where() {
-        assert_eq!(title_text("Work notes"), "Capture \u{2192} Work notes");
         assert_eq!(accessible_name("Work notes"), "Capture to Work notes");
         assert_eq!(notebook_name(Path::new(r"D:\Work notes")), "Work notes");
         assert_eq!(chip_label(&Attachment::Png(Vec::new()), 1), "Image 2");
@@ -1524,6 +2160,196 @@ mod tests {
         }
     }
 
+    /// The autocorrect tests need Windows' English checker with its autocorrect list, which
+    /// Windows Server (CI's runners) lacks.
+    fn no_speller() -> bool {
+        let missing = crate::platform::spell::with_english(|s| s.replacement("teh"))
+            .flatten()
+            .is_none();
+        if missing {
+            eprintln!("skipped: no en-US autocorrect list");
+        }
+        missing
+    }
+
+    /// A key pressed in the edit: its WM_KEYDOWN, as the keyboard sends it.
+    fn key_down(edit: HWND, key: u16) {
+        unsafe { SendMessageW(edit, WM_KEYDOWN, usize::from(key), 0) };
+    }
+
+    /// Ctrl+Z in the edit: WM_KEYDOWN with Ctrl held, then its WM_CHAR (0x1A).
+    fn press_ctrl_z(edit: HWND) {
+        use windows_sys::Win32::UI::Input::KeyboardAndMouse::{GetKeyboardState, SetKeyboardState};
+        let mut keys = [0u8; 256];
+        unsafe { GetKeyboardState(keys.as_mut_ptr()) };
+        let saved = keys;
+        keys[usize::from(VK_CONTROL)] = 0x80;
+        unsafe {
+            SetKeyboardState(keys.as_ptr());
+            SendMessageW(edit, WM_KEYDOWN, usize::from(b'Z'), 0);
+            SendMessageW(edit, WM_CHAR, 0x1A, 0);
+            SetKeyboardState(saved.as_ptr());
+        }
+    }
+
+    fn open_box_off(draft_dir: &Path) -> (HWND, Filed) {
+        open_box_full(draft_dir, None, None, false)
+    }
+
+    #[test]
+    fn a_typed_typo_is_fixed_and_ctrl_z_brings_it_back() {
+        if no_speller() {
+            return;
+        }
+        let drafts = temp("fix");
+        let (hwnd, _) = open_box(&drafts, None);
+        type_for_test(hwnd, "I think teh ");
+        let edit = state(hwnd).unwrap().edit;
+        assert_eq!(edit_text(edit), "I think the ");
+        press_ctrl_z(edit);
+        assert_eq!(edit_text(edit), "I think teh ");
+        unsafe { DestroyWindow(hwnd) };
+        draft::clear(&drafts);
+    }
+
+    #[test]
+    fn ctrl_z_after_a_fix_made_by_enter_keeps_the_line_break() {
+        if no_speller() {
+            return;
+        }
+        let drafts = temp("enter");
+        let (hwnd, _) = open_box(&drafts, None);
+        let edit = state(hwnd).unwrap().edit;
+        type_for_test(hwnd, "teh\r");
+        assert_eq!(edit_text(edit), "the\n");
+        press_ctrl_z(edit);
+        assert_eq!(edit_text(edit), "teh\n");
+        unsafe { DestroyWindow(hwnd) };
+        draft::clear(&drafts);
+    }
+
+    #[test]
+    fn all_capitals_are_left_alone_as_windows_does() {
+        if no_speller() {
+            return;
+        }
+        let drafts = temp("caps");
+        let (hwnd, _) = open_box(&drafts, None);
+        type_for_test(hwnd, "CNA ADN Teh ");
+        assert_eq!(edit_text(state(hwnd).unwrap().edit), "CNA ADN The ");
+        unsafe { DestroyWindow(hwnd) };
+        draft::clear(&drafts);
+    }
+
+    #[test]
+    fn the_close_button_keeps_its_corner() {
+        let drafts = temp("corner");
+        let (hwnd, _) = open_box(&drafts, None);
+        let mut frame: RECT = unsafe { std::mem::zeroed() };
+        unsafe { GetWindowRect(hwnd, &mut frame) };
+        let (x, y) = (frame.right - 1, frame.top + 1);
+        let hit = unsafe {
+            SendMessageW(
+                hwnd,
+                WM_NCHITTEST,
+                0,
+                (((y as u32) << 16) | (x as u32 & 0xFFFF)) as isize,
+            )
+        };
+        assert_eq!(hit, HTCLIENT as isize);
+        unsafe { DestroyWindow(hwnd) };
+        draft::clear(&drafts);
+    }
+
+    #[test]
+    fn moving_the_box_does_not_rewrite_its_size() {
+        use windows_sys::Win32::UI::WindowsAndMessaging::SWP_NOSIZE;
+        let drafts = temp("move");
+        std::fs::create_dir_all(&drafts).unwrap();
+        let ini = drafts.join("fastcapture.ini");
+        let (hwnd, _) = open_box_with(&drafts, Some(&ini));
+        unsafe {
+            SendMessageW(hwnd, WM_ENTERSIZEMOVE, 0, 0);
+            SetWindowPos(
+                hwnd,
+                std::ptr::null_mut(),
+                10,
+                10,
+                0,
+                0,
+                SWP_NOSIZE | SWP_NOZORDER,
+            );
+            SendMessageW(hwnd, WM_EXITSIZEMOVE, 0, 0);
+            DestroyWindow(hwnd);
+        }
+        assert!(!ini.exists(), "a move writes nothing");
+        draft::clear(&drafts);
+    }
+
+    #[test]
+    fn a_word_in_the_middle_is_fixed_in_place() {
+        if no_speller() {
+            return;
+        }
+        let drafts = temp("middle");
+        let (hwnd, _) = open_box(&drafts, None);
+        let edit = state(hwnd).unwrap().edit;
+        set_edit_text(edit, "say teh world");
+        unsafe { SendMessageW(edit, EM_SETSEL, 7, 7) };
+        type_for_test(hwnd, ",");
+        assert_eq!(edit_text(edit), "say the, world");
+        unsafe { DestroyWindow(hwnd) };
+        draft::clear(&drafts);
+    }
+
+    #[test]
+    fn fixes_land_after_non_ascii_text() {
+        if no_speller() {
+            return;
+        }
+        let drafts = temp("unicode");
+        let (hwnd, _) = open_box(&drafts, None);
+        type_for_test(hwnd, "café 😀 teh.");
+        assert_eq!(edit_text(state(hwnd).unwrap().edit), "café 😀 the.");
+        unsafe { DestroyWindow(hwnd) };
+        draft::clear(&drafts);
+    }
+
+    #[test]
+    fn ctrl_z_after_more_typing_does_not_bring_the_typo_back() {
+        if no_speller() {
+            return;
+        }
+        let drafts = temp("later");
+        let (hwnd, _) = open_box(&drafts, None);
+        let edit = state(hwnd).unwrap().edit;
+        type_for_test(hwnd, "teh ");
+        key_down(edit, u16::from(b'X'));
+        type_for_test(hwnd, "x");
+        press_ctrl_z(edit);
+        assert!(!edit_text(edit).contains("teh"), "{}", edit_text(edit));
+        unsafe { DestroyWindow(hwnd) };
+        draft::clear(&drafts);
+    }
+
+    #[test]
+    fn pasted_restored_and_switched_off_text_is_left_alone() {
+        if no_speller() {
+            return;
+        }
+        let drafts = temp("alone");
+        let (hwnd, _) = open_box(&drafts, None);
+        insert_text(hwnd, "teh ");
+        assert_eq!(edit_text(state(hwnd).unwrap().edit), "teh ");
+        unsafe { DestroyWindow(hwnd) };
+        draft::clear(&drafts);
+        let (hwnd, _) = open_box_off(&drafts);
+        type_for_test(hwnd, "teh ");
+        assert_eq!(edit_text(state(hwnd).unwrap().edit), "teh ");
+        unsafe { DestroyWindow(hwnd) };
+        draft::clear(&drafts);
+    }
+
     fn temp(name: &str) -> PathBuf {
         let dir =
             std::env::temp_dir().join(format!("fastcapture-box-{name}-{}", std::process::id()));
@@ -1532,19 +2358,127 @@ mod tests {
     }
 
     pub(super) fn open_box(draft_dir: &Path, fail: Option<&str>) -> (HWND, Filed) {
+        open_box_full(draft_dir, fail, None, true)
+    }
+
+    /// A box that keeps its size in `settings`.
+    fn open_box_with(draft_dir: &Path, settings: Option<&Path>) -> (HWND, Filed) {
+        open_box_full(draft_dir, None, settings, true)
+    }
+
+    fn open_box_full(
+        draft_dir: &Path,
+        fail: Option<&str>,
+        settings: Option<&Path>,
+        autocorrect: bool,
+    ) -> (HWND, Filed) {
         let filed = Rc::new(RefCell::new(Vec::new()));
         let hwnd = open(Open {
             sink: Box::new(Recorder {
                 filed: filed.clone(),
                 fail: fail.map(str::to_owned),
-                notebooks: vec![PathBuf::from(r"D:\Notes")],
+                notebooks: vec![PathBuf::from(r"D:\Notes"), PathBuf::from(r"E:\Work")],
             }),
             notebook: PathBuf::from(r"D:\Notes"),
             draft_dir: Some(draft_dir.to_path_buf()),
             source_window: Some("Grafana".to_owned()),
+            settings: settings.map(Path::to_path_buf),
+            autocorrect,
         })
         .unwrap();
         (hwnd, filed)
+    }
+
+    #[test]
+    fn the_saved_size_is_used_when_it_is_big_enough() {
+        let work = RECT {
+            left: 0,
+            top: 0,
+            right: 1920,
+            bottom: 1040,
+        };
+        assert_eq!(initial_size(None, 96, work), (720, 420));
+        assert_eq!(initial_size(None, 144, work), (1080, 630));
+        assert_eq!(initial_size(Some((900, 500)), 96, work), (900, 500));
+        assert_eq!(
+            initial_size(Some((300, 500)), 96, work),
+            (720, 420),
+            "too narrow"
+        );
+    }
+
+    #[test]
+    fn a_saved_size_is_clamped_to_the_work_area() {
+        let small = RECT {
+            left: 1920,
+            top: 0,
+            right: 3200,
+            bottom: 760,
+        };
+        assert_eq!(initial_size(Some((1800, 1000)), 96, small), (1280, 760));
+    }
+
+    #[test]
+    fn a_resized_box_reopens_at_its_size() {
+        use windows_sys::Win32::UI::WindowsAndMessaging::SWP_NOMOVE;
+        let drafts = temp("size");
+        std::fs::create_dir_all(&drafts).unwrap();
+        let ini = drafts.join("fastcapture.ini");
+        let (hwnd, _) = open_box_with(&drafts, Some(&ini));
+        let dpi = state(hwnd).unwrap().dpi;
+        unsafe {
+            SendMessageW(hwnd, WM_ENTERSIZEMOVE, 0, 0);
+            SetWindowPos(
+                hwnd,
+                std::ptr::null_mut(),
+                0,
+                0,
+                scale(800, dpi),
+                scale(500, dpi),
+                SWP_NOMOVE | SWP_NOZORDER,
+            );
+            SendMessageW(hwnd, WM_EXITSIZEMOVE, 0, 0);
+            DestroyWindow(hwnd);
+        }
+        let file = SettingsFile::load(&ini);
+        assert_eq!(
+            file.value("capture_width"),
+            Some(scale(800, dpi).to_string())
+        );
+        let (hwnd, _) = open_box_with(&drafts, Some(&ini));
+        let mut rect: RECT = unsafe { std::mem::zeroed() };
+        unsafe { GetWindowRect(hwnd, &mut rect) };
+        assert_eq!(
+            (rect.right - rect.left, rect.bottom - rect.top),
+            (scale(800, dpi), scale(500, dpi))
+        );
+        unsafe { DestroyWindow(hwnd) };
+        draft::clear(&drafts);
+    }
+
+    #[test]
+    fn a_dpi_change_rescales_the_box() {
+        let drafts = temp("dpi");
+        let (hwnd, _) = open_box(&drafts, None);
+        let suggested = RECT {
+            left: 0,
+            top: 0,
+            right: 1080,
+            bottom: 630,
+        };
+        unsafe {
+            SendMessageW(
+                hwnd,
+                WM_DPICHANGED,
+                (144 << 16) | 144,
+                &raw const suggested as isize,
+            )
+        };
+        let capture = state(hwnd).unwrap();
+        assert_eq!(capture.dpi, 144);
+        assert_eq!(capture.layout.edit.top, scale(34 + 6, 144));
+        unsafe { DestroyWindow(hwnd) };
+        draft::clear(&drafts);
     }
 
     #[test]

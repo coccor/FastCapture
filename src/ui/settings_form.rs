@@ -36,6 +36,7 @@ pub struct Form {
     pub clipboard_hotkey: String,
     pub start_at_sign_in: bool,
     pub capture_source: bool,
+    pub autocorrect: bool,
     pub theme: ThemePreference,
 }
 
@@ -89,6 +90,7 @@ impl Form {
             clipboard_hotkey: hotkey_text(settings.clipboard_hotkey),
             start_at_sign_in: settings.start_at_sign_in,
             capture_source: settings.capture_source,
+            autocorrect: settings.autocorrect,
             theme: settings.theme,
         }
     }
@@ -263,6 +265,7 @@ impl Form {
         }
         file.set("start_at_sign_in", bool_text(self.start_at_sign_in));
         file.set("capture_source", bool_text(self.capture_source));
+        file.set("autocorrect", bool_text(self.autocorrect));
         file.set("theme", self.theme.key());
     }
 
@@ -476,6 +479,7 @@ mod tests {
         cloud.claude_model = "claude-opus-5-5".into();
         cloud.token_cap = "500k".into();
         cloud.capture_source = true;
+        cloud.autocorrect = false;
         cloud.capture_hotkey = "Ctrl+Alt+K".into();
         cloud.apply(&mut file, true);
         let text = file.text();
@@ -488,6 +492,7 @@ mod tests {
         assert_eq!(settings.claude_model, "claude-opus-5-5");
         assert_eq!(settings.token_cap, Some(500_000));
         assert!(settings.cloud_accepted && settings.capture_source);
+        assert!(!settings.autocorrect);
         assert_eq!(
             Form::from_settings(&settings, true),
             Form {

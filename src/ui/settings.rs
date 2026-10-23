@@ -86,12 +86,13 @@ const ID_THEME_LIGHT: i32 = 130;
 const ID_THEME_DARK: i32 = 131;
 const ID_CAPTURE_HOTKEY: i32 = 132;
 const ID_CLIPBOARD_HOTKEY: i32 = 133;
+const ID_AUTOCORRECT: i32 = 134;
 
 const WIDTH: i32 = 560;
 /// The title strip, the Theme row, then the form.
 const THEME_ROW: i32 = 40;
 /// The window with Cloud's rows, the tallest.
-const HEIGHT: i32 = TITLE_STRIP + THEME_ROW + 600;
+const HEIGHT: i32 = TITLE_STRIP + THEME_ROW + 632;
 /// The theme choice's buttons, in order.
 const THEMES: [(i32, ThemePreference); 3] = [
     (ID_THEME_SYSTEM, ThemePreference::System),
@@ -166,6 +167,7 @@ struct Controls {
     cap: HWND,
     sign_in: HWND,
     source: HWND,
+    autocorrect: HWND,
     capture_hotkey: HWND,
     clipboard_hotkey: HWND,
     problem: HWND,
@@ -799,15 +801,26 @@ fn create_controls(hwnd: HWND, dpi: u32, font: HFONT) -> Controls {
         28,
         ID_SOURCE,
     );
+    let autocorrect = make(
+        "BUTTON",
+        "Fix common typos as I type (English)",
+        WS_TABSTOP | BS_AUTOCHECKBOX as u32,
+        0,
+        field_x,
+        446,
+        360,
+        28,
+        ID_AUTOCORRECT,
+    );
 
-    label("Capture key", 450);
+    label("Capture key", 482);
     let capture_hotkey = make(
         "EDIT",
         "",
         edit,
         WS_EX_CLIENTEDGE,
         field_x,
-        450,
+        482,
         160,
         26,
         ID_CAPTURE_HOTKEY,
@@ -818,19 +831,19 @@ fn create_controls(hwnd: HWND, dpi: u32, font: HFONT) -> Controls {
         0,
         0,
         field_x + 170,
-        454,
+        486,
         field_w + button_w - 170,
         20,
         -1,
     );
-    label("Clipboard key", 486);
+    label("Clipboard key", 518);
     let clipboard_hotkey = make(
         "EDIT",
         "",
         edit,
         WS_EX_CLIENTEDGE,
         field_x,
-        486,
+        518,
         160,
         26,
         ID_CLIPBOARD_HOTKEY,
@@ -841,20 +854,20 @@ fn create_controls(hwnd: HWND, dpi: u32, font: HFONT) -> Controls {
         0,
         0,
         field_x + 170,
-        490,
+        522,
         field_w + button_w - 170,
         20,
         -1,
     );
 
-    let problem = make("STATIC", "", 0, 0, 16, 522, WIDTH - 32, 20, ID_PROBLEM);
+    let problem = make("STATIC", "", 0, 0, 16, 554, WIDTH - 32, 20, ID_PROBLEM);
     make(
         "BUTTON",
         "Open settings file",
         WS_TABSTOP | BS_PUSHBUTTON as u32,
         0,
         16,
-        552,
+        584,
         140,
         28,
         ID_OPEN_FILE,
@@ -865,7 +878,7 @@ fn create_controls(hwnd: HWND, dpi: u32, font: HFONT) -> Controls {
         WS_TABSTOP | BS_DEFPUSHBUTTON as u32,
         0,
         WIDTH - 16 - 2 * 96 - 8,
-        552,
+        584,
         96,
         28,
         IDOK,
@@ -876,7 +889,7 @@ fn create_controls(hwnd: HWND, dpi: u32, font: HFONT) -> Controls {
         WS_TABSTOP | BS_PUSHBUTTON as u32,
         0,
         WIDTH - 16 - 96,
-        552,
+        584,
         96,
         28,
         IDCANCEL,
@@ -906,6 +919,7 @@ fn create_controls(hwnd: HWND, dpi: u32, font: HFONT) -> Controls {
         cap,
         sign_in,
         source,
+        autocorrect,
         capture_hotkey,
         clipboard_hotkey,
         problem,
@@ -1116,6 +1130,7 @@ fn load(hwnd: HWND) {
     );
     set_checked(controls.sign_in, form.start_at_sign_in);
     set_checked(controls.source, form.capture_source);
+    set_checked(controls.autocorrect, form.autocorrect);
     set_text(controls.capture_hotkey, &form.capture_hotkey);
     set_text(controls.clipboard_hotkey, &form.clipboard_hotkey);
     if !form.local_endpoint.is_empty() {
@@ -1157,6 +1172,7 @@ fn read_form(window: &SettingsWindow) -> Form {
         clipboard_hotkey: text_of(controls.clipboard_hotkey).trim().to_owned(),
         start_at_sign_in: checked(controls.sign_in),
         capture_source: checked(controls.source),
+        autocorrect: checked(controls.autocorrect),
         theme: controls
             .themes
             .iter()
