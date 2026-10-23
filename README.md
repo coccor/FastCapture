@@ -139,7 +139,7 @@ The review window lists the notes waiting in your inbox, newest first, each with
 | **I** | Keeps the note in the inbox (`status: kept`) and takes it off the list |
 | **Ctrl+Z** | Undoes the last file, keep or discard in this window, unless the files changed since |
 | **E** or double-click | Opens the note, or the raw source when there is no note, in FastPad when it is installed, else in your default `.md` editor |
-| **R** | Writes the note again with the current settings. If you edited the note since, it asks first. |
+| **R** | Writes the note again with the current settings. If you edited the note since, it asks first. For a finding an agent wrote, finds its home and links again, without asking: its text isn't replaced. |
 | **Del** | Sends the note to the Recycle Bin and keeps the capture; with no note, the capture goes too |
 | **Shift+Del** | Sends the note, the capture and the attachments only it links to, to the Recycle Bin |
 | **F5** | Refreshes |
@@ -157,6 +157,12 @@ The footer shows the keys that apply to the selected row. The tray icon's toolti
   ```
 
 - Either way, `status:` becomes `filed` and `suggested_home:` goes; nothing else in the note's front matter changes. A home note that can't be written (it's locked, or gone) leaves the note in the inbox with the reason. Files are written atomically and read again if they change meanwhile, so an open FastPad tab takes the change as an outside edit.
+
+## Findings from coding agents
+
+Coding agents (Claude Code, opencode, Copilot, …) can keep what they learn in your notebook: a root cause, a decision and why, a trap, a procedure that worked, an approach that failed. The skill in [`skills/fastcapture-notes`](skills/fastcapture-notes/SKILL.md) tells them when a finding is worth a note, how to write it (`type: finding`, `status: inbox`, in the capture folder) and how to find the project's notebook; copy that folder into `%USERPROFILE%\.claude\skills\`, or your agent's skills folder. It works without FastCapture.
+
+When FastCapture runs, it looks in the capture folders of the notebooks it knows (`notebook` and `recent_notebook` in the settings) for findings, once they have stopped changing for 2 seconds. It doesn't write the finding again: it asks the model only for the notes it relates to and its home, among the same candidates a capture gets, and adds them, `suggested_home:` in the front matter and links missing under `## Related`; the agent's words stay as they are. The finding is then listed in the review window, with the agent's name in the State column, and filed, kept or discarded like any note. A finding whose front matter can't be read is listed as failed, with why; fix it and press **R**.
 
 ## Themes that match FastPad
 
@@ -238,7 +244,7 @@ In the notebook (FastPad's conventions, read from `.fastpad\notebook.ini` and Ob
 - `raw\YYYY-MM-DD HHmm <first words>.md`: each capture's raw source, never changed after it is written. Its front matter holds `type: raw`, `captured`, `kind`, `capture_id`, any `urls`, `source_url` for pasted web text and, when enabled, `source_window`.
 - `raw\<raw source's name>.page.md` (`.page 2.md`, …): each link's page as it was fetched, kept beside its raw source so the note can be written again without fetching it. A failed fetch is recorded there too, and replaced when **R** fetches it again.
 - `attachments\`: pasted images (as PNG) and copied files, linked from the raw source.
-- `.fastcapture\capture.ini` (optional): `raw_folder` (default `raw`) and `home_types` (default `topic, project, moc`): the `type:` values that make a note a home.
+- `.fastcapture\capture.ini` (optional): `raw_folder` (default `raw`), `home_types` (default `topic, project, moc`): the `type:` values that make a note a home, and `repos`: the repos the notebook covers, by root folder or remote (`C:/Projects/Payments, github.com/acme/payments`), so coding agents find it.
 
 On this PC:
 

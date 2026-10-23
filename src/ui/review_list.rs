@@ -1,7 +1,7 @@
-//! What the review window lists, newest first: the notes FastCapture wrote that wait in the
-//! inbox (`type: capture`, `status: inbox`, in the capture folder), and the captures still
-//! queued, being written or failed. Filed, kept and discarded notes leave the list. Pure: the
-//! caller reads the files.
+//! What the review window lists, newest first: the notes FastCapture wrote and the findings
+//! agents wrote that wait in the inbox (`type: capture` or `finding`, `status: inbox`, in the
+//! capture folder), and the captures and findings still queued, being written or placed, or
+//! failed. Filed, kept and discarded notes leave the list. Pure: the caller reads the files.
 
 use crate::capture::read::{self, RawInfo};
 use crate::note::write::Written;
@@ -31,6 +31,10 @@ pub struct Row {
     /// Where the note suggests it be filed, as written: `[[Payments incidents]]`,
     /// `Payments/Incidents/`.
     pub home: Option<String>,
+    /// A finding an agent wrote: the note is its own source.
+    pub finding: bool,
+    /// Who wrote the finding (`claude-code`), as its `author:` says.
+    pub author: Option<String>,
 }
 
 impl Row {
@@ -59,12 +63,16 @@ impl Row {
         }
     }
 
-    /// What the State column says.
-    pub fn status(&self) -> &'static str {
+    /// What the State column says: for a placed finding, the agent that wrote it.
+    pub fn status(&self) -> String {
         match (self.state, &self.note, &self.note_text) {
-            (State::Done, Some(_), Some(_)) => "Note",
-            (State::Done, Some(_), None) => "Note gone",
-            (state, _, _) => state_label(state),
+            (State::Done, Some(_), Some(_)) if self.finding => {
+                self.author.clone().unwrap_or_else(|| "Finding".to_owned())
+            }
+            (State::Done, Some(_), Some(_)) => "Note".to_owned(),
+            (State::Done, Some(_), None) => "Note gone".to_owned(),
+            (State::Working, _, _) if self.finding => "Placing".to_owned(),
+            (state, _, _) => state_label(state).to_owned(),
         }
     }
 }
@@ -78,31 +86,32 @@ fn note_title(text: &str) -> Option<String> {
 }
 
 /// Whether the note at `path` (relative to its notebook), whose text is `text`, waits in the
-/// inbox: FastCapture wrote it, it is still `status: inbox`, and it is in `capture_folder`.
+/// inbox: FastCapture or an agent wrote it, it is still `status: inbox`, and it is in
+/// `capture_folder`.
 pub fn waits_in_inbox(path: &Path, text: &str, capture_folder: &Path) -> bool {
     let Some(front) = frontmatter::parse(text) else {
         return false;
     };
     let is = |key: &str, wanted: &str| matches!(front.get(key), Some(Value::Text(value)) if value.trim().eq_ignore_ascii_case(wanted));
     let folder = path.parent().unwrap_or(Path::new(""));
-    is("type", "capture")
+    (is("type", "capture") || is("type", "finding"))
         && is("status", "inbox")
         && folder
             .to_string_lossy()
             .eq_ignore_ascii_case(&capture_folder.to_string_lossy())
 }
 
-/// The note's `suggested_home:`, as written.
-fn suggested_home(text: &str) -> Option<String> {
-    match frontmatter::parse(text)?.get("suggested_home")? {
-        Value::Text(home) if !home.trim().is_empty() => Some(home.trim().to_owned()),
+/// The note's `key:`, as written, when it has one.
+fn front_text(text: &str, key: &str) -> Option<String> {
+    match frontmatter::parse(text)?.get(key)? {
+        Value::Text(value) if !value.trim().is_empty() => Some(value.trim().to_owned()),
         _ => None,
     }
 }
 
-/// The rows for `jobs`, newest first, reading each raw source with `read_file` (absolute path)
-/// and asking `capture_folder` where a notebook's notes wait. The second list holds the jobs
-/// whose raw source is gone.
+/// The rows for `jobs`, newest first, reading each raw source (a finding's note) with
+/// `read_file` (absolute path) and asking `capture_folder` where a notebook's notes wait. The
+/// second list holds the jobs whose raw source is gone.
 pub fn rows(
     jobs: Vec<Job>,
     read_file: impl Fn(&Path) -> Option<String>,
@@ -111,15 +120,32 @@ pub fn rows(
     let mut rows = Vec::new();
     let mut gone = Vec::new();
     for job in jobs {
-        let Some(text) = read_file(&job.notebook.join(&job.raw)) else {
+        // A discarded finding's note is in the Recycle Bin; its job stays, unlisted, to know it.
+        if job.finding && job.state == State::Discarded {
+            continue;
+        }
+        let source = match (&job.note, job.finding) {
+            (Some(note), true) => &note.path,
+            _ => &job.raw,
+        };
+        let Some(text) = read_file(&job.notebook.join(source)) else {
             gone.push(job);
             continue;
         };
-        let info = read::read(&job.raw, &text);
-        let note_text = job
-            .note
-            .as_ref()
-            .and_then(|note| read_file(&job.notebook.join(&note.path)));
+        let info = if job.finding {
+            RawInfo {
+                captured: job.created.clone(),
+                kinds: vec!["finding".to_owned()],
+                ..RawInfo::default()
+            }
+        } else {
+            read::read(&job.raw, &text)
+        };
+        let note_text = match (&job.note, job.finding) {
+            (Some(_), true) => Some(text.clone()),
+            (Some(note), false) => read_file(&job.notebook.join(&note.path)),
+            (None, _) => None,
+        };
         let listed = match job.state {
             State::Queued | State::Working | State::Failed => true,
             State::Done => match (&job.note, &note_text) {
@@ -133,7 +159,10 @@ pub fn rows(
         if !listed {
             continue;
         }
-        let home = note_text.as_deref().and_then(suggested_home);
+        let home = note_text
+            .as_deref()
+            .and_then(|text| front_text(text, "suggested_home"));
+        let author = job.finding.then(|| front_text(&text, "author")).flatten();
         let title = note_text
             .as_deref()
             .and_then(note_title)
@@ -159,6 +188,8 @@ pub fn rows(
             note: job.note,
             note_text,
             home,
+            finding: job.finding,
+            author,
         });
     }
     rows.sort_by(|a, b| {
@@ -202,7 +233,8 @@ pub fn state_label(state: State) -> &'static str {
 }
 
 /// The preview pane's text: an error first (for a failed job, or one waiting to retry), then
-/// the note when there is one, then the raw source, with CRLF line ends for the edit control.
+/// the note when there is one, then the raw source (a finding is its own), with CRLF line ends
+/// for the edit control.
 pub fn preview_text(row: &Row) -> String {
     let mut text = String::new();
     if let Some(error) = &row.error
@@ -210,7 +242,7 @@ pub fn preview_text(row: &Row) -> String {
     {
         text.push_str(&format!("Last error: {error}\n\n"));
     }
-    if let Some(note) = &row.note_text {
+    if let Some(note) = row.note_text.as_ref().filter(|_| !row.finding) {
         text.push_str(note.trim_end());
         text.push_str("\n\n──────── Raw source ────────\n\n");
     }
@@ -353,6 +385,64 @@ mod tests {
                 .contains("> Summary.\r\n\r\n──────── Raw source ────────\r\n\r\n---\r\ntype: raw")
         );
         assert_eq!(rows[0].home_label(), "\u{2192} Payments incidents");
+    }
+
+    #[test]
+    fn findings_are_listed_by_their_note_and_name_their_agent() {
+        use crate::note::write::Stamp;
+        let finding = "---\ntype: finding\nauthor: claude-code\nsuggested_home: \"Payments/\"\nstatus: inbox\n---\n\n# Raising max.poll.records makes the lag worse\n";
+        let files: HashMap<PathBuf, String> = [
+            (PathBuf::from(r"D:\Notes\inbox\Lag.md"), finding.to_owned()),
+            (
+                PathBuf::from(r"D:\Notes\inbox\Kept.md"),
+                finding.replace("status: inbox", "status: kept"),
+            ),
+        ]
+        .into();
+        let at = |path: &str| Written {
+            path: PathBuf::from(path),
+            stamp: Stamp {
+                len: 1,
+                modified_ms: 1,
+            },
+        };
+        let mut placed = Job::finding(
+            "A",
+            PathBuf::from(r"D:\Notes"),
+            at(r"inbox\Lag.md"),
+            "2026-10-23T14:05".to_owned(),
+        );
+        placed.state = State::Done;
+        let mut placing = placed.clone();
+        placing.capture_id = "B".to_owned();
+        placing.created = "2026-10-23T14:00".to_owned();
+        placing.state = State::Working;
+        let mut kept = placed.clone();
+        kept.capture_id = "C".to_owned();
+        kept.note = Some(at(r"inbox\Kept.md"));
+        let (rows, gone) = rows(
+            vec![placed, placing, kept],
+            |path| files.get(path).cloned(),
+            |_| PathBuf::from("inbox"),
+        );
+        assert!(gone.is_empty());
+        let listed: Vec<(&str, String)> = rows
+            .iter()
+            .map(|row| (row.capture_id.as_str(), row.status()))
+            .collect();
+        assert_eq!(
+            listed,
+            [("A", "claude-code".to_owned()), ("B", "Placing".to_owned())]
+        );
+        assert_eq!(
+            rows[0].title,
+            "Raising max.poll.records makes the lag worse"
+        );
+        assert_eq!(rows[0].home_label(), "\u{2192} Payments/");
+        assert_eq!(rows[0].kinds, "Finding");
+        let preview = preview_text(&rows[0]);
+        assert!(preview.starts_with("---\r\ntype: finding"), "{preview}");
+        assert!(!preview.contains("Raw source"), "{preview}");
     }
 
     #[test]

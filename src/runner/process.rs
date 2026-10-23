@@ -1,13 +1,14 @@
 //! One job, start to finish: fetch its links' pages, build the request, ask the backend (once
 //! more if the reply isn't a usable note), check the reply, write or replace the note, and
-//! record what happened.
+//! record what happened. A finding an agent wrote is placed instead: its request asks only for
+//! links and a home, which go into the note as it is.
 
 use super::backoff;
 use crate::index::service::{FIRST_BUILD_WAIT, Indexes};
 use crate::model::request;
 use crate::model::{Backend, BackendError};
 use crate::note::reply::{self, Allowed};
-use crate::note::{render, write};
+use crate::note::{NoteJson, place, render, write};
 use crate::notebook::Conventions;
 use crate::queue::{Job, State, Store};
 use std::time::Duration;
@@ -97,19 +98,16 @@ fn run(
     today: &str,
     indexes: Option<&Indexes>,
 ) -> Result<write::Written, BackendError> {
+    if job.finding {
+        return place_finding(job, backend, today, indexes);
+    }
     let (date, time) = crate::platform::clock::local_now();
     super::pages::fetch_pages(job, &crate::capture::raw::captured_stamp(date, time))?;
     // Without the index in time, the note is written without candidates.
     let snapshot = indexes.and_then(|indexes| indexes.snapshot(&job.notebook, FIRST_BUILD_WAIT));
     let request =
         request::build_with(job, today, snapshot.as_deref()).map_err(BackendError::Fail)?;
-    let note = match backend.complete(&request) {
-        Err(BackendError::Invalid(problems)) => {
-            crate::log::line(&format!("runner: asking again ({problems})"));
-            backend.complete(&request.corrected(&problems.to_string()))?
-        }
-        other => other?,
-    };
+    let note = ask(backend, &request)?;
     let facts = &request.capture;
     let note = reply::check(
         note,
@@ -153,6 +151,50 @@ fn run(
         }
         _ => write::write_new(&facts.notebook, &path, &text).map_err(BackendError::Fail),
     }
+}
+
+/// Asks `backend` for `request`, once more when the reply isn't usable.
+fn ask(backend: &dyn Backend, request: &request::NoteRequest) -> Result<NoteJson, BackendError> {
+    match backend.complete(request) {
+        Err(BackendError::Invalid(problems)) => {
+            crate::log::line(&format!("runner: asking again ({problems})"));
+            backend.complete(&request.corrected(&problems.to_string()))
+        }
+        other => other,
+    }
+}
+
+/// How long a finding that changed while being placed waits before it is tried again.
+const CHANGED_WAIT: Duration = Duration::from_secs(5);
+
+/// Places `job`'s finding: its links and home, from candidates in `indexes` when given.
+fn place_finding(
+    job: &Job,
+    backend: &dyn Backend,
+    today: &str,
+    indexes: Option<&Indexes>,
+) -> Result<write::Written, BackendError> {
+    let snapshot = indexes.and_then(|indexes| indexes.snapshot(&job.notebook, FIRST_BUILD_WAIT));
+    let request =
+        request::build_placing(job, today, snapshot.as_deref()).map_err(BackendError::Fail)?;
+    let note = ask(backend, &request)?;
+    let facts = &request.capture;
+    let note = reply::check(
+        note,
+        &facts.fallback_title,
+        &Allowed {
+            notes: &facts.candidates,
+            home_notes: &facts.home_notes,
+            home_folders: &facts.home_folders,
+        },
+    );
+    place::place(&facts.notebook, &facts.raw, &note).map_err(|error| match error {
+        write::ReplaceError::Edited => BackendError::Retry {
+            after: Some(CHANGED_WAIT),
+            reason: "The note changed while it was being placed.".to_owned(),
+        },
+        write::ReplaceError::Failed(message) => BackendError::Fail(message),
+    })
 }
 
 /// Milliseconds since 1970, now.

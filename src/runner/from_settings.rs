@@ -112,6 +112,27 @@ impl Factory for FromSettings {
         let path = self.settings.as_deref()?;
         SettingsFile::load(path).settings().0.token_cap
     }
+
+    fn notebooks(&self) -> Vec<PathBuf> {
+        let Some(path) = self.settings.as_deref() else {
+            return Vec::new();
+        };
+        let settings = SettingsFile::load(path).settings().0;
+        let mut notebooks: Vec<PathBuf> = Vec::new();
+        for notebook in settings
+            .notebook
+            .into_iter()
+            .chain(settings.recent_notebooks)
+        {
+            if !notebooks
+                .iter()
+                .any(|known| crate::queue::findings::same_folder(known, &notebook))
+            {
+                notebooks.push(notebook);
+            }
+        }
+        notebooks
+    }
 }
 
 #[cfg(test)]

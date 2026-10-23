@@ -1,5 +1,5 @@
-//! A job: one raw source waiting to become a note, with its state, the note it became, and when
-//! to try again. Stored as JSON, converted by hand so the queue needs no derive macros.
+//! A job: one raw source waiting to become a note, or an agent's finding waiting to be placed,
+//! with its state, the note it became, and when to try again. Stored as JSON, converted by hand so the queue needs no derive macros.
 //! Version 1 files (before notes) still read.
 
 use crate::note::write::{Stamp, Written};
@@ -61,6 +61,9 @@ pub struct Job {
     pub regenerate: bool,
     /// Not before this time (milliseconds since 1970), after a failure that may pass.
     pub retry_at: Option<u64>,
+    /// A note an agent wrote (`type: finding`): `raw` and `note` are the note itself, and it
+    /// gets related links and a home instead of being written.
+    pub finding: bool,
 }
 
 impl Job {
@@ -77,6 +80,17 @@ impl Job {
             note: None,
             regenerate: false,
             retry_at: None,
+            finding: false,
+        }
+    }
+
+    /// A new queued job for the finding `note` in `notebook`.
+    pub fn finding(capture_id: &str, notebook: PathBuf, note: Written, created: String) -> Self {
+        Self {
+            raw: note.path.clone(),
+            note: Some(note),
+            finding: true,
+            ..Self::queued(capture_id, notebook, PathBuf::new(), created)
         }
     }
 
@@ -105,6 +119,7 @@ impl Job {
             "note": note,
             "regenerate": self.regenerate,
             "retry_at": self.retry_at,
+            "finding": self.finding,
         });
         serde_json::to_string_pretty(&value).expect("a JSON value always serializes")
     }
@@ -154,6 +169,10 @@ impl Job {
                 .and_then(Value::as_bool)
                 .unwrap_or(false),
             retry_at: object.get("retry_at").and_then(Value::as_u64),
+            finding: object
+                .get("finding")
+                .and_then(Value::as_bool)
+                .unwrap_or(false),
         })
     }
 }
@@ -187,6 +206,8 @@ mod tests {
         });
         job.regenerate = true;
         job.retry_at = Some(1_792_281_630_000);
+        assert_eq!(Job::from_json(&job.to_json()), Ok(job.clone()));
+        job.finding = true;
         assert_eq!(Job::from_json(&job.to_json()), Ok(job));
     }
 
@@ -197,8 +218,8 @@ mod tests {
         )
         .unwrap();
         assert_eq!(
-            (job.note, job.regenerate, job.retry_at),
-            (None, false, None)
+            (job.note, job.regenerate, job.retry_at, job.finding),
+            (None, false, None, false)
         );
     }
 

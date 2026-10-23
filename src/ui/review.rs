@@ -4,7 +4,7 @@
 //! folder when it has none); **H** picks another home; **I** keeps it in the inbox; **Ctrl+Z**
 //! undoes the last file, keep or discard; **E** (or a double-click) opens the note, or the raw
 //! source when there is none, in FastPad or the default editor; **R** writes the note again with
-//! the current settings; **Del** sends the note to the Recycle Bin and keeps the raw source;
+//! the current settings, or places an agent's finding again; **Del** sends the note to the Recycle Bin and keeps the raw source;
 //! **Shift+Del** sends the note, the raw source and the attachments only it links to; **F5**
 //! refreshes; **Esc** closes. A standard ListView and a read-only edit give keyboard and
 //! screen-reader support from Windows.
@@ -485,7 +485,8 @@ fn reload(hwnd: HWND) {
         unsafe { SendMessageW(review.list, LVM_INSERTITEMW, 0, (&raw const item) as isize) };
         let time = review_list::time_label(&row.created, today);
         let home = row.home_label();
-        for (column, text) in [(1, home.as_str()), (2, time.as_str()), (3, row.status())] {
+        let status = row.status();
+        for (column, text) in [(1, home.as_str()), (2, time.as_str()), (3, status.as_str())] {
             let text = wide(text);
             let sub = LVITEMW {
                 iSubItem: column,
@@ -569,12 +570,17 @@ fn footer_text(review: &Review) -> String {
                 Some(_) => format!("Enter file {}", row.home_label()),
                 None => "Enter folder".to_owned(),
             };
+            let again = if row.finding {
+                "R place again"
+            } else {
+                "R regenerate"
+            };
             vec![
                 enter,
                 "H home".to_owned(),
                 "I keep".to_owned(),
                 "E open".to_owned(),
-                "R regenerate".to_owned(),
+                again.to_owned(),
                 "Del discard".to_owned(),
                 "Ctrl+Z undo".to_owned(),
                 "Esc close".to_owned(),
@@ -867,7 +873,11 @@ fn discard_selected(hwnd: HWND) {
     if let Some(job) = store.get(&row.capture_id) {
         let mut discarded = job.clone();
         discarded.state = State::Discarded;
-        discarded.note = None;
+        // A finding's job keeps the note it recycled, so that very file, put back, isn't
+        // taken for a new finding.
+        if !discarded.finding {
+            discarded.note = None;
+        }
         discarded.regenerate = false;
         save_job(&store, &discarded);
         if let Ok(undo) = before {
@@ -894,7 +904,8 @@ fn regenerate_selected(hwnd: HWND) {
     if job.state == State::Working {
         return;
     }
-    if let Some(note) = &mut job.note {
+    // Placing a finding again changes only its home and links, so your edits are safe.
+    if let Some(note) = job.note.as_mut().filter(|_| !job.finding) {
         let now = crate::note::write::Stamp::of(&row.notebook.join(&note.path));
         if let Some(now) = now
             && now != note.stamp
@@ -927,7 +938,8 @@ fn regenerate_selected(hwnd: HWND) {
 }
 
 /// Shift+Del: the capture's note, its raw source with its pages, and the attachments no other
-/// raw source links to go to the Recycle Bin, and its job is removed.
+/// raw source links to go to the Recycle Bin, and its job is removed. For a finding, only the
+/// note.
 fn recycle_selected(hwnd: HWND) {
     let Some(review) = state(hwnd) else {
         return;
@@ -935,6 +947,32 @@ fn recycle_selected(hwnd: HWND) {
     let Some(row) = selected_row(review).cloned() else {
         return;
     };
+    let paths = if row.finding {
+        // A finding is its own source, with no pages or attachments of its own.
+        row.note_path().into_iter().collect()
+    } else {
+        capture_files(&row)
+    };
+    match review.actions.recycle(&paths) {
+        Ok(()) => {
+            Store::new(review.queue.clone()).remove(&row.capture_id);
+            review.actions.changed();
+            reload(hwnd);
+        }
+        Err(error) => {
+            unsafe {
+                SetWindowTextW(
+                    review.preview,
+                    wide(&format!("Couldn't recycle this capture: {error}")).as_ptr(),
+                )
+            };
+        }
+    }
+}
+
+/// A capture's files: its note when it is there, its raw source with its pages, and the
+/// attachments no other raw source links to.
+fn capture_files(row: &Row) -> Vec<PathBuf> {
     let conventions = crate::notebook::Conventions::load(&row.notebook);
     let others: Vec<RawInfo> = raw_sources(&row.notebook, conventions.raw_folder())
         .into_iter()
@@ -960,21 +998,7 @@ fn recycle_selected(hwnd: HWND) {
             .into_iter()
             .map(|path| row.notebook.join(path)),
     );
-    match review.actions.recycle(&paths) {
-        Ok(()) => {
-            Store::new(review.queue.clone()).remove(&row.capture_id);
-            review.actions.changed();
-            reload(hwnd);
-        }
-        Err(error) => {
-            unsafe {
-                SetWindowTextW(
-                    review.preview,
-                    wide(&format!("Couldn't recycle this capture: {error}")).as_ptr(),
-                )
-            };
-        }
-    }
+    paths
 }
 
 /// E: the note, or the raw source when there is no note.
@@ -1692,6 +1716,97 @@ mod tests {
 
         unsafe { DestroyWindow(hwnd) };
         let _ = std::fs::remove_dir_all(&temp);
+    }
+
+    #[test]
+    fn a_finding_is_filed_put_back_placed_again_and_recycled_alone() {
+        use crate::runner::process::tests::Temp;
+        let temp = Temp::new("review-finding");
+        let notebook = temp.notebook();
+        std::fs::create_dir_all(notebook.join(r"Payments\Incidents")).unwrap();
+        std::fs::write(
+            notebook.join(r"Payments\Incidents\Earlier.md"),
+            "# Earlier\n",
+        )
+        .unwrap();
+        std::fs::create_dir_all(notebook.join("inbox")).unwrap();
+        let path = PathBuf::from(r"inbox\Lag.md");
+        std::fs::write(
+            notebook.join(&path),
+            "---\ntype: finding\nauthor: opencode\nsuggested_home: \"Payments/Incidents/\"\nstatus: inbox\n---\n\n# Lag\n",
+        )
+        .unwrap();
+        let mut job = Job::finding(
+            "FINDING1",
+            notebook.clone(),
+            crate::note::write::Written {
+                path: path.clone(),
+                stamp: crate::note::write::Stamp::of(&notebook.join(&path)).unwrap(),
+            },
+            "2026-10-23T14:05".to_owned(),
+        );
+        job.state = State::Done;
+        let store = temp.store();
+        store.put(&job).unwrap();
+
+        let seen = Rc::new(RefCell::new(Seen::default()));
+        let hwnd = open(Open {
+            queue: temp.0.join("queue"),
+            settings: None,
+            notebook: Some(notebook.clone()),
+            indexes: Some(Indexes::new(None)),
+            actions: Box::new(Watch(seen.clone())),
+        })
+        .unwrap();
+        assert_eq!(titles(hwnd), ["Lag"]);
+        select_titled(hwnd, "Lag");
+        assert_eq!(state(hwnd).unwrap().rows[0].status(), "opencode");
+        assert!(footer_text(state(hwnd).unwrap()).contains("R place again"));
+
+        // Enter files it in its suggested folder; its job follows it, and Ctrl+Z puts it back.
+        enter(hwnd);
+        assert!(notebook.join(r"Payments\Incidents\Lag.md").exists());
+        assert!(titles(hwnd).is_empty());
+        assert_eq!(
+            store.get("FINDING1").unwrap().note.unwrap().path,
+            PathBuf::from(r"Payments\Incidents\Lag.md")
+        );
+        undo_last(hwnd);
+        assert!(notebook.join(&path).exists());
+        assert_eq!(titles(hwnd), ["Lag"]);
+
+        // Del recycles it, and its job stays to say so; Ctrl+Z brings both back.
+        select_titled(hwnd, "Lag");
+        discard_selected(hwnd);
+        assert!(!notebook.join(&path).exists());
+        assert!(titles(hwnd).is_empty());
+        let discarded = store.get("FINDING1").unwrap();
+        assert_eq!(discarded.state, State::Discarded);
+        assert_eq!(discarded.note.unwrap().path, path);
+        undo_last(hwnd);
+        assert!(notebook.join(&path).exists());
+        assert_eq!(titles(hwnd), ["Lag"]);
+
+        // R places it again without asking, even after an edit: its words aren't replaced.
+        std::fs::write(
+            notebook.join(&path),
+            "---\ntype: finding\nauthor: opencode\nstatus: inbox\n---\n\n# Lag\n\nMore.\n",
+        )
+        .unwrap();
+        select_titled(hwnd, "Lag");
+        regenerate_selected(hwnd);
+        assert!(seen.borrow().asked.is_empty());
+        assert_eq!(store.get("FINDING1").unwrap().state, State::Queued);
+
+        // Shift+Del recycles the note alone.
+        select_titled(hwnd, "Lag");
+        let before = seen.borrow().recycled.len();
+        recycle_selected(hwnd);
+        assert_eq!(seen.borrow().recycled[before..], [notebook.join(&path)]);
+        assert!(store.get("FINDING1").is_none());
+        assert!(notebook.join(r"Payments\Incidents\Earlier.md").exists());
+
+        unsafe { DestroyWindow(hwnd) };
     }
 
     #[test]

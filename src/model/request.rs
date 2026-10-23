@@ -75,10 +75,7 @@ pub fn build_with(job: &Job, today: &str, index: Option<&Snapshot>) -> Result<No
     let info = read::read(&job.raw, &text);
     let front = frontmatter::parse(&text);
     let text_of = |key: &str| match front.as_ref().and_then(|front| front.get(key)) {
-        Some(Value::Text(value)) if !value.is_empty() => {
-            // The reader takes the quotes off but leaves the escapes in.
-            Some(value.replace("\\\"", "\"").replace("\\\\", "\\"))
-        }
+        Some(Value::Text(value)) if !value.is_empty() => Some(value.clone()),
         _ => None,
     };
     let source_window = text_of("source_window");
@@ -245,11 +242,7 @@ pub fn build_with(job: &Job, today: &str, index: Option<&Snapshot>) -> Result<No
         .map(|index| related(index, &query, &conventions, own_note))
         .unwrap_or_default();
 
-    let notebook_name = job
-        .notebook
-        .file_name()
-        .map(|name| name.to_string_lossy().into_owned())
-        .unwrap_or_else(|| job.notebook.display().to_string());
+    let notebook_name = notebook_name(&job.notebook);
     let user_text = prompt::user_turn(&Turn {
         today,
         notebook: &notebook_name,
@@ -288,17 +281,8 @@ pub fn build_with(job: &Job, today: &str, index: Option<&Snapshot>) -> Result<No
             fallback_title,
             links: source_links,
             truncated: budget.truncated().to_vec(),
-            candidates: related
-                .candidates
-                .iter()
-                .map(|candidate| candidate.name.clone())
-                .collect(),
-            home_notes: related
-                .candidates
-                .iter()
-                .filter(|candidate| candidate.home)
-                .map(|candidate| candidate.name.clone())
-                .collect(),
+            candidates: related.names(),
+            home_notes: related.home_names(),
             home_folders: related.home_folders,
         },
     })
@@ -307,12 +291,108 @@ pub fn build_with(job: &Job, today: &str, index: Option<&Snapshot>) -> Result<No
 /// How much of the material goes in the query, in characters.
 const QUERY_MATERIAL_CHARS: usize = 2_000;
 
+/// How much of a finding goes in the placing request, in characters.
+const FINDING_CHARS: usize = 20_000;
+
+/// The request that places `job`'s finding, on `today` (`YYYY-MM-DD`), with candidates from
+/// `index` when there is one: the note as it is now, and the notes it may relate to.
+pub fn build_placing(
+    job: &Job,
+    today: &str,
+    index: Option<&Snapshot>,
+) -> Result<NoteRequest, String> {
+    let path = job.note.as_ref().map_or(&job.raw, |note| &note.path);
+    let absolute = job.notebook.join(path);
+    let text = std::fs::read_to_string(&absolute)
+        .map_err(|error| format!("FastCapture could not read {}: {error}", absolute.display()))?;
+    let front = frontmatter::parse(&text).ok_or(
+        "Its front matter can't be read: it must start with a --- line and end with another --- \
+         line within 200 lines.",
+    )?;
+    let body = &text[front.body_start..];
+    let title = body
+        .lines()
+        .find_map(|line| line.strip_prefix("# "))
+        .map(str::trim)
+        .filter(|title| !title.is_empty())
+        .map_or_else(|| stem_of(path), str::to_owned);
+    let summary = match front.get("summary") {
+        Some(Value::Text(summary)) => summary.clone(),
+        _ => String::new(),
+    };
+    let mut query = format!("{title}\n{summary}\n");
+    query.extend(body.chars().take(QUERY_MATERIAL_CHARS));
+    let conventions = Conventions::load(&job.notebook);
+    let related = index
+        .map(|index| related(index, &query, &conventions, Some(path)))
+        .unwrap_or_default();
+    let mut note: String = text.chars().take(FINDING_CHARS).collect();
+    if note.len() < text.len() {
+        note.push_str("\n…");
+    }
+    let notebook_name = notebook_name(&job.notebook);
+    let user_text = prompt::placing_turn(&prompt::Placing {
+        today,
+        notebook: &notebook_name,
+        path: &path.to_string_lossy().replace('\\', "/"),
+        note: &note,
+        candidates: &related.candidates,
+        home_folders: &related.home_folders,
+    });
+    Ok(NoteRequest {
+        system: prompt::PLACE_RULES,
+        user_text,
+        images: Vec::new(),
+        capture: CaptureFacts {
+            notebook: job.notebook.clone(),
+            capture_id: job.capture_id.clone(),
+            captured: job.created.clone(),
+            raw: path.clone(),
+            kinds: Vec::new(),
+            attachments: Vec::new(),
+            fallback_title: title,
+            links: Vec::new(),
+            truncated: Vec::new(),
+            candidates: related.names(),
+            home_notes: related.home_names(),
+            home_folders: related.home_folders,
+        },
+    })
+}
+
 /// The notes a capture relates to, the folders it could be filed in, and the notebook's tags.
 #[derive(Default)]
 struct Related {
     candidates: Vec<Candidate>,
     home_folders: Vec<String>,
     tags: Vec<String>,
+}
+
+impl Related {
+    /// The candidates' names: what a reply may link to.
+    fn names(&self) -> Vec<String> {
+        self.candidates
+            .iter()
+            .map(|candidate| candidate.name.clone())
+            .collect()
+    }
+
+    /// The names of the candidates that are home notes: what a reply may file it under.
+    fn home_names(&self) -> Vec<String> {
+        self.candidates
+            .iter()
+            .filter(|candidate| candidate.home)
+            .map(|candidate| candidate.name.clone())
+            .collect()
+    }
+}
+
+/// The notebook's name, as the model is told it: its folder's name.
+fn notebook_name(notebook: &Path) -> String {
+    notebook
+        .file_name()
+        .map(|name| name.to_string_lossy().into_owned())
+        .unwrap_or_else(|| notebook.display().to_string())
 }
 
 /// The best matches for `query` in `index`, never `own_note` (the capture's note, when it is

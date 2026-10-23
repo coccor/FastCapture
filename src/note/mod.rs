@@ -1,5 +1,7 @@
-//! Written notes: the JSON a model returns, checking it, and the Markdown note it becomes.
+//! Written notes: the JSON a model returns, checking it, the Markdown note it becomes, and
+//! placing a note an agent wrote.
 
+pub mod place;
 pub mod render;
 pub mod reply;
 pub mod schema;

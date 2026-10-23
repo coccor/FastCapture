@@ -20,6 +20,9 @@ pub struct CaptureSettings {
     pub raw_folder: PathBuf,
     /// Front matter `type:` values that mark a note as a possible home, lowercase.
     pub home_types: Vec<String>,
+    /// The repos the notebook covers, as written: root folders or remotes. Agents read these to
+    /// find a repo's notebook; FastCapture keeps them so the line isn't reported as unknown.
+    pub repos: Vec<String>,
 }
 
 impl Default for CaptureSettings {
@@ -27,6 +30,7 @@ impl Default for CaptureSettings {
         Self {
             raw_folder: PathBuf::from("raw"),
             home_types: ["topic", "project", "moc"].map(str::to_owned).to_vec(),
+            repos: Vec::new(),
         }
     }
 }
@@ -66,6 +70,14 @@ pub fn parse(text: &str) -> (CaptureSettings, Vec<Warning>) {
                     .collect();
                 (!types.is_empty()).then(|| settings.home_types = types)
             }
+            "repos" => {
+                settings.repos = value
+                    .split(',')
+                    .map(|item| item.trim().to_owned())
+                    .filter(|item| !item.is_empty())
+                    .collect();
+                Some(())
+            }
             _ => {
                 warn(format!("unknown setting key: {key}"));
                 continue;
@@ -99,6 +111,20 @@ mod tests {
         assert!(warnings.is_empty(), "{warnings:?}");
         assert_eq!(settings.raw_folder, PathBuf::from(r"sources\raw"));
         assert_eq!(settings.home_types, ["topic", "area"]);
+    }
+
+    #[test]
+    fn repos_are_kept_as_written() {
+        let (settings, warnings) =
+            parse("repos = C:/Projects/Payments, github.com/acme/payments ,\n");
+        assert!(warnings.is_empty(), "{warnings:?}");
+        assert_eq!(
+            settings.repos,
+            ["C:/Projects/Payments", "github.com/acme/payments"]
+        );
+        let (settings, warnings) = parse("repos=\n");
+        assert!(warnings.is_empty(), "{warnings:?}");
+        assert!(settings.repos.is_empty());
     }
 
     #[test]
