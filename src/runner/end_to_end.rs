@@ -868,3 +868,138 @@ fn a_screenshot_capture_becomes_a_note_through_copilot_and_its_tokens_are_counte
         "Copilot's tokens count toward the cap"
     );
 }
+
+/// Claude at a scripted server, with the notebooks whose findings the worker looks for.
+struct ClaudeWithNotebooks(String, Vec<PathBuf>);
+
+impl Factory for ClaudeWithNotebooks {
+    fn backend(&self) -> Result<Box<dyn Backend>, String> {
+        ClaudeAt(self.0.clone()).backend()
+    }
+
+    fn notebooks(&self) -> Vec<PathBuf> {
+        self.1.clone()
+    }
+}
+
+#[test]
+fn a_finding_an_agent_wrote_is_found_and_placed_without_being_rewritten() {
+    use crate::index::service::Indexes;
+    let temp = Temp::new("finding");
+    let notebook = temp.0.join("Work notes");
+    let write = |path: &str, text: &str| {
+        let path = notebook.join(path);
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(path, text).unwrap();
+    };
+    write(
+        r"Payments\Payments incidents.md",
+        "---\ntype: topic\n---\n# Payments incidents\n\nEvery payments outage, newest last.\n",
+    );
+    write(
+        r"Payments\Ledger batch.md",
+        "# Ledger batch\n\nThe nightly ledger batch writes millions of records; consumer lag follows.\n",
+    );
+    write(r"Recipes\Soup.md", "# Soup\n\nLeeks and potatoes.\n");
+    let finding = "---\n\
+                   type: finding\n\
+                   finding: dead-end\n\
+                   captured: 2026-10-23T14:05\n\
+                   author: claude-code\n\
+                   summary: \"Raising max.poll.records made the ledger batch's consumer lag worse.\"\n\
+                   status: inbox\n\
+                   ---\n\
+                   \n\
+                   # Raising max.poll.records makes the ledger batch's lag worse\n\
+                   \n\
+                   ## What we tried\n\
+                   \n\
+                   Raised max.poll.records from 500 to 5000 during the payments ledger batch.\n";
+    let path = r"inbox\Raising max.poll.records makes the ledger batch's lag worse.md";
+    write(path, finding);
+    // Written a while ago: the agent is done with it.
+    std::fs::File::options()
+        .write(true)
+        .open(notebook.join(path))
+        .unwrap()
+        .set_modified(std::time::SystemTime::now() - Duration::from_secs(60))
+        .unwrap();
+
+    let placed = json!({
+        "title": "Raising max.poll.records makes the ledger batch's lag worse",
+        "summary": "Raising max.poll.records made the ledger batch's consumer lag worse.",
+        "body": "",
+        "key_points": [],
+        "tasks": [],
+        "tags": [],
+        "links": [
+            {"note": "Ledger batch", "new": false},
+            {"note": "Invented note", "new": false}
+        ],
+        "home": {"kind": "topic", "note": "Payments incidents", "reason": "A payments problem."}
+    });
+    let model = TestServer::start(vec![Scripted::json(
+        200,
+        &json!({
+            "id": "msg_place",
+            "type": "message",
+            "role": "assistant",
+            "content": [{"type": "text", "text": placed.to_string()}],
+            "stop_reason": "end_turn",
+            "usage": {"input_tokens": 900, "output_tokens": 60}
+        })
+        .to_string(),
+    )]);
+    let queue = temp.0.join("queue");
+    let worker = Worker::start(
+        queue.clone(),
+        Box::new(ClaudeWithNotebooks(model.url(), vec![notebook.clone()])),
+        Some(Indexes::new(None)),
+        None,
+        Box::new(|| {}),
+    );
+    let store = Store::new(queue);
+    let until = std::time::Instant::now() + Duration::from_secs(10);
+    let job = loop {
+        if let Some(job) = store
+            .list()
+            .into_iter()
+            .find(|job| job.finding && job.state == State::Done)
+        {
+            break job;
+        }
+        assert!(std::time::Instant::now() < until, "{:?}", store.list());
+        std::thread::sleep(Duration::from_millis(20));
+    };
+    worker.stop();
+    assert_eq!(job.created, "2026-10-23T14:05");
+    assert_eq!(job.raw, PathBuf::from(path));
+
+    // The request asked only to place it: the note as written, and the candidates.
+    let request = model.requests().remove(0).json();
+    assert_eq!(
+        request["system"][0]["text"],
+        crate::model::prompt::PLACE_RULES
+    );
+    let user_text = request["messages"][0]["content"][0]["text"]
+        .as_str()
+        .unwrap();
+    assert!(
+        user_text.contains(
+            "<finding path=\"inbox/Raising max.poll.records makes the ledger batch's lag worse.md\">\n---\ntype: finding\n"
+        ),
+        "{user_text}"
+    );
+    assert!(user_text.contains(
+        "<note name=\"Payments incidents\" folder=\"Payments\" type=\"topic\" home=\"yes\">"
+    ));
+    assert!(!user_text.contains("<note name=\"Raising"), "not itself");
+
+    // The note keeps every word the agent wrote, and gains its home and the real link.
+    let text = std::fs::read_to_string(notebook.join(path)).unwrap();
+    let expected = finding.replace(
+        "status: inbox\n",
+        "suggested_home: \"[[Payments incidents]]\"\nstatus: inbox\n",
+    ) + "\n## Related\n\n- [[Ledger batch]]\n";
+    assert_eq!(text, expected);
+}

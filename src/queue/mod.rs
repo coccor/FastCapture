@@ -1,5 +1,6 @@
 //! The processing queue: it writes and lists jobs, which the runner takes to a model.
 
+pub mod findings;
 pub mod job;
 pub mod store;
 

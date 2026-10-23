@@ -1,5 +1,6 @@
-//! The worker: one thread that takes queued jobs oldest first and turns them into notes. It
-//! sleeps until a capture arrives (`Waker::wake`), a retry falls due, or a minute passes; it
+//! The worker: one thread that takes queued jobs oldest first and turns them into notes. Each
+//! time round it gives the findings agents left in the notebooks a job. It sleeps until a
+//! capture arrives (`Waker::wake`), a retry falls due, or a minute passes; it
 //! stops taking jobs while paused, by you or by an error only you can fix; it builds its
 //! backend again when the settings change; and it adds each cloud job's tokens to the usage
 //! ledger.
@@ -8,6 +9,7 @@ use super::process::{self, Outcome};
 use super::usage::today;
 use crate::index::service::Indexes;
 use crate::model::Backend;
+use crate::queue::findings;
 use crate::queue::{State, Store};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Condvar, Mutex};
@@ -16,12 +18,19 @@ use std::time::Duration;
 /// The longest the worker sleeps without a reason, in case a job arrived some other way.
 const IDLE_CHECK: Duration = Duration::from_secs(60);
 
+/// How soon the worker looks again at a finding an agent is still writing.
+const SETTLE_CHECK: Duration = Duration::from_millis(findings::SETTLE_MS + 500);
+
 /// Builds the backend the settings choose, or says what's missing.
 pub trait Factory: Send {
     fn backend(&self) -> Result<Box<dyn Backend>, String>;
     /// The most tokens cloud requests may use in a month, read when a cloud job is due.
     fn token_cap(&self) -> Option<u64> {
         None
+    }
+    /// The notebooks whose capture folders may hold findings: the ones FastCapture knows.
+    fn notebooks(&self) -> Vec<PathBuf> {
+        Vec::new()
     }
 }
 
@@ -247,6 +256,8 @@ fn run(
         if rebuild {
             backend = None;
         }
+        let settling = adopt_findings(store, factory, changed);
+        let idle = if settling { SETTLE_CHECK } else { IDLE_CHECK };
         if let Some(reason) = paused {
             set_status(shared, Status::Paused(reason), changed);
             if !sleep(shared, None) {
@@ -296,11 +307,11 @@ fn run(
                         },
                         changed,
                     );
-                    process::until(*at, now).min(IDLE_CHECK)
+                    process::until(*at, now).min(idle)
                 }
                 None => {
                     set_status(shared, Status::Idle, changed);
-                    IDLE_CHECK
+                    idle
                 }
             };
             if !sleep(shared, Some(wait)) {
@@ -343,6 +354,32 @@ fn run(
         }
         changed();
     }
+}
+
+/// Gives the findings agents left in the notebooks a job. Returns whether one is still being
+/// written, so the worker looks again soon.
+fn adopt_findings(store: &Store, factory: &dyn Factory, changed: &dyn Fn()) -> bool {
+    let (date, time) = crate::platform::clock::local_now();
+    let captured = crate::capture::raw::captured_stamp(date, time);
+    let now = process::now_ms();
+    let mut settling = false;
+    let mut added = 0;
+    for notebook in factory.notebooks() {
+        let (jobs, waiting) = findings::adopt(store, &notebook, now, &captured);
+        for job in &jobs {
+            crate::log::line(&format!(
+                "queue: finding {} in {}",
+                job.raw.display(),
+                notebook.display()
+            ));
+        }
+        added += jobs.len();
+        settling |= waiting;
+    }
+    if added > 0 {
+        changed();
+    }
+    settling
 }
 
 /// Why a cloud job must wait: this month's tokens have reached the cap. Checked again at each
