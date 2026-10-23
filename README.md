@@ -58,7 +58,7 @@ Requires Windows 10 1809 or later, or Windows 11.
 
 ## Capture it before it's gone
 
-<img src="docs/images/capture.png" alt="The capture box with two lines of text and a screenshot attached" width="520">
+<img src="docs/images/capture.png" alt="The capture box with two lines of text and a screenshot attached, sent to the Notes notebook" width="560">
 
 | Key or action | What it does |
 |---|---|
@@ -78,12 +78,14 @@ Type what the capture is about, then add what you want to keep with it:
 | **Ctrl+Shift+V** | Attaches the clipboard's image even when it also holds text |
 | **Ctrl+Shift+S** or **+ Snip** | Hides the box and starts Windows' snipping tool; the snip is attached when the box comes back |
 | Drop files on the box | Attaches them (copied, never moved; files over 20 MB ask first) |
-| **Ctrl+N** | Sends this capture to another recent notebook |
+| **Ctrl+N** or the notebook's name in the title | Sends this capture to a recent notebook, or to any folder with **Other folder…** |
 | **Tab** | Moves to the attachments: arrows to choose, **Delete** to remove |
 | **Ctrl+Enter** | Saves and closes |
 | **Esc** | Closes, keeping what you wrote as a draft for next time |
 
 A line holding only an `http(s)://` address is recorded as a link. The footer shows what the capture holds ("Text + screenshot"). When pasted text came from a web page, the browser's note of that page is kept with it (`source_url`). The clipboard hotkey pastes the same way.
+
+The title says where the capture goes ("Capture → Notes"). The notebook chosen there is for this capture only; Settings' notebook stays as it is. A folder picked with **Other folder…** joins the recent notebooks once a capture is filed there.
 
 Drag the box's edges or corners to resize it; it opens at the size you last left it. As you type, common English typos are fixed when you finish the word ("teh " becomes "the "); **Ctrl+Z** right after a fix puts back what you typed. Only words Windows' spell checker is sure of are changed, and never pasted text, web addresses, paths or #tags. Settings › **Fix common typos as I type (English)** turns it off.
 
@@ -259,9 +261,11 @@ Everything in Settings is saved to `%AppData%\FastCapture\fastcapture.ini`, one 
 | `capture_hotkey` | `Ctrl+Alt+C` | Ctrl, Shift, Alt and Win with a letter, digit, F1–F24 or a named key (Space, Enter, Insert…). Empty turns it off. |
 | `clipboard_hotkey` | (none) | Captures the clipboard with no box |
 | `capture_source` | `false` | Records the title of the window in front when you capture. Off by default because titles can hold private things. |
+| `autocorrect` | `true` | Fixes common English typos as you type in the capture box |
 | `start_at_sign_in` | `true` | Starts FastCapture when you sign in |
 | `theme` | `system` | `system`, `light` or `dark` |
-| `recent_notebook` | | One line per notebook offered by Ctrl+N |
+| `recent_notebook` | | One line per notebook offered by the capture box's notebook menu |
+| `capture_width`, `capture_height` | | The capture box's size, written when you resize it |
 | `mode` | (none) | `local` or `cloud`, set by Settings |
 | `local_endpoint`, `local_model` | | The local server's address and model |
 | `backend` | `claude` | Cloud's provider: `claude`, `openai` (any OpenAI-compatible API), `claude_code` or `copilot` |
