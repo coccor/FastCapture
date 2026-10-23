@@ -178,7 +178,7 @@ fn entries(lines: &[&str]) -> Vec<(String, Value)> {
                 }
                 index += 1;
                 match trimmed.strip_prefix('-') {
-                    Some(item) if raw.is_empty() => items.push(unquote(item.trim()).to_owned()),
+                    Some(item) if raw.is_empty() => items.push(unescape(item.trim())),
                     _ => raw.push(*next),
                 }
             }
@@ -201,14 +201,14 @@ fn entries(lines: &[&str]) -> Vec<(String, Value)> {
             Value::List(
                 split_flow(inner)
                     .into_iter()
-                    .map(|item| unquote(item.trim()).to_owned())
+                    .map(|item| unescape(item.trim()))
                     .filter(|item| !item.is_empty())
                     .collect(),
             )
         } else if value.starts_with(['{', '|', '>', '&', '*']) {
             Value::Raw(value.to_owned())
         } else {
-            Value::Text(unquote(strip_comment(value)).to_owned())
+            Value::Text(unescape(strip_comment(value)))
         };
         entries.push((key.to_owned(), value));
     }
@@ -233,8 +233,14 @@ fn split_flow(inner: &str) -> Vec<&str> {
     let mut items = Vec::new();
     let mut quote = None;
     let mut start = 0;
+    let mut escaped = false;
     for (at, c) in inner.char_indices() {
+        if escaped {
+            escaped = false;
+            continue;
+        }
         match (quote, c) {
+            (Some('"'), '\\') => escaped = true,
             (None, '"' | '\'') => quote = Some(c),
             (Some(open), _) if c == open => quote = None,
             (None, ',') => {
@@ -257,6 +263,34 @@ fn strip_comment(value: &str) -> &str {
         Some(at) => value[..at].trim_end(),
         None => value,
     }
+}
+
+/// A value as YAML means it: `"text"` without its quotes and escapes (`\"`, `\\`, `\n`, …),
+/// `'text'` without its quotes and with `''` as `'`, anything else as it is.
+fn unescape(value: &str) -> String {
+    if value.len() >= 2 && value.starts_with('\'') && value.ends_with('\'') {
+        return value[1..value.len() - 1].replace("''", "'");
+    }
+    if !(value.len() >= 2 && value.starts_with('"') && value.ends_with('"')) {
+        return value.to_owned();
+    }
+    let mut text = String::new();
+    let mut chars = value[1..value.len() - 1].chars();
+    while let Some(c) = chars.next() {
+        if c != '\\' {
+            text.push(c);
+            continue;
+        }
+        match chars.next() {
+            Some('n') => text.push('\n'),
+            Some('t') => text.push('\t'),
+            Some('r') => text.push('\r'),
+            Some('0') => text.push('\0'),
+            Some(other) => text.push(other),
+            None => text.push('\\'),
+        }
+    }
+    text
 }
 
 /// `"text"` or `'text'` without its quotes; anything else as it is.
@@ -330,6 +364,44 @@ mod tests {
         assert_eq!(front.get("aliases"), Some(&list(&["Atlas", "Project A"])));
         assert_eq!(front.get("empty"), Some(&text("")));
         assert_eq!(front.entries.len(), 7);
+    }
+
+    #[test]
+    fn quoted_values_lose_their_escapes() {
+        let front = parse(concat!(
+            "---\n",
+            r#"summary: "Parses with \"%Y-%M-%d\": a \\ path""#,
+            "\n",
+            "single: 'it''s'\n",
+            r#"window: "C:\\Users\\a.txt - Notepad""#,
+            "\n",
+            "urls:\n",
+            r#"  - "https://a.example/?q=\"x\"""#,
+            "\n",
+            r#"tags: ["say \"hi\", then go", b]"#,
+            "\n",
+            r"plain: C:\Users",
+            "\n---\n",
+        ))
+        .unwrap();
+        assert_eq!(
+            front.get("summary"),
+            Some(&text(r#"Parses with "%Y-%M-%d": a \ path"#))
+        );
+        assert_eq!(front.get("single"), Some(&text("it's")));
+        assert_eq!(
+            front.get("window"),
+            Some(&text(r"C:\Users\a.txt - Notepad"))
+        );
+        assert_eq!(
+            front.get("urls"),
+            Some(&list(&[r#"https://a.example/?q="x""#]))
+        );
+        assert_eq!(
+            front.get("tags"),
+            Some(&list(&[r#"say "hi", then go"#, "b"]))
+        );
+        assert_eq!(front.get("plain"), Some(&text(r"C:\Users")));
     }
 
     #[test]
