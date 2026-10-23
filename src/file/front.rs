@@ -67,8 +67,6 @@ pub fn summary(text: &str) -> Option<String> {
     let front = frontmatter::parse(text)?;
     match front.get("summary")? {
         frontmatter::Value::Text(summary) => {
-            // The reader takes the quotes off but leaves the escapes in.
-            let summary = summary.replace("\\\"", "\"").replace("\\\\", "\\");
             let summary = summary.split_whitespace().collect::<Vec<_>>().join(" ");
             (!summary.is_empty()).then_some(summary)
         }
@@ -105,5 +103,15 @@ mod tests {
         let note = "---\nsummary: \"Lag on \\\"ledger\\\"  hit 40k\"\n---\n";
         assert_eq!(summary(note).as_deref(), Some("Lag on \"ledger\" hit 40k"));
         assert_eq!(summary("---\ntitle: x\n---\n"), None);
+    }
+
+    #[test]
+    fn a_backslash_before_a_quote_reads_back_as_written() {
+        let written = r#"Match \"quoted\" with a regex in C:\Temp"#;
+        let note = format!(
+            "---\nsummary: {}\n---\n",
+            crate::capture::raw::quoted(written)
+        );
+        assert_eq!(summary(&note).as_deref(), Some(written));
     }
 }

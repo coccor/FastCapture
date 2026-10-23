@@ -75,10 +75,7 @@ pub fn build_with(job: &Job, today: &str, index: Option<&Snapshot>) -> Result<No
     let info = read::read(&job.raw, &text);
     let front = frontmatter::parse(&text);
     let text_of = |key: &str| match front.as_ref().and_then(|front| front.get(key)) {
-        Some(Value::Text(value)) if !value.is_empty() => {
-            // The reader takes the quotes off but leaves the escapes in.
-            Some(value.replace("\\\"", "\"").replace("\\\\", "\\"))
-        }
+        Some(Value::Text(value)) if !value.is_empty() => Some(value.clone()),
         _ => None,
     };
     let source_window = text_of("source_window");

@@ -62,11 +62,8 @@ impl Sidecar {
 
     pub fn parse(text: &str) -> Option<Self> {
         let front = frontmatter::parse(text)?;
-        // The reader takes the quotes off but leaves the escapes `quoted` put in.
         let get = |key: &str| match front.get(key) {
-            Some(Value::Text(value)) if !value.is_empty() => {
-                Some(value.replace("\\\"", "\"").replace("\\\\", "\\"))
-            }
+            Some(Value::Text(value)) if !value.is_empty() => Some(value.clone()),
             _ => None,
         };
         if get("type")? != "page" {
