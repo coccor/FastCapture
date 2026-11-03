@@ -71,3 +71,18 @@ The notes say what the release brings in a sentence, then one bullet per change,
 > Portable zips for Windows 10 (1809 or later) and 11, x64 and Arm64. Unzip and run
 > `fastcapture.exe`; the `.sha256` files hold each zip's checksum. See the README for setting up
 > each model.
+
+## 7. Update winget
+
+Submit the new version of `coccor.FastCapture` to
+[winget-pkgs](https://github.com/microsoft/winget-pkgs) with
+[wingetcreate](https://github.com/microsoft/winget-create) (`winget install Microsoft.WingetCreate`):
+
+```powershell
+$url = "https://github.com/coccor/FastCapture/releases/download/vx.y.z/FastCapture-x.y.z-windows"
+wingetcreate update coccor.FastCapture -v x.y.z -u "$url-x64.zip" "$url-arm64.zip" --submit
+```
+
+It reads the hashes from the zips and opens the pull request from your fork. The bots validate
+and test-install it; a moderator merges it, usually within a day or two. Until then
+`winget install` still gets the previous version.

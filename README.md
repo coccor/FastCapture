@@ -43,13 +43,23 @@ Written in Rust directly on Win32. It sits in the notification area and starts w
 
 ## Install in a minute
 
-1. Download `FastCapture-<version>-windows-x64.zip` (or `-arm64.zip`) from the
-   [latest release](https://github.com/coccor/FastCapture/releases/latest). Each zip has a
-   `.sha256` file beside it so you can verify what you downloaded.
-2. Unzip it anywhere and run `fastcapture.exe`. It appears in the notification area.
-3. Right-click the tray icon › **Settings…** and choose how notes are written (see
+1. Install it with winget:
+
+   ```powershell
+   winget install coccor.FastCapture
+   ```
+
+   Then run `fastcapture` from a new terminal, or `fastcapture.exe` from
+   `%LocalAppData%\Microsoft\WinGet\Packages\coccor.FastCapture__DefaultSource`. It appears in
+   the notification area. Quit it from the tray before `winget upgrade coccor.FastCapture`.
+
+   Or download `FastCapture-<version>-windows-x64.zip` (or `-arm64.zip`) from the
+   [latest release](https://github.com/coccor/FastCapture/releases/latest), unzip it anywhere and
+   run `fastcapture.exe`. Each zip has a `.sha256` file beside it so you can verify what you
+   downloaded.
+2. Right-click the tray icon › **Settings…** and choose how notes are written (see
    [Local or Cloud](#local-or-cloud)). Until you choose, captures wait in the queue; nothing is lost.
-4. Press **Ctrl+Alt+C**.
+3. Press **Ctrl+Alt+C**.
 
 Requires Windows 10 1809 or later, or Windows 11.
 
