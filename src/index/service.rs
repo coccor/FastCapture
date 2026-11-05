@@ -178,6 +178,18 @@ impl Indexes {
         }
     }
 
+    /// How many notes `root`'s index holds, when it is already open and built. Never opens a
+    /// notebook, reads the disk or waits.
+    pub fn notes_if_open(&self, root: &Path) -> Option<usize> {
+        let key = notes::folder_key(root);
+        let notebook = self.0.notebooks.lock().ok()?.get(&key)?.0.clone();
+        let state = notebook.state.try_lock().ok()?;
+        state
+            .snapshot
+            .as_ref()
+            .map(|snapshot| snapshot.searcher.index().notes.len())
+    }
+
     fn notebook(&self, root: &Path) -> Option<Arc<Notebook>> {
         let key = notes::folder_key(root);
         let mut notebooks = self.0.notebooks.lock().ok()?;
@@ -499,6 +511,20 @@ mod tests {
         indexes.stop();
         let cached = notes::read_cache(&notes::cache_file(&local, &notebook));
         assert_eq!(cached.notes.len(), 1);
+    }
+
+    #[test]
+    fn counting_notes_never_opens_a_notebook() {
+        let scratch = Scratch::new("service-count");
+        let notebook = scratch.0.join("book");
+        std::fs::create_dir_all(&notebook).unwrap();
+        std::fs::write(notebook.join("a.md"), "# Alpha").unwrap();
+        let indexes = Indexes::new(None);
+        assert_eq!(indexes.notes_if_open(&notebook), None);
+        assert!(!indexes.is_open(&notebook));
+        assert!(indexes.snapshot(&notebook, FIRST_BUILD_WAIT).is_some());
+        assert_eq!(indexes.notes_if_open(&notebook), Some(1));
+        indexes.stop();
     }
 
     #[test]

@@ -95,6 +95,16 @@ mod tests {
     }
 
     #[test]
+    fn a_url_in_a_pause_reason_is_reduced_to_its_host() {
+        let reason = crate::log::scrubbed("paused: https://example.com/private/key?x=1 refused");
+        let mut facts = facts();
+        facts.paused = Some(reason);
+        let text = report(&facts, "");
+        assert!(text.contains("example.com"));
+        assert!(!text.contains("private"));
+    }
+
+    #[test]
     fn the_report_holds_no_path_or_url_beyond_the_model_name() {
         let text = report(&facts(), "");
         assert!(!text.contains('\\'));

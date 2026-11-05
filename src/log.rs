@@ -30,8 +30,15 @@ pub fn tail(lines: usize) -> String {
     let Some(dir) = crate::paths::log_dir() else {
         return String::new();
     };
-    let read = |name: &str| fs::read_to_string(dir.join(name)).unwrap_or_default();
+    // A line cut off mid-character by a crash must not hide the rest of the file.
+    let read = |name: &str| read_lossy(&dir.join(name));
     last_lines(&[read(OLD_LOG_FILE), read(LOG_FILE)], lines)
+}
+
+/// The text of the file at `path`, with any byte that isn't valid UTF-8 replaced; empty when it
+/// can't be read.
+fn read_lossy(path: &Path) -> String {
+    String::from_utf8_lossy(&fs::read(path).unwrap_or_default()).into_owned()
 }
 
 /// The last `count` lines of `texts` taken together.
@@ -335,6 +342,19 @@ fn civil_from_days(days: i64) -> (i64, u32, u32) {
 mod tests {
     use super::*;
     use std::time::Duration;
+
+    #[test]
+    fn a_line_cut_inside_a_character_does_not_hide_the_file() {
+        let dir =
+            std::env::temp_dir().join(format!("fastcapture-log-lossy-{}", std::process::id()));
+        fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("cut.log");
+        // "é" is 0xC3 0xA9; the file ends after the first byte.
+        fs::write(&path, b"first\nsecond\nthird \xC3").unwrap();
+        let text = read_lossy(&path);
+        assert_eq!(last_lines(&[text], 3), "first\nsecond\nthird \u{FFFD}");
+        let _ = fs::remove_dir_all(&dir);
+    }
 
     #[test]
     fn the_tail_is_the_last_lines_oldest_first_across_both_files() {

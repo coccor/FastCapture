@@ -517,12 +517,10 @@ impl App {
                 queue[slot] += 1;
             }
         }
-        let notes = self.notebook.as_deref().and_then(|root| {
-            INDEXES
-                .get()?
-                .snapshot(root, std::time::Duration::ZERO)
-                .map(|snapshot| snapshot.searcher.index().notes.len())
-        });
+        let notes = self
+            .notebook
+            .as_deref()
+            .and_then(|root| INDEXES.get()?.notes_if_open(root));
         let paused = match self.status() {
             Status::Paused(None) => Some("by you".to_owned()),
             Status::Paused(Some(reason)) => Some(crate::log::scrubbed(&reason)),
