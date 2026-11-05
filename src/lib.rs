@@ -4,6 +4,7 @@
 pub mod add;
 pub mod capture;
 pub mod config;
+pub mod crash;
 pub mod error;
 pub mod extract;
 pub mod file;
@@ -30,6 +31,7 @@ use std::io::Write;
 
 /// Runs the app with the process's arguments and returns its exit code.
 pub fn run() -> i32 {
+    crash::install();
     let args: Vec<_> = std::env::args_os().skip(1).collect();
     let cwd = std::env::current_dir().unwrap_or_default();
     let launch = match launch::parse(&args, &cwd) {
