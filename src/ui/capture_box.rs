@@ -51,12 +51,12 @@ use windows_sys::Win32::UI::WindowsAndMessaging::{
     GetForegroundWindow, GetWindowLongPtrW, GetWindowRect, GetWindowTextLengthW, GetWindowTextW,
     HTCAPTION, HTCLIENT, IDC_ARROW, IsWindow, KillTimer, LoadCursorW, MINMAXINFO, RegisterClassW,
     SW_HIDE, SW_SHOW, SWP_NOACTIVATE, SWP_NOZORDER, SendMessageW, SetForegroundWindow, SetTimer,
-    SetWindowLongPtrW, SetWindowPos, SetWindowTextW, ShowWindow, WM_APP, WM_CHAR,
-    WM_CLIPBOARDUPDATE, WM_CLOSE, WM_CTLCOLOREDIT, WM_DESTROY, WM_DPICHANGED, WM_DROPFILES,
+    SetWindowLongPtrW, SetWindowPos, SetWindowTextW, ShowWindow, WM_APP, WM_CHAR, WM_CLEAR,
+    WM_CLIPBOARDUPDATE, WM_CLOSE, WM_CTLCOLOREDIT, WM_CUT, WM_DESTROY, WM_DPICHANGED, WM_DROPFILES,
     WM_ENTERSIZEMOVE, WM_ERASEBKGND, WM_EXITSIZEMOVE, WM_GETMINMAXINFO, WM_KEYDOWN, WM_LBUTTONDOWN,
     WM_NCCALCSIZE, WM_NCDESTROY, WM_NCHITTEST, WM_PAINT, WM_PASTE, WM_SETFOCUS, WM_SETFONT,
-    WM_SIZE, WM_TIMER, WNDCLASSW, WS_CAPTION, WS_CHILD, WS_CLIPCHILDREN, WS_EX_ACCEPTFILES,
-    WS_EX_TOPMOST, WS_POPUP, WS_TABSTOP, WS_VISIBLE, WS_VSCROLL,
+    WM_SIZE, WM_TIMER, WM_UNDO, WNDCLASSW, WS_CAPTION, WS_CHILD, WS_CLIPCHILDREN,
+    WS_EX_ACCEPTFILES, WS_EX_TOPMOST, WS_POPUP, WS_TABSTOP, WS_VISIBLE, WS_VSCROLL,
 };
 
 /// The box's size when it has none saved, and the smallest it can be made.
@@ -925,6 +925,7 @@ fn insert_text(hwnd: HWND, text: &str) {
         };
     }
     invalidate(hwnd);
+    draft_changed(hwnd);
 }
 
 /// Remembers the page the clipboard's rich text came from, and returns that rich text.
@@ -1040,8 +1041,8 @@ fn remove_item(hwnd: HWND, index: usize) {
         && index < capture.items.len()
     {
         capture.items.remove(index);
+        draft_changed(hwnd);
     }
-    draft_changed(hwnd);
     relayout(hwnd);
 }
 
@@ -1304,6 +1305,11 @@ unsafe extern "system" fn edit_proc(
                 run(hwnd, action);
                 return 0;
             }
+            if key == VK_DELETE {
+                let result = unsafe { DefSubclassProc(edit, message, wparam, lparam) };
+                draft_changed(hwnd);
+                return result;
+            }
         }
         WM_CHAR => {
             let ch = wparam as u32;
@@ -1350,6 +1356,12 @@ unsafe extern "system" fn edit_proc(
         WM_NCDESTROY => unsafe {
             RemoveWindowSubclass(edit, Some(edit_proc), EDIT_HOOK);
         },
+        // Edits that are not typing: the draft follows once the edit has made them.
+        WM_CUT | WM_CLEAR | WM_UNDO => {
+            let result = unsafe { DefSubclassProc(edit, message, wparam, lparam) };
+            draft_changed(hwnd);
+            return result;
+        }
         _ => {}
     }
     unsafe { DefSubclassProc(edit, message, wparam, lparam) }
@@ -2646,10 +2658,47 @@ mod tests {
         assert!(state(hwnd).unwrap().draft_pending);
         unsafe { SendMessageW(hwnd, WM_TIMER, DRAFT_TIMER, 0) };
         assert!(!state(hwnd).unwrap().draft_pending);
+        assert_eq!(
+            draft::load(&base.join("draft")).unwrap().attachments.len(),
+            1
+        );
         remove_item(hwnd, 0);
         assert!(state(hwnd).unwrap().draft_pending);
         unsafe { DestroyWindow(hwnd) };
         let _ = std::fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn inserted_text_and_edits_that_are_not_typing_schedule_a_draft() {
+        let drafts = temp("draft-edits");
+        let (hwnd, _) = open_box(&drafts, None);
+        insert_text(hwnd, "pasted as markdown");
+        assert!(state(hwnd).unwrap().draft_pending, "insert_text");
+        unsafe { SendMessageW(hwnd, WM_TIMER, DRAFT_TIMER, 0) };
+        assert!(!state(hwnd).unwrap().draft_pending);
+        let edit = state(hwnd).unwrap().edit;
+        unsafe { SendMessageW(edit, EM_SETSEL, 0, -1) };
+        unsafe { SendMessageW(edit, WM_CUT, 0, 0) };
+        assert!(state(hwnd).unwrap().draft_pending, "cut");
+        unsafe { SendMessageW(hwnd, WM_TIMER, DRAFT_TIMER, 0) };
+        unsafe { SendMessageW(edit, WM_UNDO, 0, 0) };
+        assert!(state(hwnd).unwrap().draft_pending, "undo");
+        unsafe { DestroyWindow(hwnd) };
+        draft::clear(&drafts);
+    }
+
+    #[test]
+    fn a_filed_capture_leaves_no_draft_behind() {
+        let drafts = temp("draft-filed");
+        let (hwnd, _) = open_box(&drafts, None);
+        type_for_test(hwnd, "filed soon");
+        unsafe { SendMessageW(hwnd, WM_TIMER, DRAFT_TIMER, 0) };
+        assert!(draft::load(&drafts).is_some());
+        type_for_test(hwnd, " more");
+        run(hwnd, Action::Submit);
+        assert_eq!(unsafe { IsWindow(hwnd) }, 0);
+        unsafe { SendMessageW(hwnd, WM_TIMER, DRAFT_TIMER, 0) };
+        assert_eq!(draft::load(&drafts), None);
     }
 
     #[test]
