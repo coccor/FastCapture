@@ -34,10 +34,28 @@ pub fn line(message: &str) {
 /// The notebooks whose paths `line` shortens, lowercase with `\` separators.
 static NOTEBOOKS: RwLock<Vec<String>> = RwLock::new(Vec::new());
 
-/// The extensions of files FastCapture keeps for itself. A path ends at whitespace after one of
-/// them, so the wording that follows a path such as `usage.txt` stays in the log.
-const OWN_EXTENSIONS: [&str; 9] = [
-    "md", "txt", "json", "ini", "log", "tmp", "toml", "exe", "dll",
+/// The extensions of the files whose paths get logged: FastCapture's own files, its temps, and
+/// the attachments it reads. A path ends right after one of them.
+const FILE_EXTENSIONS: [&str; 19] = [
+    "md",
+    "txt",
+    "json",
+    "ini",
+    "log",
+    "tmp",
+    "toml",
+    "exe",
+    "dll",
+    "fastcapture-tmp",
+    "png",
+    "jpg",
+    "jpeg",
+    "gif",
+    "webp",
+    "pdf",
+    "docx",
+    "html",
+    "htm",
 ];
 
 /// Sets the notebooks whose paths the log shortens to `<notebook>\<first folder>\…`.
@@ -64,9 +82,18 @@ fn fold(c: char) -> std::char::ToLowercase {
     if c == '/' { '\\' } else { c }.to_lowercase()
 }
 
-/// `message` without what a capture holds: each URL becomes its host, a path in a notebook
-/// becomes `<notebook>\<first folder>\…`, and another path in the profile
-/// `%USERPROFILE%\<first folder>\…`.
+/// `message` without what a capture holds.
+///
+/// - Each `http://` or `https://` URL, up to whitespace or a quote, becomes its host. Punctuation
+///   at its end stays as text.
+/// - A path in a notebook becomes `<notebook>`, `<notebook>\<folder>` or
+///   `<notebook>\<first folder>\…`. A path in the profile becomes the same with
+///   `%USERPROFILE%`. The kept component is always a folder: a file directly under the root
+///   becomes `<notebook>\…`.
+/// - A path ends right after a file extension (`.md`, `.pdf`, …) followed by whitespace,
+///   punctuation or the end, when one comes before the hard end: `: `, a quote, a line break or
+///   the end of the message. Without one, it ends at whitespace followed by an uppercase letter,
+///   or at the hard end.
 fn scrub(message: &str, notebooks: &[String], profile: Option<&str>) -> String {
     let mut roots: Vec<(String, &str)> = notebooks
         .iter()
@@ -122,12 +149,16 @@ fn path_at(rest: &str, roots: &[(String, &str)]) -> Option<(String, usize)> {
     let (start, name) = roots
         .iter()
         .find_map(|(root, name)| root_len(rest, root).map(|len| (len, *name)))?;
-    let end = start + path_len(&rest[start..]);
+    let (len, ends_with_file) = path_len(&rest[start..]);
+    let end = start + len;
     let mut components = rest[start..end]
         .split(['\\', '/'])
         .filter(|component| !component.is_empty());
     let shortened = match (components.next(), components.next()) {
         (None, _) => name.to_owned(),
+        (Some(first), None) if ends_with_file || has_file_extension(first) => {
+            format!("{name}\\…")
+        }
         (Some(first), None) => format!("{name}\\{first}"),
         (Some(first), Some(_)) => format!("{name}\\{first}\\…"),
     };
@@ -158,19 +189,32 @@ fn root_len(rest: &str, root: &str) -> Option<usize> {
     .then_some(end)
 }
 
-/// How many bytes of `rest`, the part of a path after its root, still belong to the path. It ends
-/// at a quote, at `:` followed by a space, at whitespace followed by an uppercase letter or
-/// following one of FastCapture's own file extensions, or at the end.
-fn path_len(rest: &str) -> usize {
+/// How many bytes of `rest`, the part of a path after its root, still belong to the path, and
+/// whether it ended right after a file extension.
+fn path_len(rest: &str) -> (usize, bool) {
+    let hard_end = hard_end(rest);
+    if let Some(end) = extension_end(&rest[..hard_end], rest) {
+        return (end, true);
+    }
+    let mut chars = rest[..hard_end].char_indices().peekable();
+    while let Some((index, c)) = chars.next() {
+        let next = chars.peek().map(|&(_, next)| next);
+        if c.is_whitespace() && next.is_some_and(char::is_uppercase) {
+            return (index, false);
+        }
+    }
+    (hard_end, false)
+}
+
+/// Where a path in `rest` ends at the latest: at `: ` (or a `:` that ends the message), a quote,
+/// a line break, or the end.
+fn hard_end(rest: &str) -> usize {
     let mut chars = rest.char_indices().peekable();
     while let Some((index, c)) = chars.next() {
         let next = chars.peek().map(|&(_, next)| next);
         let ends = match c {
-            '"' => true,
+            '"' | '\r' | '\n' => true,
             ':' => next.is_none_or(|next| next == ' '),
-            c if c.is_whitespace() => {
-                next.is_some_and(char::is_uppercase) || ends_with_own_extension(&rest[..index])
-            }
             _ => false,
         };
         if ends {
@@ -180,11 +224,34 @@ fn path_len(rest: &str) -> usize {
     rest.len()
 }
 
-fn ends_with_own_extension(path: &str) -> bool {
-    path.rsplit_once('.').is_some_and(|(_, extension)| {
-        OWN_EXTENSIONS
+/// The end of the first file extension in `path` that is followed, in `rest`, by whitespace,
+/// punctuation that can't go on a name (not a separator, `-`, `_`, or a `.` with more after it),
+/// or the end.
+fn extension_end(path: &str, rest: &str) -> Option<usize> {
+    path.char_indices()
+        .filter(|&(_, c)| c == '.')
+        .find_map(|(dot, _)| {
+            FILE_EXTENSIONS.iter().find_map(|extension| {
+                let end = dot + 1 + extension.len();
+                let candidate = path.get(dot + 1..end)?;
+                let mut after = rest.get(end..)?.chars();
+                let boundary = match after.next() {
+                    None => true,
+                    // `x.html.fastcapture-tmp` goes on; `x.md.` at the end of a sentence stops.
+                    Some('.') => after.next().is_none_or(char::is_whitespace),
+                    Some('\\' | '/' | '-' | '_') => false,
+                    Some(next) => next.is_whitespace() || next.is_ascii_punctuation(),
+                };
+                (candidate.eq_ignore_ascii_case(extension) && boundary).then_some(end)
+            })
+        })
+}
+
+fn has_file_extension(component: &str) -> bool {
+    component.rsplit_once('.').is_some_and(|(_, extension)| {
+        FILE_EXTENSIONS
             .iter()
-            .any(|own| own.eq_ignore_ascii_case(extension))
+            .any(|known| known.eq_ignore_ascii_case(extension))
     })
 }
 
@@ -325,6 +392,56 @@ mod tests {
         assert_eq!(
             scrub(r"index: d:/notes/raw/ Access is denied.", &notebooks, None),
             r"index: <notebook>\raw Access is denied."
+        );
+    }
+
+    #[test]
+    fn a_title_with_capitals_ends_at_its_extension() {
+        let notebooks = vec![r"d:\notes".to_owned()];
+        assert_eq!(
+            scrub(
+                r"D:\Notes\raw\2026 Lag Spikes.md couldn't be read: x",
+                &notebooks,
+                None
+            ),
+            r"<notebook>\raw\… couldn't be read: x"
+        );
+        assert_eq!(
+            scrub(r"D:\Notes\raw\Ana Plan.PDF, then more", &notebooks, None),
+            r"<notebook>\raw\…, then more"
+        );
+        assert_eq!(
+            scrub(r"D:\Notes\raw\x.html.fastcapture-tmp", &notebooks, None),
+            r"<notebook>\raw\…"
+        );
+        assert_eq!(
+            scrub(r"saved D:\Notes\raw\A b.md. Done", &notebooks, None),
+            r"saved <notebook>\raw\…. Done"
+        );
+    }
+
+    #[test]
+    fn a_note_at_the_top_of_the_notebook_loses_its_name() {
+        let notebooks = vec![r"d:\notes".to_owned()];
+        assert_eq!(
+            scrub(
+                r"could not save D:\Notes\Secret title.md: Access is denied.",
+                &notebooks,
+                None
+            ),
+            r"could not save <notebook>\…: Access is denied."
+        );
+        assert_eq!(
+            scrub(r"read D:\Notes\Secret title.md", &notebooks, None),
+            r"read <notebook>\…"
+        );
+        assert_eq!(
+            scrub(r"read C:\Users\ana\Secret.txt", &[], Some(r"c:\users\ana")),
+            r"read %USERPROFILE%\…"
+        );
+        assert_eq!(
+            scrub(r"index: D:\Notes\raw: gone", &notebooks, None),
+            r"index: <notebook>\raw: gone"
         );
     }
 
