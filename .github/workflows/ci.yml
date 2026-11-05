@@ -34,6 +34,13 @@ jobs:
           cargo build --locked --release
           cargo test --locked --release --test release_smoke -- --ignored --test-threads=1
 
+  windows-arm64:
+    runs-on: windows-11-arm
+    steps:
+      - uses: actions/checkout@v4
+      - name: Unit and Windows integration tests
+        run: cargo test --locked
+
   package:
     needs: windows
     runs-on: windows-latest
