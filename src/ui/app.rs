@@ -29,8 +29,9 @@ use windows_sys::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows_sys::Win32::UI::WindowsAndMessaging::{
     CreateWindowExW, DefWindowProcW, DestroyWindow, DispatchMessageW, GetMessageW, MSG,
     PostMessageW, PostQuitMessage, RegisterClassExW, RegisterWindowMessageW, SendMessageW,
-    TranslateMessage, WM_APP, WM_DESTROY, WM_DWMCOLORIZATIONCOLORCHANGED, WM_HOTKEY,
-    WM_SETTINGCHANGE, WM_THEMECHANGED, WNDCLASSEXW, WS_EX_TOOLWINDOW, WS_OVERLAPPED,
+    TranslateMessage, WM_APP, WM_DESTROY, WM_DWMCOLORIZATIONCOLORCHANGED, WM_ENDSESSION, WM_HOTKEY,
+    WM_QUERYENDSESSION, WM_SETTINGCHANGE, WM_THEMECHANGED, WNDCLASSEXW, WS_EX_TOOLWINDOW,
+    WS_OVERLAPPED,
 };
 
 const WM_APP_TRAY: u32 = WM_APP + 1;
@@ -775,6 +776,13 @@ fn show_menu(window: HWND, at: POINT) {
     }
 }
 
+/// Saves the open capture box's draft, if there is a box.
+fn save_open_draft() {
+    if let Some(open) = capture_box::find() {
+        unsafe { SendMessageW(open, capture_box::WM_SAVE_DRAFT, 0, 0) };
+    }
+}
+
 extern "system" fn window_proc(
     window: HWND,
     message: u32,
@@ -838,6 +846,17 @@ extern "system" fn window_proc(
                 super::theme::tell_windows();
             }
             unsafe { DefWindowProcW(window, message, wparam, lparam) }
+        }
+        // Windows is signing out or restarting: what the capture box holds is kept as its draft.
+        WM_QUERYENDSESSION => {
+            save_open_draft();
+            1
+        }
+        WM_ENDSESSION => {
+            if wparam != 0 {
+                save_open_draft();
+            }
+            0
         }
         WM_DESTROY => {
             // Changed indexes are written to their caches.

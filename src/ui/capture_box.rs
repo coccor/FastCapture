@@ -87,9 +87,14 @@ pub const WM_CAPTURE_AGAIN: u32 = WM_APP + 0x60;
 /// A pasted bitmap finished encoding on its worker thread: a boxed `Result<Vec<u8>, String>` in
 /// lparam.
 const WM_IMAGE_READY: u32 = WM_APP + 0x61;
+/// Saves the box's draft to the end of the session: the app sends it when Windows signs out.
+pub const WM_SAVE_DRAFT: u32 = WM_APP + 0x62;
 const SNIP_TIMER: usize = 0x4350_534E;
 const SNIP_WAIT_MS: u32 = 30_000;
 const EDIT_HOOK: usize = 0x4350_4544;
+/// The draft is saved this long after the last edit.
+const DRAFT_TIMER: usize = 0x4350_4446;
+const DRAFT_DELAY_MS: u32 = 1_500;
 
 /// What a key in the box's edit does.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -361,6 +366,8 @@ struct CaptureBox {
     preparing: usize,
     /// Ctrl+Enter came while images were being prepared: file once they are ready.
     submit_when_ready: bool,
+    /// The box changed since its draft was last saved.
+    draft_pending: bool,
 }
 
 const SNIP_LABEL: &str = "+ Snip (Ctrl+Shift+S)";
@@ -504,6 +511,7 @@ pub fn open(options: Open) -> Option<HWND> {
         swallow_paste_char: false,
         preparing: 0,
         submit_when_ready: false,
+        draft_pending: false,
     });
     unsafe { SetWindowLongPtrW(hwnd, GWLP_USERDATA, Box::into_raw(state) as isize) };
     set_edit_text(edit, &restored.text);
@@ -791,6 +799,7 @@ fn autocorrect_before(hwnd: HWND) {
     };
     replace_range(edit, fix.start..end, &fix.replacement);
     capture.last_fix = Some(fix);
+    draft_changed(hwnd);
 }
 
 /// Ctrl+Z right after a fix: puts the typed word back. False when there is no such fix, and the
@@ -820,6 +829,7 @@ fn undo_fix(hwnd: HWND) -> bool {
         return false;
     }
     replace_range(edit, fix.start..end, &fix.original);
+    draft_changed(hwnd);
     let caret = fix.start + fix.original.encode_utf16().count() + boundary;
     unsafe { SendMessageW(edit, EM_SETSEL, caret, caret as LPARAM) };
     true
@@ -865,6 +875,7 @@ fn attach(hwnd: HWND, attachment: Attachment) {
         capture.items.push(attachment);
         capture.error = None;
     }
+    draft_changed(hwnd);
     relayout(hwnd);
 }
 
@@ -1030,6 +1041,7 @@ fn remove_item(hwnd: HWND, index: usize) {
     {
         capture.items.remove(index);
     }
+    draft_changed(hwnd);
     relayout(hwnd);
 }
 
@@ -1181,9 +1193,14 @@ fn submit(hwnd: HWND) {
                     draft::clear(dir);
                 }
                 capture.items.clear();
+                capture.draft_pending = false;
                 set_edit_text(capture.edit, "");
             }
-            unsafe { DestroyWindow(hwnd) };
+            // Nothing may save the draft again once the capture is filed.
+            unsafe {
+                KillTimer(hwnd, DRAFT_TIMER);
+                DestroyWindow(hwnd);
+            }
         }
         Err(error) => {
             if let Some(dir) = &capture.draft_dir {
@@ -1194,14 +1211,29 @@ fn submit(hwnd: HWND) {
     }
 }
 
+/// The box changed: its draft is saved once typing pauses. A running delay starts over.
+fn draft_changed(hwnd: HWND) {
+    if let Some(capture) = state(hwnd) {
+        capture.draft_pending = true;
+        unsafe { SetTimer(hwnd, DRAFT_TIMER, DRAFT_DELAY_MS, None) };
+    }
+}
+
+/// Saves what the box holds as its draft.
+fn save_draft(hwnd: HWND) {
+    if let Some(capture) = state(hwnd) {
+        capture.draft_pending = false;
+        if let Some(dir) = &capture.draft_dir
+            && let Err(error) = draft::save(dir, &current_capture(capture))
+        {
+            crate::log::line(&format!("draft: {error}"));
+        }
+    }
+}
+
 /// Esc: closes the box, keeping what it holds as a draft.
 fn close(hwnd: HWND) {
-    if let Some(capture) = state(hwnd)
-        && let Some(dir) = &capture.draft_dir
-        && let Err(error) = draft::save(dir, &current_capture(capture))
-    {
-        crate::log::line(&format!("draft: {error}"));
-    }
+    save_draft(hwnd);
     unsafe { DestroyWindow(hwnd) };
 }
 
@@ -1298,6 +1330,7 @@ unsafe extern "system" fn edit_proc(
             }
             // Typing changes what the footer says the capture holds.
             invalidate(hwnd);
+            draft_changed(hwnd);
         }
         WM_LBUTTONDOWN => {
             if let Some(capture) = state(hwnd) {
@@ -1312,6 +1345,7 @@ unsafe extern "system" fn edit_proc(
                 return 0;
             }
             invalidate(hwnd);
+            draft_changed(hwnd);
         }
         WM_NCDESTROY => unsafe {
             RemoveWindowSubclass(edit, Some(edit_proc), EDIT_HOOK);
@@ -1782,6 +1816,15 @@ unsafe extern "system" fn box_proc(
             end_snip(hwnd);
             0
         }
+        WM_TIMER if wparam == DRAFT_TIMER => {
+            unsafe { KillTimer(hwnd, DRAFT_TIMER) };
+            save_draft(hwnd);
+            0
+        }
+        WM_SAVE_DRAFT => {
+            save_draft(hwnd);
+            0
+        }
         WM_CLOSE => {
             close(hwnd);
             0
@@ -1789,6 +1832,7 @@ unsafe extern "system" fn box_proc(
         WM_DESTROY => {
             unsafe {
                 KillTimer(hwnd, SNIP_TIMER);
+                KillTimer(hwnd, DRAFT_TIMER);
                 RemoveClipboardFormatListener(hwnd);
             }
             if let Some(capture) = state(hwnd) {
@@ -2576,6 +2620,47 @@ mod tests {
         assert!(state(hwnd).unwrap().items.is_empty());
         unsafe { DestroyWindow(hwnd) };
         let _ = std::fs::remove_dir_all(&drafts);
+    }
+
+    #[test]
+    fn typing_schedules_a_draft_and_the_timer_saves_it() {
+        let drafts = temp("draft-timer");
+        let (hwnd, _) = open_box(&drafts, None);
+        type_for_test(hwnd, "half a thought");
+        assert!(state(hwnd).unwrap().draft_pending);
+        unsafe { SendMessageW(hwnd, WM_TIMER, DRAFT_TIMER, 0) };
+        assert_eq!(draft::load(&drafts).unwrap().text, "half a thought");
+        assert!(!state(hwnd).unwrap().draft_pending);
+        unsafe { DestroyWindow(hwnd) };
+        draft::clear(&drafts);
+    }
+
+    #[test]
+    fn attaching_and_removing_schedule_a_draft() {
+        let base = temp("draft-attach");
+        std::fs::create_dir_all(&base).unwrap();
+        let file = base.join("a.txt");
+        std::fs::write(&file, b"a").unwrap();
+        let (hwnd, _) = open_box(&base.join("draft"), None);
+        attach(hwnd, Attachment::File(file));
+        assert!(state(hwnd).unwrap().draft_pending);
+        unsafe { SendMessageW(hwnd, WM_TIMER, DRAFT_TIMER, 0) };
+        assert!(!state(hwnd).unwrap().draft_pending);
+        remove_item(hwnd, 0);
+        assert!(state(hwnd).unwrap().draft_pending);
+        unsafe { DestroyWindow(hwnd) };
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn the_end_of_the_session_saves_the_draft() {
+        let drafts = temp("draft-session");
+        let (hwnd, _) = open_box(&drafts, None);
+        type_for_test(hwnd, "before the restart");
+        unsafe { SendMessageW(hwnd, WM_SAVE_DRAFT, 0, 0) };
+        assert_eq!(draft::load(&drafts).unwrap().text, "before the restart");
+        unsafe { DestroyWindow(hwnd) };
+        draft::clear(&drafts);
     }
 
     #[test]
