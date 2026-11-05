@@ -82,7 +82,7 @@ pub fn file_note(
                 && Stamp::of(&root.join(&topic.path)) == Some(topic.after)
                 && let Err(error) = undo::overwrite(root, &topic.path, &topic.before)
             {
-                crate::log::line(&format!("file: {}: {error}", topic.path.display()));
+                crate::log::line(&format!("file: a topic note was not put back: {error}"));
             }
         };
 

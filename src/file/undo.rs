@@ -80,7 +80,7 @@ pub fn undo(root: &Path, undo: &Undo) -> Result<Written, String> {
             } else {
                 let back = write_new(root, from, text)?;
                 if let Err(error) = std::fs::remove_file(root.join(&to.path)) {
-                    crate::log::line(&format!("undo: {}: {error}", to.path.display()));
+                    crate::log::line(&format!("undo: the filed note was not removed: {error}"));
                 }
                 back
             };

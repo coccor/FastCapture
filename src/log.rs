@@ -88,8 +88,9 @@ fn fold(c: char) -> std::char::ToLowercase {
 ///   at its end stays as text.
 /// - A path in a notebook becomes `<notebook>`, `<notebook>\<folder>` or
 ///   `<notebook>\<first folder>\…`. A path in the profile becomes the same with
-///   `%USERPROFILE%`. The kept component is always a folder: a file directly under the root
-///   becomes `<notebook>\…`.
+///   `%USERPROFILE%`. The kept component is never a file: a lone component under the root that
+///   ended the path at a file extension, or is named like a file (a `.` and 1 to 8 letters or
+///   digits at its end, or a known extension), becomes `<notebook>\…`.
 /// - A path ends right after a file extension (`.md`, `.pdf`, …) followed by whitespace,
 ///   punctuation or the end, when one comes before the hard end: `: `, a quote, a line break or
 ///   the end of the message. Without one, it ends at whitespace followed by an uppercase letter,
@@ -247,11 +248,15 @@ fn extension_end(path: &str, rest: &str) -> Option<usize> {
         })
 }
 
+/// Whether `component` is named like a file: it ends in one of `FILE_EXTENSIONS`, or in a `.`
+/// and 1 to 8 letters or digits.
 fn has_file_extension(component: &str) -> bool {
     component.rsplit_once('.').is_some_and(|(_, extension)| {
         FILE_EXTENSIONS
             .iter()
             .any(|known| known.eq_ignore_ascii_case(extension))
+            || (1..=8).contains(&extension.chars().count())
+                && extension.chars().all(char::is_alphanumeric)
     })
 }
 
@@ -442,6 +447,14 @@ mod tests {
         assert_eq!(
             scrub(r"index: D:\Notes\raw: gone", &notebooks, None),
             r"index: <notebook>\raw: gone"
+        );
+        assert_eq!(
+            scrub(r"D:\Notes\Budget 2026.xlsx: denied", &notebooks, None),
+            r"<notebook>\…: denied"
+        );
+        assert_eq!(
+            scrub(r"D:\Notes\x.fastcapture-tmp", &notebooks, None),
+            r"<notebook>\…"
         );
     }
 

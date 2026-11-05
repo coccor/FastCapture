@@ -467,7 +467,7 @@ fn reload(hwnd: HWND) {
     for job in gone {
         crate::log::line(&format!(
             "review: {} is gone; its job is removed",
-            job.raw.display()
+            job.capture_id
         ));
         store.remove(&job.capture_id);
     }
