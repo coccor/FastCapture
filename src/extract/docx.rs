@@ -11,7 +11,7 @@ pub const MAX_XML_BYTES: u64 = 50 * 1024 * 1024;
 
 /// The document's text, or why it couldn't be read.
 pub fn read(bytes: &[u8]) -> Result<String, String> {
-    read_within(bytes, MAX_XML_BYTES)
+    crate::crash::guarded(|| read_within(bytes, MAX_XML_BYTES)).and_then(|result| result)
 }
 
 fn read_within(bytes: &[u8], limit: u64) -> Result<String, String> {
@@ -322,6 +322,11 @@ mod tests {
             .map(|style| format!("<w:pPr><w:pStyle w:val=\"{style}\"/></w:pPr>"))
             .unwrap_or_default();
         format!("<w:p>{props}{runs}</w:p>")
+    }
+
+    #[test]
+    fn bytes_that_are_not_a_zip_are_an_error() {
+        assert!(read(&[0xFF; 16]).is_err());
     }
 
     fn run(text: &str) -> String {

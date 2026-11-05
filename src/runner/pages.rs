@@ -54,20 +54,17 @@ fn fetch_pages_with(
             Ok(Fetched::Page {
                 url: page_url,
                 html,
-            }) => {
-                let page = page::extract(&html, &page_url);
-                if page.markdown.is_empty() {
-                    Err("no main text".to_owned())
-                } else {
-                    Ok(PageFacts {
-                        page_url: (page_url != url).then_some(page_url),
-                        title: page.title,
-                        site: page.site,
-                        published: page.published,
-                        markdown: page.markdown,
-                    })
-                }
-            }
+            }) => match crate::crash::guarded(|| page::extract(&html, &page_url)) {
+                Err(_) => Err("the page couldn't be read".to_owned()),
+                Ok(page) if page.markdown.is_empty() => Err("no main text".to_owned()),
+                Ok(page) => Ok(PageFacts {
+                    page_url: (page_url != url).then_some(page_url),
+                    title: page.title,
+                    site: page.site,
+                    published: page.published,
+                    markdown: page.markdown,
+                }),
+            },
         };
         if let Err(reason) = &page {
             crate::log::line(&format!("pages: {reason}"));
