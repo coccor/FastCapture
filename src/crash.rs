@@ -1,6 +1,8 @@
 //! What happens when the app panics: the panic is written to the log, with its place and the
 //! version, before the process stops.
 
+use std::any::Any;
+use std::borrow::Cow;
 use std::cell::Cell;
 use std::panic::{AssertUnwindSafe, catch_unwind};
 
@@ -40,11 +42,6 @@ fn should_abort(guarded: bool) -> bool {
 /// inside guarded code, where it is caught.
 pub fn install() {
     std::panic::set_hook(Box::new(|info| {
-        let payload = info.payload();
-        let message = payload
-            .downcast_ref::<&str>()
-            .copied()
-            .or_else(|| payload.downcast_ref::<String>().map(String::as_str));
         let location = info
             .location()
             .map(|place| (place.file(), place.line(), place.column()));
@@ -54,7 +51,7 @@ pub fn install() {
             .map_or_else(|| format!("{:?}", current.id()), str::to_owned);
         let recovered = is_guarded();
         crate::log::line(&line(
-            logged_message(message, recovered),
+            logged_message(info.payload(), recovered).as_deref(),
             location,
             &thread,
             recovered,
@@ -66,9 +63,22 @@ pub fn install() {
 }
 
 /// The message to log. A recovered panic comes from code reading a file from outside, and its
-/// message can quote that file's text, which the log must not hold; only a fatal panic keeps it.
-fn logged_message(message: Option<&str>, recovered: bool) -> Option<&str> {
-    if recovered { None } else { message }
+/// message can quote that file's text, which the log must not hold, so it keeps none. A fatal
+/// panic keeps a fixed message (`&'static str`) whole; a formatted one can quote data too (std's
+/// "byte index 3 is not a char boundary; it is inside 'é' … of `<the text>`"), so only what comes
+/// before its first quote is kept, with "…" for what was cut.
+fn logged_message(payload: &dyn Any, recovered: bool) -> Option<Cow<'static, str>> {
+    if recovered {
+        return None;
+    }
+    if let Some(fixed) = payload.downcast_ref::<&'static str>() {
+        return Some(Cow::Borrowed(fixed));
+    }
+    let formatted = payload.downcast_ref::<String>()?;
+    Some(Cow::Owned(match formatted.find(['`', '\'']) {
+        Some(quote) => format!("{}…", formatted[..quote].trim()),
+        None => formatted.clone(),
+    }))
 }
 
 /// The log line for a panic. `recovered` says the panic was caught rather than fatal.
@@ -110,8 +120,40 @@ mod tests {
 
     #[test]
     fn a_recovered_panic_keeps_its_message_out_of_the_log() {
-        assert_eq!(logged_message(Some("inside `secret`"), true), None);
-        assert_eq!(logged_message(Some("boom"), false), Some("boom"));
+        let quoted: Box<dyn Any> = Box::new("inside `secret`".to_owned());
+        assert_eq!(logged_message(quoted.as_ref(), true), None);
+        let fixed: Box<dyn Any> = Box::new("boom");
+        assert_eq!(logged_message(fixed.as_ref(), true), None);
+    }
+
+    #[test]
+    fn a_fatal_panic_keeps_a_fixed_message_but_not_quoted_text() {
+        let fixed: Box<dyn Any> = Box::new("the worker's channel closed");
+        assert_eq!(
+            logged_message(fixed.as_ref(), false).as_deref(),
+            Some("the worker's channel closed")
+        );
+        let boundary: Box<dyn Any> = Box::new(
+            "byte index 3 is not a char boundary; it is inside 'é' (bytes 2..4) of `café notes`"
+                .to_owned(),
+        );
+        assert_eq!(
+            logged_message(boundary.as_ref(), false).as_deref(),
+            Some("byte index 3 is not a char boundary; it is inside…")
+        );
+        let backtick: Box<dyn Any> = Box::new("no such key `secret`".to_owned());
+        assert_eq!(
+            logged_message(backtick.as_ref(), false).as_deref(),
+            Some("no such key…")
+        );
+        let plain: Box<dyn Any> =
+            Box::new("index out of bounds: the len is 3 but the index is 7".to_owned());
+        assert_eq!(
+            logged_message(plain.as_ref(), false).as_deref(),
+            Some("index out of bounds: the len is 3 but the index is 7")
+        );
+        let other: Box<dyn Any> = Box::new(7_u32);
+        assert_eq!(logged_message(other.as_ref(), false), None);
     }
 
     #[test]
