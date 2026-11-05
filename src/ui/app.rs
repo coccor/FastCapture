@@ -9,7 +9,7 @@ use crate::add::{self, Context};
 use crate::capture::Capture;
 use crate::capture::file::FileError;
 use crate::capture::submit::submit;
-use crate::capture::sweep;
+use crate::capture::sweep::{self, Swept};
 use crate::config::settings::{Settings, SettingsFile};
 use crate::index::service::Indexes;
 use crate::ipc::pipe;
@@ -243,6 +243,18 @@ fn start_worker(window: HWND) {
     let Some(queue) = queue else {
         return;
     };
+    // Job files a crash left half-saved are put back before the recovery reads the queue.
+    let mut own = vec![(queue.clone(), false)];
+    if let Some(local) = crate::paths::local() {
+        own.push((local.join("index"), false));
+    }
+    let swept = sweep::sweep(&own);
+    if swept.restored > 0 || swept.deleted > 0 {
+        crate::log::line(&format!(
+            "sweep: {} restored, {} removed",
+            swept.restored, swept.deleted
+        ));
+    }
     let recovered = Store::new(queue.clone()).recover();
     if recovered.queued > 0 {
         crate::log::line(&format!(
@@ -317,31 +329,10 @@ fn start_orphan_scan(window: HWND) {
     });
 }
 
-/// Puts back or clears the crash leftovers in the queue, the index caches and each notebook, then
-/// gives a job to every raw source in a notebook that has none. Returns how many jobs it added.
+/// Puts back or clears the crash leftovers in each notebook, then gives a job to every raw source in a notebook that has none. Returns how many jobs it added.
 fn scan_notebooks(queue: &Path, notebooks: &[PathBuf]) -> usize {
-    let mut own = vec![(queue.to_path_buf(), false)];
-    if let Some(local) = crate::paths::local() {
-        own.push((local.join("index"), false));
-    }
-    let mut swept = sweep::sweep(&own);
     let store = Store::new(queue.to_path_buf());
-    if swept.restored > 0 {
-        // A job file put back may still say `working`; the recovery at start-up has already run.
-        let recovered = store.recover();
-        if recovered.queued > 0 {
-            crate::log::line(&format!(
-                "queue: {} interrupted jobs queued again",
-                recovered.queued
-            ));
-        }
-        if recovered.failed > 0 {
-            crate::log::line(&format!(
-                "queue: {} jobs failed after two interruptions",
-                recovered.failed
-            ));
-        }
-    }
+    let mut swept = Swept::default();
     let mut added = 0;
     for root in notebooks {
         let conventions = crate::notebook::Conventions::load(root);
