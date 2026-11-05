@@ -351,6 +351,7 @@ mod tests {
 
     #[test]
     fn the_palettes_are_fastpads() {
+        let _ui = crate::ui::test_support::lock();
         assert_eq!(rgb(0x12, 0x34, 0x56), 0x0056_3412);
         assert_eq!(
             (
@@ -388,6 +389,7 @@ mod tests {
 
     #[test]
     fn every_palette_keeps_text_legible() {
+        let _ui = crate::ui::test_support::lock();
         for (name, p) in [("light", LIGHT), ("dark", DARK)] {
             for (what, foreground, background, minimum) in [
                 (
@@ -455,6 +457,7 @@ mod tests {
 
     #[test]
     fn the_setting_and_windows_choose_the_palette() {
+        let _ui = crate::ui::test_support::lock();
         let light = System::default();
         let dark = System {
             dark: true,
@@ -484,6 +487,7 @@ mod tests {
 
     #[test]
     fn a_change_is_reported_only_when_the_palette_changes() {
+        let _ui = crate::ui::test_support::lock();
         set_system_for_test(System::default());
         set_preference(ThemePreference::System);
         assert_eq!(current(), LIGHT);
@@ -510,6 +514,7 @@ mod tests {
 
     #[test]
     fn a_change_reaches_every_window_of_the_thread_shown_or_not() {
+        let _ui = crate::ui::test_support::lock();
         use windows_sys::Win32::UI::WindowsAndMessaging::{
             CreateWindowExW, DestroyWindow, MSG, PM_REMOVE, PeekMessageW, WS_POPUP,
         };

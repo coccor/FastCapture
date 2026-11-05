@@ -930,6 +930,7 @@ mod tests {
 
     #[test]
     fn the_box_files_a_pasted_image_and_text_into_the_notebook_and_queue() {
+        let _ui = crate::ui::test_support::lock();
         let temp = std::env::temp_dir().join(format!("fastcapture-app-box-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&temp);
         let notebook = temp.join("Notes");
@@ -987,6 +988,7 @@ mod tests {
 
     #[test]
     fn the_scan_gives_a_job_to_a_source_in_any_known_notebook() {
+        let _ui = crate::ui::test_support::lock();
         let temp =
             std::env::temp_dir().join(format!("fastcapture-app-scan-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&temp);

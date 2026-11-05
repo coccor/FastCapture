@@ -1888,6 +1888,7 @@ mod tests {
 
     #[test]
     fn copilot_shows_who_is_signed_in_lists_the_plan_s_models_and_is_saved_without_a_key() {
+        let _ui = crate::ui::test_support::lock();
         let temp = Temp::new("copilot");
         let fakes = crate::model::claude_code::cli::tests::Temp::new("settings-window-copilot");
         let fake = crate::model::copilot::cli::tests::fake(
@@ -1958,6 +1959,7 @@ mod tests {
 
     #[test]
     fn claude_code_shows_what_was_found_and_is_saved_without_a_key() {
+        let _ui = crate::ui::test_support::lock();
         let temp = Temp::new("claude-code");
         let fakes = crate::model::claude_code::cli::tests::Temp::new("settings-window");
         let fake = fakes.script(
@@ -2015,6 +2017,7 @@ mod tests {
 
     #[test]
     fn an_openai_compatible_api_is_saved_with_its_own_key_and_the_tokens_used_are_shown() {
+        let _ui = crate::ui::test_support::lock();
         let temp = Temp::new("openai");
         std::fs::write(
             temp.0.join("fastcapture.ini"),
@@ -2098,6 +2101,7 @@ mod tests {
 
     #[test]
     fn cloud_settings_are_saved_with_the_key_in_credential_manager() {
+        let _ui = crate::ui::test_support::lock();
         let temp = Temp::new("cloud");
         std::fs::write(
             temp.0.join("fastcapture.ini"),
@@ -2158,6 +2162,7 @@ mod tests {
 
     #[test]
     fn a_theme_is_shown_when_chosen_put_back_on_cancel_and_kept_on_save() {
+        let _ui = crate::ui::test_support::lock();
         use crate::ui::theme::{DARK, LIGHT};
         theme::set_system_for_test(theme::System::default());
         theme::set_preference(ThemePreference::System);
@@ -2201,6 +2206,7 @@ mod tests {
 
     #[test]
     fn hotkeys_are_shown_checked_and_saved() {
+        let _ui = crate::ui::test_support::lock();
         let temp = Temp::new("hotkeys");
         std::fs::write(
             temp.0.join("fastcapture.ini"),
@@ -2244,6 +2250,7 @@ mod tests {
 
     #[test]
     fn only_the_chosen_mode_s_fields_are_shown_and_the_window_fits_them() {
+        let _ui = crate::ui::test_support::lock();
         let temp = Temp::new("modes");
         let hwnd = temp.open(Rc::new(Cell::new(false)));
         let height = || {
@@ -2302,6 +2309,7 @@ mod tests {
 
     #[test]
     fn moved_to_a_monitor_at_another_scale_it_is_laid_out_again() {
+        let _ui = crate::ui::test_support::lock();
         let temp = Temp::new("dpi");
         let hwnd = temp.open(Rc::new(Cell::new(false)));
         let suggested = RECT {
@@ -2334,6 +2342,7 @@ mod tests {
 
     #[test]
     fn local_mode_refuses_a_server_elsewhere_and_cancel_saves_nothing() {
+        let _ui = crate::ui::test_support::lock();
         let temp = Temp::new("local");
         let saved = Rc::new(Cell::new(false));
         let hwnd = temp.open(saved.clone());

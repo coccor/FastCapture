@@ -14,4 +14,6 @@ pub mod review;
 pub mod review_list;
 pub mod settings;
 pub mod settings_form;
+#[cfg(test)]
+pub(crate) mod test_support;
 pub mod theme;

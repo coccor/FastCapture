@@ -324,7 +324,7 @@ Requires Windows 10 1809 or later, the stable Rust toolchain with the MSVC targe
 
 ```
 cargo build --release
-cargo test -- --test-threads=1
+cargo test
 cargo run --release --example bench
 ```
 

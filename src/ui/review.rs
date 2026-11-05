@@ -1270,6 +1270,7 @@ mod tests {
 
     #[test]
     fn an_open_review_window_follows_a_theme_change_and_paints_its_rows() {
+        let _ui = crate::ui::test_support::lock();
         use crate::runner::process::tests::Temp;
         use crate::ui::theme::{DARK, LIGHT, ThemePreference};
         theme::set_system_for_test(theme::System::default());
@@ -1336,6 +1337,7 @@ mod tests {
 
     #[test]
     fn notes_are_shown_regenerated_and_discarded() {
+        let _ui = crate::ui::test_support::lock();
         use crate::runner::process::tests::{Scripted, Temp, note};
         use crate::runner::process::{Outcome, process};
         let temp = Temp::new("review-notes");
@@ -1495,6 +1497,7 @@ mod tests {
 
     #[test]
     fn notes_are_filed_kept_and_put_back_from_the_keyboard() {
+        let _ui = crate::ui::test_support::lock();
         use crate::runner::process::tests::Temp;
         let temp = Temp::new("review-filing");
         let notebook = temp.notebook();
@@ -1625,6 +1628,7 @@ mod tests {
 
     #[test]
     fn captures_are_listed_and_del_recycles_only_what_is_theirs() {
+        let _ui = crate::ui::test_support::lock();
         let temp = std::env::temp_dir().join(format!("fastcapture-review-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&temp);
         let notebook = temp.join("Notes");
@@ -1726,6 +1730,7 @@ mod tests {
 
     #[test]
     fn a_finding_is_filed_put_back_placed_again_and_recycled_alone() {
+        let _ui = crate::ui::test_support::lock();
         use crate::runner::process::tests::Temp;
         let temp = Temp::new("review-finding");
         let notebook = temp.notebook();
@@ -1817,6 +1822,7 @@ mod tests {
 
     #[test]
     fn the_window_keeps_its_place_in_the_settings() {
+        let _ui = crate::ui::test_support::lock();
         let temp =
             std::env::temp_dir().join(format!("fastcapture-review-place-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&temp);

@@ -435,6 +435,7 @@ mod tests {
 
     #[test]
     fn typing_narrows_the_list_and_enter_picks_the_selection() {
+        let _ui = crate::ui::test_support::lock();
         let owner = unsafe {
             CreateWindowExW(
                 0,
