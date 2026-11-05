@@ -6,9 +6,9 @@ use super::dom::{Data, Dom, NodeId};
 use std::cell::Cell;
 use std::collections::HashSet;
 
-/// How deep the converter follows nested elements. Below this a node gives only its text,
-/// gathered without recursion, so a page nested thousands of levels deep can't overflow the
-/// stack.
+/// How deep the converter follows nested elements. Deeper than this, a node gives only its
+/// text, gathered without recursion, so a page nested thousands of levels deep can't overflow
+/// the stack.
 const MAX_DEPTH: usize = 128;
 
 /// The Markdown for `node` and everything under it. Relative links and images are resolved
@@ -429,7 +429,11 @@ impl<'a> Converter<'a> {
     }
 
     fn sub_list(&self, id: NodeId) -> String {
+        if self.depth.get() >= MAX_DEPTH {
+            return self.flat_text(id).trim().to_owned();
+        }
         let mut sub = self.child();
+        sub.depth.set(sub.depth.get() + 1);
         sub.list(id, self.dom.is(id, "ol"));
         sub.blocks.join("\n")
     }
@@ -533,15 +537,39 @@ impl<'a> Converter<'a> {
     }
 
     /// The text under `id`, as inline text, leaving out what the converter skips. Walks the
-    /// subtree with a stack of its own, for nodes past `MAX_DEPTH`.
+    /// subtree with a stack of its own, for nodes past `MAX_DEPTH`. Blocks and line breaks are
+    /// spaces, so the words either side of them stay apart.
     fn flat_text(&self, id: NodeId) -> String {
         let mut text = String::new();
-        let mut stack = vec![id];
-        while let Some(node) = stack.pop() {
+        // A node to read, or `None` for the end of a block.
+        let mut stack = vec![Some(id)];
+        while let Some(next) = stack.pop() {
+            let Some(node) = next else {
+                text.push(' ');
+                continue;
+            };
             match self.dom.data(node) {
                 Data::Text(part) => text.push_str(part),
                 Data::Element { .. } if self.skips(node) => {}
-                _ => stack.extend(self.dom.children(node).iter().rev()),
+                Data::Element { name, .. } if name == "br" => text.push(' '),
+                Data::Element { name, .. } if is_block(name) => {
+                    text.push(' ');
+                    stack.push(None);
+                    stack.extend(
+                        self.dom
+                            .children(node)
+                            .iter()
+                            .rev()
+                            .map(|&child| Some(child)),
+                    );
+                }
+                _ => stack.extend(
+                    self.dom
+                        .children(node)
+                        .iter()
+                        .rev()
+                        .map(|&child| Some(child)),
+                ),
             }
         }
         escape(&collapse(&text))
@@ -830,16 +858,22 @@ mod tests {
 
     #[test]
     fn deeply_nested_elements_keep_their_text_without_overflowing() {
-        for (tag, depth) in [
-            ("div", 10_000),
-            ("span", 10_000),
-            ("blockquote", 1_000),
-            ("ul><li", 1_000),
-            ("table><tr><td", 1_000),
+        // Each depth overflows a 1 MB stack without the cap. A list straight inside a list
+        // takes less stack per level, so those go deeper.
+        for (tag, end, depth) in [
+            ("div", "x", 2_000),
+            ("span", "x", 2_000),
+            ("blockquote", "x", 2_000),
+            ("ul", "<li>x", 3_000),
+            ("ol", "<li>x", 3_000),
+            ("ul><li", "x", 2_000),
+            ("table><tr><td", "x", 2_000),
         ] {
-            let html = format!("{}x", format!("<{tag}>").repeat(depth));
+            let html = format!("{}{end}", format!("<{tag}>").repeat(depth));
             assert!(md(&html).ends_with('x'), "{tag}");
         }
+        let deep = format!("{}<div>a</div><div>b<br>c</div>", "<div>".repeat(500));
+        assert_eq!(md(&deep), "a b c");
     }
 
     #[test]
