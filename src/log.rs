@@ -14,14 +14,35 @@ const OLD_LOG_FILE: &str = "fastcapture.old.log";
 /// Past this size the log is moved to `fastcapture.old.log` and started again.
 const MAX_BYTES: u64 = 1024 * 1024;
 
-/// Appends one timestamped line to the log.
-pub fn line(message: &str) {
+/// `message` as the log would write it: URLs shortened to their host, paths to their first
+/// folder.
+pub fn scrubbed(message: &str) -> String {
     let notebooks = match NOTEBOOKS.read() {
         Ok(notebooks) => notebooks.clone(),
         Err(poisoned) => poisoned.into_inner().clone(),
     };
     let profile = std::env::var("USERPROFILE").ok();
-    let message = scrub(message, &notebooks, profile.as_deref());
+    scrub(message, &notebooks, profile.as_deref())
+}
+
+/// The last `lines` lines of the log, the older file's first. They were scrubbed when written.
+pub fn tail(lines: usize) -> String {
+    let Some(dir) = crate::paths::log_dir() else {
+        return String::new();
+    };
+    let read = |name: &str| fs::read_to_string(dir.join(name)).unwrap_or_default();
+    last_lines(&[read(OLD_LOG_FILE), read(LOG_FILE)], lines)
+}
+
+/// The last `count` lines of `texts` taken together.
+fn last_lines(texts: &[String], count: usize) -> String {
+    let all: Vec<&str> = texts.iter().flat_map(|text| text.lines()).collect();
+    all[all.len().saturating_sub(count)..].join("\n")
+}
+
+/// Appends one timestamped line to the log.
+pub fn line(message: &str) {
+    let message = scrubbed(message);
     // Tests exercise failure paths that log; they must not write into the user's real log. Each
     // test thread keeps its lines to read back.
     #[cfg(test)]
@@ -314,6 +335,16 @@ fn civil_from_days(days: i64) -> (i64, u32, u32) {
 mod tests {
     use super::*;
     use std::time::Duration;
+
+    #[test]
+    fn the_tail_is_the_last_lines_oldest_first_across_both_files() {
+        let older = "a\nb\nc\n".to_owned();
+        let newer = "d\ne\n".to_owned();
+        let texts = [older, newer];
+        assert_eq!(last_lines(&texts, 4), "b\nc\nd\ne");
+        assert_eq!(last_lines(&texts, 100), "a\nb\nc\nd\ne");
+        assert_eq!(last_lines(&[], 3), "");
+    }
 
     fn temp_dir(name: &str) -> std::path::PathBuf {
         let dir =

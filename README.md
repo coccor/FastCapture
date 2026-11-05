@@ -64,7 +64,7 @@ Requires Windows 10 1809 or later, or Windows 11.
 |---|---|
 | **Ctrl+Alt+C** (anywhere) | Opens the capture box. Settings › **Capture key** changes it. |
 | Tray icon, click | Opens the review window |
-| Tray icon, right click | Capture…, Capture clipboard, Review, Pause processing, Settings…, Open settings file, Open notebook folder, Quit |
+| Tray icon, right click | Capture…, Capture clipboard, Review, Pause processing, Settings…, Open settings file, Open notebook folder, Copy diagnostics, Quit |
 | Settings › **Clipboard key** (none by default) | Captures the clipboard as it is, with no box |
 
 ### The capture box
@@ -316,7 +316,7 @@ publishes a SHA-256 checksum for each zip you can verify.
 
 If FastCapture keeps a thought from getting lost, **[star it on GitHub](https://github.com/coccor/FastCapture)**.
 It's the single best way to help others find it. Found a bug or missing something?
-[Open an issue](https://github.com/coccor/FastCapture/issues).
+[Open an issue](https://github.com/coccor/FastCapture/issues). Tray › **Copy diagnostics** puts what a bug report needs on the clipboard, with nothing you captured.
 
 ## Building from source
 

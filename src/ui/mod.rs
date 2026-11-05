@@ -6,6 +6,7 @@ pub mod autocorrect;
 pub mod capture_box;
 pub mod clipboard_capture;
 pub mod controls;
+pub mod diagnostics;
 pub mod frame;
 pub mod home_picker;
 pub mod paint;

@@ -10,7 +10,7 @@ use crate::capture::Capture;
 use crate::capture::file::FileError;
 use crate::capture::submit::submit;
 use crate::capture::sweep::{self, Swept};
-use crate::config::settings::{Mode, Settings, SettingsFile};
+use crate::config::settings::{CloudBackend, Mode, Settings, SettingsFile};
 use crate::index::service::Indexes;
 use crate::ipc::pipe;
 use crate::platform::tray::{self, Tray};
@@ -19,6 +19,7 @@ use crate::platform::{hotkey, instance, shell, startup};
 use crate::queue::{State, Store};
 use crate::runner::from_settings::FromSettings;
 use crate::runner::{Status, Waker, Worker};
+use crate::ui::diagnostics::{Facts, LOG_LINES, report};
 use crate::ui::settings as settings_window;
 use crate::ui::{capture_box, review};
 use std::cell::RefCell;
@@ -52,6 +53,7 @@ const MENU_FOLDER: u32 = 5;
 const MENU_QUIT: u32 = 6;
 const MENU_PAUSE: u32 = 7;
 const MENU_SETTINGS_FILE: u32 = 8;
+const MENU_DIAGNOSTICS: u32 = 9;
 
 struct App {
     window: HWND,
@@ -480,6 +482,88 @@ impl App {
         self.worker.as_ref().map_or(Status::Idle, Worker::status)
     }
 
+    /// What a bug report needs to know about this run.
+    fn diagnostic_facts(&self) -> Facts {
+        let settings = &self.settings;
+        let (mode, backend, model) = match settings.mode {
+            Some(Mode::Local) => (
+                "local",
+                settings.backend.key(),
+                settings.local_model.clone().unwrap_or_default(),
+            ),
+            Some(Mode::Cloud) => (
+                "cloud",
+                settings.backend.key(),
+                match settings.backend {
+                    CloudBackend::Claude => settings.claude_model.clone(),
+                    CloudBackend::OpenAi => settings.openai_model.clone().unwrap_or_default(),
+                    CloudBackend::ClaudeCode => settings.claude_code_model.clone(),
+                    CloudBackend::Copilot => settings.copilot_model.clone(),
+                },
+            ),
+            None => ("none", settings.backend.key(), String::new()),
+        };
+        let mut queue = [0; 4];
+        if let Some(dir) = &self.context.queue {
+            for job in Store::new(dir.clone()).list() {
+                let slot = match job.state {
+                    State::Queued => 0,
+                    State::Working => 1,
+                    State::Failed => 2,
+                    State::Done => 3,
+                    State::Discarded => continue,
+                };
+                queue[slot] += 1;
+            }
+        }
+        let notes = self.notebook.as_deref().and_then(|root| {
+            INDEXES
+                .get()?
+                .snapshot(root, std::time::Duration::ZERO)
+                .map(|snapshot| snapshot.searcher.index().notes.len())
+        });
+        let paused = match self.status() {
+            Status::Paused(None) => Some("by you".to_owned()),
+            Status::Paused(Some(reason)) => Some(crate::log::scrubbed(&reason)),
+            _ => None,
+        };
+        Facts {
+            version: env!("CARGO_PKG_VERSION"),
+            build: crate::platform::system::windows_build(),
+            arch: std::env::consts::ARCH,
+            mode,
+            backend,
+            model,
+            notebook_kind: self
+                .notebook
+                .as_deref()
+                .map_or("missing", crate::platform::system::notebook_kind),
+            notes,
+            queue,
+            paused,
+        }
+    }
+
+    /// Puts the diagnostics on the clipboard and says so.
+    fn copy_diagnostics(&self) {
+        let text = report(&self.diagnostic_facts(), &crate::log::tail(LOG_LINES));
+        match crate::platform::clipboard::set_text(self.window, &text) {
+            Ok(()) => self.tray.notify(
+                "Diagnostics copied",
+                "Paste them into your bug report.",
+                false,
+            ),
+            Err(error) => {
+                crate::log::line(&format!("diagnostics: could not copy: {error}"));
+                self.tray.notify(
+                    "Could not copy the diagnostics",
+                    "The clipboard is in use. Try again.",
+                    true,
+                );
+            }
+        }
+    }
+
     fn refresh_tip(&mut self) {
         let (waiting, notes, failed) = self.queue_counts();
         let mut tip = match &self.notebook {
@@ -804,6 +888,12 @@ fn show_menu(window: HWND, at: POINT) {
                 enabled: true,
                 checked: false,
             },
+            Entry::Item {
+                id: MENU_DIAGNOSTICS,
+                text: "Copy &diagnostics",
+                enabled: true,
+                checked: false,
+            },
             Entry::Separator,
             Entry::Item {
                 id: MENU_QUIT,
@@ -833,6 +923,9 @@ fn show_menu(window: HWND, at: POINT) {
         }
         MENU_FOLDER => {
             with_app(|app| app.open_folder());
+        }
+        MENU_DIAGNOSTICS => {
+            with_app(|app| app.copy_diagnostics());
         }
         MENU_QUIT => unsafe {
             DestroyWindow(window);
