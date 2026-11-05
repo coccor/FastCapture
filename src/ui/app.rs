@@ -9,7 +9,7 @@ use crate::add::{self, Context};
 use crate::capture::Capture;
 use crate::capture::file::FileError;
 use crate::capture::submit::submit;
-use crate::capture::sweep::{self, Swept};
+use crate::capture::sweep;
 use crate::config::settings::{Settings, SettingsFile};
 use crate::index::service::Indexes;
 use crate::ipc::pipe;
@@ -286,40 +286,78 @@ fn start_settings_watch(window: HWND) {
     }
 }
 
+/// The notebook in use, then the other notebooks FastCapture knows, each listed once (paths
+/// compare without regard to case) and only if the folder exists.
+fn known_notebooks(current: Option<&Path>, recent: &[PathBuf]) -> Vec<PathBuf> {
+    let mut seen = std::collections::HashSet::new();
+    current
+        .into_iter()
+        .chain(recent.iter().map(PathBuf::as_path))
+        .filter(|path| path.is_dir() && seen.insert(path.to_string_lossy().to_lowercase()))
+        .map(Path::to_path_buf)
+        .collect()
+}
+
 /// After a restart: temps a crash left half-saved are put back or cleared, then raw sources with
-/// no job (written while the tray app was closed, or just put back) get one.
+/// no job (written while the tray app was closed, or just put back) get one. Every known
+/// notebook is covered, not only the current one.
 fn start_orphan_scan(window: HWND) {
     let Some(queue) = with_app(|app| app.context.queue.clone()).flatten() else {
         return;
     };
-    let notebook = with_app(|app| app.notebook.clone()).flatten();
+    let notebooks =
+        with_app(|app| known_notebooks(app.notebook.as_deref(), &app.settings.recent_notebooks))
+            .unwrap_or_default();
     let window = SendHwnd::new(window);
     std::thread::spawn(move || {
-        let conventions = notebook.map(|root| crate::notebook::Conventions::load(&root));
-        let mut swept = Swept::default();
-        if let Some(conventions) = &conventions {
-            swept += sweep::sweep_notebook(conventions);
-        }
-        let mut own = vec![(queue.clone(), false)];
-        if let Some(local) = crate::paths::local() {
-            own.push((local.join("index"), false));
-        }
-        swept += sweep::sweep(&own);
-        if swept.restored > 0 || swept.deleted > 0 {
-            crate::log::line(&format!(
-                "sweep: {} restored, {} removed",
-                swept.restored, swept.deleted
-            ));
-        }
-        let added = conventions
-            .map(|conventions| Store::new(queue).enqueue_orphans(&conventions).len())
-            .unwrap_or(0);
-        if added > 0 {
-            crate::log::line(&format!("queue: {added} raw sources without a job"));
+        if scan_notebooks(&queue, &notebooks) > 0 {
             wake_worker();
         }
         unsafe { PostMessageW(window.get(), WM_APP_QUEUE, 0, 0) };
     });
+}
+
+/// Puts back or clears the crash leftovers in the queue, the index caches and each notebook, then
+/// gives a job to every raw source in a notebook that has none. Returns how many jobs it added.
+fn scan_notebooks(queue: &Path, notebooks: &[PathBuf]) -> usize {
+    let mut own = vec![(queue.to_path_buf(), false)];
+    if let Some(local) = crate::paths::local() {
+        own.push((local.join("index"), false));
+    }
+    let mut swept = sweep::sweep(&own);
+    let store = Store::new(queue.to_path_buf());
+    if swept.restored > 0 {
+        // A job file put back may still say `working`; the recovery at start-up has already run.
+        let recovered = store.recover();
+        if recovered.queued > 0 {
+            crate::log::line(&format!(
+                "queue: {} interrupted jobs queued again",
+                recovered.queued
+            ));
+        }
+        if recovered.failed > 0 {
+            crate::log::line(&format!(
+                "queue: {} jobs failed after two interruptions",
+                recovered.failed
+            ));
+        }
+    }
+    let mut added = 0;
+    for root in notebooks {
+        let conventions = crate::notebook::Conventions::load(root);
+        swept += sweep::sweep_notebook(&conventions);
+        added += store.enqueue_orphans(&conventions).len();
+    }
+    if swept.restored > 0 || swept.deleted > 0 {
+        crate::log::line(&format!(
+            "sweep: {} restored, {} removed",
+            swept.restored, swept.deleted
+        ));
+    }
+    if added > 0 {
+        crate::log::line(&format!("queue: {added} raw sources without a job"));
+    }
+    added
 }
 
 impl App {
@@ -953,6 +991,39 @@ mod tests {
         let jobs = Store::new(queue).list();
         assert_eq!(jobs.len(), 1);
         assert_eq!(jobs[0].capture_id, raws[0].capture_id);
+        let _ = std::fs::remove_dir_all(&temp);
+    }
+
+    #[test]
+    fn the_scan_gives_a_job_to_a_source_in_any_known_notebook() {
+        let temp =
+            std::env::temp_dir().join(format!("fastcapture-app-scan-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&temp);
+        let first = temp.join("First");
+        let second = temp.join("Second");
+        let queue = temp.join("queue");
+        std::fs::create_dir_all(&first).unwrap();
+        std::fs::create_dir_all(&second).unwrap();
+
+        let raw = second.join("raw");
+        std::fs::create_dir_all(&raw).unwrap();
+        std::fs::write(
+            raw.join("2026-11-05 0900 orphan.md"),
+            "---
+type: raw
+captured: 2026-11-05T09:00
+capture_id: orphan1
+---
+
+body
+",
+        )
+        .unwrap();
+
+        let notebooks = known_notebooks(Some(&first), &[second.clone(), first.clone()]);
+        assert_eq!(notebooks, vec![first, second.clone()], "listed once each");
+        assert_eq!(scan_notebooks(&queue, &notebooks), 1);
+        assert_eq!(Store::new(queue).list().len(), 1);
         let _ = std::fs::remove_dir_all(&temp);
     }
 }
