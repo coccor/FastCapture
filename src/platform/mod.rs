@@ -14,6 +14,7 @@ pub mod saver;
 pub mod shell;
 pub mod spell;
 pub mod startup;
+pub mod system;
 pub mod tray;
 pub mod watch;
 pub mod window;

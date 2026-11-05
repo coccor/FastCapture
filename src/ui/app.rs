@@ -10,7 +10,7 @@ use crate::capture::Capture;
 use crate::capture::file::FileError;
 use crate::capture::submit::submit;
 use crate::capture::sweep::{self, Swept};
-use crate::config::settings::{Settings, SettingsFile};
+use crate::config::settings::{Mode, Settings, SettingsFile};
 use crate::index::service::Indexes;
 use crate::ipc::pipe;
 use crate::platform::tray::{self, Tray};
@@ -114,10 +114,6 @@ pub fn run() -> i32 {
         crate::log::line("tray: already running in this session");
         return 0;
     };
-    crate::log::line(&format!(
-        "FastCapture {} started",
-        env!("CARGO_PKG_VERSION")
-    ));
     let Some(window) = create_window() else {
         crate::log::line("tray: could not create the window");
         return 1;
@@ -138,6 +134,25 @@ pub fn run() -> i32 {
     let _ = INDEXES.set(Indexes::new(crate::paths::local()));
     APP.with(|slot| *slot.borrow_mut() = Some(app));
     with_app(App::apply_settings);
+    with_app(|app| {
+        let mode = match app.settings.mode {
+            Some(Mode::Local) => "local",
+            Some(Mode::Cloud) => "cloud",
+            None => "none",
+        };
+        let build = crate::platform::system::windows_build()
+            .map_or_else(|| "?".to_owned(), |build| build.to_string());
+        let notebook = app
+            .notebook
+            .as_deref()
+            .map_or("missing", crate::platform::system::notebook_kind);
+        crate::log::line(&format!(
+            "FastCapture {} started: Windows {build} {}, mode {mode}, backend {}, notebook {notebook}",
+            env!("CARGO_PKG_VERSION"),
+            std::env::consts::ARCH,
+            app.settings.backend.key(),
+        ));
+    });
     start_worker(window);
     // Until a model is chosen, captures are kept but no notes are written: say so once.
     with_app(|app| {

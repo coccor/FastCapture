@@ -16,19 +16,31 @@ const MAX_BYTES: u64 = 1024 * 1024;
 
 /// Appends one timestamped line to the log.
 pub fn line(message: &str) {
-    // Tests exercise failure paths that log; they must not write into the user's real log.
-    if cfg!(test) {
-        return;
-    }
     let notebooks = match NOTEBOOKS.read() {
         Ok(notebooks) => notebooks.clone(),
         Err(poisoned) => poisoned.into_inner().clone(),
     };
     let profile = std::env::var("USERPROFILE").ok();
     let message = scrub(message, &notebooks, profile.as_deref());
+    // Tests exercise failure paths that log; they must not write into the user's real log. Each
+    // test thread keeps its lines to read back.
+    #[cfg(test)]
+    CAPTURED.with(|lines| lines.borrow_mut().push(message));
+    #[cfg(not(test))]
     if let Some(dir) = crate::paths::log_dir() {
         let _ = append(&dir, SystemTime::now(), &message);
     }
+}
+
+#[cfg(test)]
+thread_local! {
+    static CAPTURED: std::cell::RefCell<Vec<String>> = const { std::cell::RefCell::new(Vec::new()) };
+}
+
+/// The lines this thread has logged since the last call.
+#[cfg(test)]
+pub fn take_captured() -> Vec<String> {
+    CAPTURED.with(|lines| std::mem::take(&mut *lines.borrow_mut()))
 }
 
 /// The notebooks whose paths `line` shortens, lowercase with `\` separators.
