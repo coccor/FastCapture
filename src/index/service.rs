@@ -62,6 +62,12 @@ struct Notebook {
     root: PathBuf,
     state: Mutex<State>,
     bell: Condvar,
+    /// Snapshots published while a watcher was running.
+    #[cfg(test)]
+    watched_builds: std::sync::atomic::AtomicUsize,
+    /// Makes the wait before watching again an hour.
+    #[cfg(test)]
+    slow_rewatch: std::sync::atomic::AtomicBool,
 }
 
 impl Notebook {
@@ -185,6 +191,10 @@ impl Indexes {
             root: root.to_path_buf(),
             state: Mutex::new(State::default()),
             bell: Condvar::new(),
+            #[cfg(test)]
+            watched_builds: std::sync::atomic::AtomicUsize::new(0),
+            #[cfg(test)]
+            slow_rewatch: std::sync::atomic::AtomicBool::new(false),
         });
         let cache = self
             .0
@@ -245,6 +255,16 @@ fn run(notebook: &Arc<Notebook>, cache: Option<&Path>, shared: &Weak<Shared>) {
     let mut watching_since = Instant::now();
     let mut rewatch_at: Option<Instant> = None;
     let mut attempts = 0usize;
+    let delay = |attempts: usize| {
+        #[cfg(test)]
+        if notebook
+            .slow_rewatch
+            .load(std::sync::atomic::Ordering::SeqCst)
+        {
+            return Duration::from_secs(3600);
+        }
+        REWATCH_DELAYS[attempts.min(3)]
+    };
     let mut previous = cache.map(notes::read_cache).unwrap_or_default();
     let mut unsaved = false;
     let mut saved_at: Option<Instant> = None;
@@ -274,7 +294,7 @@ fn run(notebook: &Arc<Notebook>, cache: Option<&Path>, shared: &Weak<Shared>) {
                 attempts = 0;
             }
             crate::log::line("index: watching stopped; will try again");
-            rewatch_at = Some(Instant::now() + REWATCH_DELAYS[attempts.min(3)]);
+            rewatch_at = Some(Instant::now() + delay(attempts));
             attempts += 1;
         }
         if watcher.is_none() && (retry_now || rewatch_at.is_some_and(|at| at <= Instant::now())) {
@@ -285,7 +305,7 @@ fn run(notebook: &Arc<Notebook>, cache: Option<&Path>, shared: &Weak<Shared>) {
                     rewatch_at = None;
                 }
                 Err(_) => {
-                    rewatch_at = Some(Instant::now() + REWATCH_DELAYS[attempts.min(3)]);
+                    rewatch_at = Some(Instant::now() + delay(attempts));
                     attempts += 1;
                 }
             }
@@ -310,6 +330,12 @@ fn run(notebook: &Arc<Notebook>, cache: Option<&Path>, shared: &Weak<Shared>) {
             truncated: scan.truncated,
         });
         notebook.change(|state| state.snapshot = Some(snapshot));
+        #[cfg(test)]
+        if watcher.is_some() {
+            notebook
+                .watched_builds
+                .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        }
 
         // Wait for a change or the stop, writing the cache when it falls due meanwhile, and
         // waking to watch again or, with no watcher, to rescan.
@@ -501,22 +527,64 @@ mod tests {
         indexes.stop();
     }
 
+    /// Waits up to `within` for `root`'s notebook to have published `count` snapshots while
+    /// watched.
+    fn watched_builds_reach(
+        indexes: &Indexes,
+        root: &Path,
+        count: usize,
+        within: Duration,
+    ) -> bool {
+        let notebook = indexes.notebook(root).unwrap();
+        let deadline = Instant::now() + within;
+        while Instant::now() < deadline {
+            let builds = notebook
+                .watched_builds
+                .load(std::sync::atomic::Ordering::SeqCst);
+            if builds >= count {
+                return true;
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        false
+    }
+
     #[test]
     fn a_notebook_whose_watch_failed_is_watched_again() {
         let scratch = Scratch::new("rewatch");
         scratch.file("a.md", "# Alpha");
         let indexes = Indexes::new(None);
         indexes.open(&scratch.0);
-        let within = Duration::from_secs(2);
-        assert!(eventually(&indexes, &scratch.0, within, |s| finds(
-            s, "alpha", "a.md"
-        )));
+        let within = Duration::from_secs(5);
+        assert!(watched_builds_reach(&indexes, &scratch.0, 1, within));
         indexes.fail_watch_for_test(&scratch.0);
-        scratch.file("b.md", "# Bravo");
+        // Watched again, and the rescan that follows has finished: a note written now can only
+        // be seen by the new watcher.
+        assert!(watched_builds_reach(&indexes, &scratch.0, 2, within));
+        scratch.file("c.md", "# Charlie");
         assert!(eventually(&indexes, &scratch.0, within, |s| finds(
-            s, "bravo", "b.md"
+            s, "charlie", "c.md"
         )));
-        // Seen only if the new watcher works.
+        indexes.stop();
+    }
+
+    #[test]
+    fn a_refresh_watches_again_without_waiting_for_the_delay() {
+        let scratch = Scratch::new("refresh");
+        scratch.file("a.md", "# Alpha");
+        let indexes = Indexes::new(None);
+        indexes.open(&scratch.0);
+        let within = Duration::from_secs(5);
+        assert!(watched_builds_reach(&indexes, &scratch.0, 1, within));
+        indexes
+            .notebook(&scratch.0)
+            .unwrap()
+            .slow_rewatch
+            .store(true, std::sync::atomic::Ordering::SeqCst);
+        indexes.fail_watch_for_test(&scratch.0);
+        indexes.refresh_all();
+        // The delay is an hour: only the refresh can have brought the watcher back.
+        assert!(watched_builds_reach(&indexes, &scratch.0, 2, within));
         scratch.file("c.md", "# Charlie");
         assert!(eventually(&indexes, &scratch.0, within, |s| finds(
             s, "charlie", "c.md"
