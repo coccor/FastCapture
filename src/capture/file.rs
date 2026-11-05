@@ -143,8 +143,8 @@ pub fn remove_attachments(root: &Path, attachments: &[StoredAttachment]) {
 /// file: a pasted image as `image_stem.png`, a file as a copy under its own cleaned name, each
 /// with ` 2`, ` 3`… when the name is taken.
 pub fn store(directory: &Path, source: &Attachment, image_stem: &str) -> Result<String, String> {
-    let (stem, extension, bytes) = match source {
-        Attachment::Png(bytes) => (image_stem.to_owned(), "png".to_owned(), bytes.clone()),
+    let (stem, extension) = match source {
+        Attachment::Png(_) => (image_stem.to_owned(), "png".to_owned()),
         Attachment::File(path) => {
             let name = path.file_name().unwrap_or_default().to_string_lossy();
             let (stem, extension) = match name.rsplit_once('.') {
@@ -153,10 +153,7 @@ pub fn store(directory: &Path, source: &Attachment, image_stem: &str) -> Result<
                 }
                 _ => (name.clone().into_owned(), String::new()),
             };
-            let bytes = std::fs::read(path).map_err(|error| {
-                format!("FastCapture could not read {}: {error}", path.display())
-            })?;
-            (title::sanitize_stem(&stem), extension, bytes)
+            (title::sanitize_stem(&stem), extension)
         }
     };
     std::fs::create_dir_all(directory).map_err(|error| {
@@ -167,7 +164,18 @@ pub fn store(directory: &Path, source: &Attachment, image_stem: &str) -> Result<
     })?;
     loop {
         let name = title::free_name(&stem, &extension, |name| directory.join(name).exists());
-        match saver::save_atomic_new(&directory.join(&name), &bytes) {
+        let target = directory.join(&name);
+        let saved = match source {
+            Attachment::Png(bytes) => saver::save_atomic_new(&target, bytes),
+            Attachment::File(path) => {
+                // Opened on each try, so a name that was taken meanwhile restarts from the first byte.
+                let mut file = std::fs::File::open(path).map_err(|error| {
+                    format!("FastCapture could not read {}: {error}", path.display())
+                })?;
+                saver::save_atomic_new_from(&target, &mut file)
+            }
+        };
+        match saved {
             Ok(()) => return Ok(name),
             Err(error) if saver::is_already_exists(&error) => {}
             Err(error) => return Err(format!("FastCapture could not save {name}: {error}")),

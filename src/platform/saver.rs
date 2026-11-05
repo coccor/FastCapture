@@ -4,8 +4,9 @@
 
 use super::{last_error, wide_path};
 use crate::{Error, Result};
+use std::fs::File;
 use std::fs::OpenOptions;
-use std::io::Write;
+use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU32, Ordering};
 use windows_sys::Win32::Foundation::{
@@ -24,14 +25,24 @@ use windows_sys::Win32::Storage::FileSystem::{
 /// retried (`SWAP_RETRY_DELAYS_MS`). On any failure the original file (if any) is left untouched
 /// and the sibling temp file is removed.
 pub fn save_atomic(path: &Path, bytes: &[u8]) -> Result<()> {
-    write_then_swap(path, bytes, false)
+    write_then_swap(path, &mut |file| file.write_all(bytes), false)
 }
 
 /// Like `save_atomic`, but never replaces a file: when `path` exists by the time the bytes are
 /// swapped in, it fails with `ERROR_ALREADY_EXISTS` (see `is_already_exists`) and leaves that
 /// file untouched. For a first save under a name the user just picked.
 pub fn save_atomic_new(path: &Path, bytes: &[u8]) -> Result<()> {
-    write_then_swap(path, bytes, true)
+    write_then_swap(path, &mut |file| file.write_all(bytes), true)
+}
+
+/// Like `save_atomic_new`, but copies the content from `source` in pieces instead of holding it
+/// whole in memory. A read or write failure removes the temp file and leaves `path` alone.
+pub fn save_atomic_new_from(path: &Path, source: &mut dyn Read) -> Result<()> {
+    write_then_swap(
+        path,
+        &mut |file| std::io::copy(source, file).map(|_| ()),
+        true,
+    )
 }
 
 /// Whether `error` is `save_atomic_new` refusing an existing destination.
@@ -77,7 +88,11 @@ fn with_retries(swap: impl Fn() -> Result<()>) -> Result<()> {
     result
 }
 
-fn write_then_swap(path: &Path, bytes: &[u8], create_new: bool) -> Result<()> {
+fn write_then_swap(
+    path: &Path,
+    write: &mut dyn FnMut(&mut File) -> std::io::Result<()>,
+    create_new: bool,
+) -> Result<()> {
     let temp = next_sibling_temp(path)?;
     let existed = path.exists();
     let result = (|| -> Result<()> {
@@ -86,8 +101,7 @@ fn write_then_swap(path: &Path, bytes: &[u8], create_new: bool) -> Result<()> {
             .create_new(true)
             .open(&temp)
             .map_err(|error| Error::io(&temp, error))?;
-        file.write_all(bytes)
-            .map_err(|error| Error::io(&temp, error))?;
+        write(&mut file).map_err(|error| Error::io(&temp, error))?;
         file.sync_all().map_err(|error| Error::io(&temp, error))?;
         drop(file);
         if create_new {
@@ -274,6 +288,34 @@ mod tests {
         let error = super::save_atomic_new(fixture.path(), b"mine").unwrap_err();
         assert!(super::is_already_exists(&error), "{error:?}");
         assert_eq!(std::fs::read(fixture.path()).unwrap(), b"someone else's");
+        assert!(fixture.sibling_temp_files().is_empty());
+    }
+
+    #[test]
+    fn a_streamed_save_copies_a_large_source_and_leaves_no_temp_file() {
+        use std::io::Read;
+        let fixture = ExistingFile::new(b"x");
+        let fresh = fixture.path().with_file_name("big.bin");
+        let mut source = std::io::repeat(7).take(3 * 1024 * 1024);
+        super::save_atomic_new_from(&fresh, &mut source).unwrap();
+        let bytes = std::fs::read(&fresh).unwrap();
+        assert_eq!(bytes.len(), 3 * 1024 * 1024);
+        assert!(bytes.iter().all(|&byte| byte == 7));
+        assert_eq!(fixture.sibling_temp_files(), vec![fresh], "only the copy");
+    }
+
+    #[test]
+    fn a_streamed_save_whose_source_fails_removes_its_temp_file() {
+        struct Broken;
+        impl std::io::Read for Broken {
+            fn read(&mut self, _: &mut [u8]) -> std::io::Result<usize> {
+                Err(std::io::Error::other("unreadable"))
+            }
+        }
+        let fixture = ExistingFile::new(b"x");
+        let fresh = fixture.path().with_file_name("never.bin");
+        assert!(super::save_atomic_new_from(&fresh, &mut Broken).is_err());
+        assert!(!fresh.exists());
         assert!(fixture.sibling_temp_files().is_empty());
     }
 
