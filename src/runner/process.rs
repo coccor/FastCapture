@@ -380,13 +380,40 @@ pub(crate) mod tests {
         let Outcome::Failed(reason) = process(&store, job.clone(), &backend, 0, "d") else {
             panic!()
         };
-        assert!(
-            reason.contains("three times") && reason.contains("local_timeout"),
-            "{reason}"
+        assert_eq!(
+            reason,
+            "The local model didn't finish within 5 minutes. That happened three times. Choose a faster model, or raise local_timeout for a local one, then press R."
         );
         let saved = store.get(&job.capture_id).unwrap();
         assert_eq!(saved.state, State::Failed);
         assert_eq!(saved.last_error, Some(reason));
+    }
+
+    #[test]
+    fn a_winhttp_timeout_reads_as_two_sentences_when_given_up_on() {
+        use crate::model::backend::from_http;
+        use crate::net::http::HttpError;
+        let temp = Temp::new("timeouts-http");
+        let store = temp.store();
+        let timed_out = || {
+            Err(from_http(
+                HttpError::TimedOut("Receiving the response failed (WinHTTP error 12002)".into()),
+                "Claude",
+            ))
+        };
+        let backend = Scripted::new(vec![timed_out(), timed_out(), timed_out()]);
+        let mut job = temp.capture("slow");
+        for _ in 0..2 {
+            process(&store, job.clone(), &backend, 0, "d");
+            job = store.get(&job.capture_id).unwrap();
+        }
+        let Outcome::Failed(reason) = process(&store, job, &backend, 0, "d") else {
+            panic!()
+        };
+        assert_eq!(
+            reason,
+            "Claude didn't answer in time: Receiving the response failed (WinHTTP error 12002). That happened three times. Choose a faster model, or raise local_timeout for a local one, then press R."
+        );
     }
 
     #[test]

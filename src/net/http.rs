@@ -30,7 +30,7 @@ const TRANSIENT: [u32; 3] = [
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum HttpError {
-    /// The request may succeed later (offline, server not running, timeout).
+    /// The request may succeed later (offline, server not running).
     Transient(String),
     /// The server didn't answer in time. It may succeed later, but a job that keeps timing out
     /// is given up on.

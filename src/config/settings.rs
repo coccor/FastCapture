@@ -169,8 +169,8 @@ fn parse_hotkey(value: &str) -> Option<Option<KeyStroke>> {
         .map(Some)
 }
 
-/// A token count: digits, with `k` or `M` allowed (`500k`, `2M`). Empty or `0` is no cap.
-pub fn parse_local_timeout(value: &str) -> Option<Duration> {
+/// Whole seconds from 30 to 3600.
+fn parse_local_timeout(value: &str) -> Option<Duration> {
     let seconds = value
         .bytes()
         .all(|byte| byte.is_ascii_digit())
@@ -180,6 +180,7 @@ pub fn parse_local_timeout(value: &str) -> Option<Duration> {
         .then(|| Duration::from_secs(seconds))
 }
 
+/// A token count: digits, with `k` or `M` allowed (`500k`, `2M`). Empty or `0` is no cap.
 pub fn parse_token_cap(value: &str) -> Option<Option<u64>> {
     let value = value.trim();
     if value.is_empty() {

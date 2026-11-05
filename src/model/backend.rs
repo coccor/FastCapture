@@ -99,7 +99,7 @@ pub trait Backend: Send {
     }
 }
 
-/// A transport failure as a backend error: offline and timeouts retry, the rest fail.
+/// A transport failure as a backend error: offline retries, a timeout is counted by the runner, the rest fail.
 pub fn from_http(error: HttpError, service: &str) -> BackendError {
     match error {
         HttpError::Transient(reason) => BackendError::Retry {
@@ -107,7 +107,7 @@ pub fn from_http(error: HttpError, service: &str) -> BackendError {
             reason: format!("{service} can't be reached: {reason}"),
         },
         HttpError::TimedOut(reason) => {
-            BackendError::TimedOut(format!("{service} didn't answer in time: {reason}"))
+            BackendError::TimedOut(format!("{service} didn't answer in time: {reason}."))
         }
         HttpError::Permanent(reason) => BackendError::Fail(format!("{service}: {reason}")),
     }
