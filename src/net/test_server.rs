@@ -1,5 +1,6 @@
-//! For tests: an HTTP/1.1 server on `127.0.0.1` that answers each connection with the next
-//! scripted response and records the requests it got. No test reaches the internet.
+//! For tests and the soak run: an HTTP/1.1 server on `127.0.0.1` that answers each connection
+//! with the next scripted response, or always the same one, and records the requests it got.
+//! No test reaches the internet.
 
 use std::io::{BufRead, BufReader, Read, Write};
 use std::net::{TcpListener, TcpStream};
@@ -70,23 +71,42 @@ pub struct TestServer {
     seen: Arc<Mutex<Vec<Seen>>>,
 }
 
+/// How many requests `TestServer::answering` keeps, the latest, so a server answering for days
+/// doesn't grow.
+const KEPT_WHILE_ANSWERING: usize = 100;
+
 impl TestServer {
     /// Starts answering with `script`, one response per connection, in order. After the script
     /// runs out, connections get a 500.
     pub fn start(script: Vec<Scripted>) -> Self {
+        let mut script = script.into_iter();
+        Self::serve(usize::MAX, move || {
+            script
+                .next()
+                .unwrap_or_else(|| Scripted::json(500, r#"{"error":"script ran out"}"#))
+        })
+    }
+
+    /// Starts answering every connection with `reply`, for as long as the process runs. Only
+    /// the latest requests are kept.
+    pub fn answering(reply: Scripted) -> Self {
+        Self::serve(KEPT_WHILE_ANSWERING, move || reply.clone())
+    }
+
+    fn serve(keep: usize, mut next: impl FnMut() -> Scripted + Send + 'static) -> Self {
         let listener = TcpListener::bind("127.0.0.1:0").expect("a free port");
         let port = listener.local_addr().unwrap().port();
         let seen = Arc::new(Mutex::new(Vec::new()));
         let record = seen.clone();
         std::thread::spawn(move || {
-            let mut script = script.into_iter();
             for stream in listener.incoming() {
                 let Ok(stream) = stream else { continue };
-                let reply = script
-                    .next()
-                    .unwrap_or_else(|| Scripted::json(500, r#"{"error":"script ran out"}"#));
+                let reply = next();
                 if let Some(request) = answer(stream, &reply) {
-                    record.lock().unwrap().push(request);
+                    let mut seen = record.lock().unwrap();
+                    seen.push(request);
+                    let extra = seen.len().saturating_sub(keep);
+                    seen.drain(..extra);
                 }
             }
         });
@@ -162,4 +182,29 @@ fn answer(stream: TcpStream, reply: &Scripted) -> Option<Seen> {
         headers,
         body,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn get(url: &str) -> String {
+        let address = url.strip_prefix("http://").unwrap();
+        let mut stream = TcpStream::connect(address).unwrap();
+        stream.write_all(b"GET /x HTTP/1.1\r\n\r\n").unwrap();
+        let mut response = String::new();
+        stream.read_to_string(&mut response).unwrap();
+        response
+    }
+
+    #[test]
+    fn answering_gives_every_request_the_same_reply_and_keeps_the_latest() {
+        let server = TestServer::answering(Scripted::json(200, r#"{"ok":true}"#));
+        for _ in 0..KEPT_WHILE_ANSWERING + 5 {
+            let response = get(&server.url());
+            assert!(response.starts_with("HTTP/1.1 200"), "{response}");
+            assert!(response.ends_with(r#"{"ok":true}"#), "{response}");
+        }
+        assert_eq!(server.requests().len(), KEPT_WHILE_ANSWERING);
+    }
 }

@@ -2,5 +2,5 @@
 
 pub mod fetch;
 pub mod http;
-#[cfg(test)]
-pub(crate) mod test_server;
+#[doc(hidden)]
+pub mod test_server;

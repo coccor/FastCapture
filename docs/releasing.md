@@ -47,7 +47,22 @@ The same `x.y.z` in:
 - `Cargo.toml` (`version`), then `cargo build` to update `Cargo.lock`
 - `assets/fastcapture.manifest` (`assemblyIdentity` `version="x.y.z.0"`)
 
-## 5. Commit, merge, build
+## 5. Soak the build
+
+Before building a release or a Store submission, quit FastCapture and give a release build of
+this commit a 48-hour soak run:
+
+```powershell
+cargo build --release
+cargo run --release --example soak -- target\release\fastcapture.exe 48
+```
+
+During the run, put the PC to sleep and wake it a few times, and move the capture box between
+monitors with different scales. The run must end `flat`: no growth in handles or GDI objects,
+and private bytes growing by no more than 1 MB an hour. A `GROWING` counter is a leak to find
+before the release; `soak.csv` in the scratch folder the run names shows when it grew.
+
+## 6. Commit, merge, build
 
 Before building, run the autocorrect tests on a desktop Windows with English installed. CI's
 runners never have Windows' autocorrect list, so they skip these tests and only this run checks
@@ -72,7 +87,7 @@ holding each build's symbols:
 gh run download <run id> -R coccor/FastCapture --dir dist
 ```
 
-## 6. Publish the release
+## 7. Publish the release
 
 ```powershell
 $assets = (Get-ChildItem dist -Recurse -Include *.zip, *.sha256).FullName
