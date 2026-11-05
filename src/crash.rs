@@ -53,11 +53,22 @@ pub fn install() {
             .name()
             .map_or_else(|| format!("{:?}", current.id()), str::to_owned);
         let recovered = is_guarded();
-        crate::log::line(&line(message, location, &thread, recovered));
+        crate::log::line(&line(
+            logged_message(message, recovered),
+            location,
+            &thread,
+            recovered,
+        ));
         if should_abort(recovered) {
             std::process::abort();
         }
     }));
+}
+
+/// The message to log. A recovered panic comes from code reading a file from outside, and its
+/// message can quote that file's text, which the log must not hold; only a fatal panic keeps it.
+fn logged_message(message: Option<&str>, recovered: bool) -> Option<&str> {
+    if recovered { None } else { message }
 }
 
 /// The log line for a panic. `recovered` says the panic was caught rather than fatal.
@@ -95,6 +106,12 @@ mod tests {
         assert!(!is_guarded(), "the guard ends with the call, panic or not");
         let nested = guarded(|| guarded(is_guarded).unwrap() && is_guarded());
         assert_eq!(nested, Ok(true));
+    }
+
+    #[test]
+    fn a_recovered_panic_keeps_its_message_out_of_the_log() {
+        assert_eq!(logged_message(Some("inside `secret`"), true), None);
+        assert_eq!(logged_message(Some("boom"), false), Some("boom"));
     }
 
     #[test]

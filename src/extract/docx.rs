@@ -324,11 +324,6 @@ mod tests {
         format!("<w:p>{props}{runs}</w:p>")
     }
 
-    #[test]
-    fn bytes_that_are_not_a_zip_are_an_error() {
-        assert!(read(&[0xFF; 16]).is_err());
-    }
-
     fn run(text: &str) -> String {
         format!("<w:r><w:rPr><w:b/></w:rPr><w:t xml:space=\"preserve\">{text}</w:t></w:r>")
     }
@@ -392,6 +387,11 @@ mod tests {
              <w:r><w:instrText> PAGE </w:instrText></w:r><w:r><w:t>kept</w:t></w:r>",
         );
         assert_eq!(read(&docx(&body)).unwrap(), "kept");
+    }
+
+    #[test]
+    fn bytes_that_are_not_a_zip_are_an_error() {
+        assert!(read(&[0xFF; 16]).is_err());
     }
 
     #[test]
