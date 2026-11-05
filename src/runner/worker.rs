@@ -335,12 +335,11 @@ fn run(
             continue;
         }
         set_status(shared, Status::Working, changed);
+        let capture_id = job.capture_id.clone();
         let outcome = process::process_with(store, job, active, now, &day, indexes);
         record_usage(active, usage, &day);
         match &outcome {
-            Outcome::Written(written) => {
-                crate::log::line(&format!("runner: wrote {}", written.path.display()));
-            }
+            Outcome::Written(_) => crate::log::line(&format!("runner: wrote {capture_id}")),
             Outcome::Retry { reason, .. } => {
                 crate::log::line(&format!("runner: will retry: {reason}"))
             }
@@ -374,11 +373,7 @@ fn adopt_findings(store: &Store, factory: &dyn Factory, changed: &dyn Fn()) -> b
     for notebook in factory.notebooks() {
         let (new, waiting) = findings::adopt(store, &mut jobs, &notebook, now, &captured);
         for job in &new {
-            crate::log::line(&format!(
-                "queue: finding {} in {}",
-                job.raw.display(),
-                notebook.display()
-            ));
+            crate::log::line(&format!("queue: finding {}", job.capture_id));
         }
         added += new.len();
         settling |= waiting;

@@ -373,6 +373,13 @@ impl App {
             .notebook
             .clone()
             .or_else(|| self.context.notebook());
+        let notebooks: Vec<PathBuf> = self
+            .notebook
+            .iter()
+            .chain(&settings.recent_notebooks)
+            .cloned()
+            .collect();
+        crate::log::set_notebooks(&notebooks);
         if let Some(notebook) = &self.notebook {
             index_notebook(notebook);
         }

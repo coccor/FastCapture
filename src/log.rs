@@ -1,10 +1,12 @@
 //! The diagnostic log, `%LocalAppData%\FastCapture\log\fastcapture.log`. It
 //! records what the app did and what failed, never capture text, page content, prompts or keys.
-//! Callers pass only their own wording and paths. Logging never fails the caller.
+//! Each line is scrubbed before it is written: URLs keep only their host, and paths in a notebook
+//! or the profile only their first folder. Logging never fails the caller.
 
 use std::fs::{self, OpenOptions};
 use std::io::Write;
-use std::path::Path;
+use std::path::{Path, PathBuf};
+use std::sync::RwLock;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 const LOG_FILE: &str = "fastcapture.log";
@@ -18,9 +20,172 @@ pub fn line(message: &str) {
     if cfg!(test) {
         return;
     }
+    let notebooks = match NOTEBOOKS.read() {
+        Ok(notebooks) => notebooks.clone(),
+        Err(poisoned) => poisoned.into_inner().clone(),
+    };
+    let profile = std::env::var("USERPROFILE").ok();
+    let message = scrub(message, &notebooks, profile.as_deref());
     if let Some(dir) = crate::paths::log_dir() {
-        let _ = append(&dir, SystemTime::now(), message);
+        let _ = append(&dir, SystemTime::now(), &message);
     }
+}
+
+/// The notebooks whose paths `line` shortens, lowercase with `\` separators.
+static NOTEBOOKS: RwLock<Vec<String>> = RwLock::new(Vec::new());
+
+/// The extensions of files FastCapture keeps for itself. A path ends at whitespace after one of
+/// them, so the wording that follows a path such as `usage.txt` stays in the log.
+const OWN_EXTENSIONS: [&str; 9] = [
+    "md", "txt", "json", "ini", "log", "tmp", "toml", "exe", "dll",
+];
+
+/// Sets the notebooks whose paths the log shortens to `<notebook>\<first folder>\…`.
+pub fn set_notebooks(roots: &[PathBuf]) {
+    let roots = roots.iter().map(|root| normalize_root(root)).collect();
+    match NOTEBOOKS.write() {
+        Ok(mut notebooks) => *notebooks = roots,
+        Err(poisoned) => *poisoned.into_inner() = roots,
+    }
+}
+
+/// `root` lowercase, with `\` separators and no trailing separator.
+fn normalize_root(root: &Path) -> String {
+    fold_root(&root.to_string_lossy())
+}
+
+fn fold_root(root: &str) -> String {
+    let folded: String = root.chars().flat_map(fold).collect();
+    folded.trim_end_matches('\\').to_owned()
+}
+
+/// `c` as paths compare it: lowercase, `/` read as `\`.
+fn fold(c: char) -> std::char::ToLowercase {
+    if c == '/' { '\\' } else { c }.to_lowercase()
+}
+
+/// `message` without what a capture holds: each URL becomes its host, a path in a notebook
+/// becomes `<notebook>\<first folder>\…`, and another path in the profile
+/// `%USERPROFILE%\<first folder>\…`.
+fn scrub(message: &str, notebooks: &[String], profile: Option<&str>) -> String {
+    let mut roots: Vec<(String, &str)> = notebooks
+        .iter()
+        .map(|root| (fold_root(root), "<notebook>"))
+        .collect();
+    // A notebook inside another is matched before the one around it.
+    roots.sort_by_key(|(root, _)| std::cmp::Reverse(root.chars().count()));
+    roots.extend(profile.map(|profile| (fold_root(profile), "%USERPROFILE%")));
+    roots.retain(|(root, _)| !root.is_empty());
+
+    let mut out = String::with_capacity(message.len());
+    let mut at = 0;
+    while let Some(rest) = message.get(at..) {
+        let Some(c) = rest.chars().next() else {
+            break;
+        };
+        if let Some((replacement, used)) = url_at(rest).or_else(|| path_at(rest, &roots)) {
+            out.push_str(&replacement);
+            at += used;
+        } else {
+            out.push(c);
+            at += c.len_utf8();
+        }
+    }
+    out
+}
+
+/// The host of the URL `rest` starts with, and how many bytes of `rest` the URL takes. The URL
+/// runs to whitespace or a quote; punctuation at its end is left as text.
+fn url_at(rest: &str) -> Option<(String, usize)> {
+    let scheme = ["https://", "http://"].into_iter().find(|scheme| {
+        rest.as_bytes()
+            .get(..scheme.len())
+            .is_some_and(|start| start.eq_ignore_ascii_case(scheme.as_bytes()))
+    })?;
+    let end = rest
+        .char_indices()
+        .find(|&(_, c)| c.is_whitespace() || c == '"' || c == '\'')
+        .map_or(rest.len(), |(index, _)| index);
+    let url = rest[..end].trim_end_matches(['.', ',', ';', ':', '!', '?', ')', ']', '}', '>']);
+    let after = url.get(scheme.len()..).unwrap_or_default();
+    let authority = after
+        .split(['/', '?', '#', '\\'])
+        .next()
+        .unwrap_or_default();
+    let host = authority.rsplit('@').next().unwrap_or_default();
+    Some((host.to_owned(), url.len().max(scheme.len())))
+}
+
+/// The shortened form of the path `rest` starts with, if it is in one of `roots`, and how many
+/// bytes of `rest` the path takes.
+fn path_at(rest: &str, roots: &[(String, &str)]) -> Option<(String, usize)> {
+    let (start, name) = roots
+        .iter()
+        .find_map(|(root, name)| root_len(rest, root).map(|len| (len, *name)))?;
+    let end = start + path_len(&rest[start..]);
+    let mut components = rest[start..end]
+        .split(['\\', '/'])
+        .filter(|component| !component.is_empty());
+    let shortened = match (components.next(), components.next()) {
+        (None, _) => name.to_owned(),
+        (Some(first), None) => format!("{name}\\{first}"),
+        (Some(first), Some(_)) => format!("{name}\\{first}\\…"),
+    };
+    Some((shortened, end))
+}
+
+/// How many bytes of `rest` the folded `root` takes, when `rest` starts with it and the root is
+/// not just the start of a longer name.
+fn root_len(rest: &str, root: &str) -> Option<usize> {
+    let mut wanted = root.chars();
+    let mut end = None;
+    for (index, c) in rest.char_indices() {
+        for folded in fold(c) {
+            if wanted.next() != Some(folded) {
+                return None;
+            }
+        }
+        if wanted.as_str().is_empty() {
+            end = Some(index + c.len_utf8());
+            break;
+        }
+    }
+    let end = end?;
+    let next = rest[end..].chars().next();
+    next.is_none_or(|c| {
+        matches!(c, '\\' | '/' | '"' | '\'' | ':' | ')' | ',' | ';') || c.is_whitespace()
+    })
+    .then_some(end)
+}
+
+/// How many bytes of `rest`, the part of a path after its root, still belong to the path. It ends
+/// at a quote, at `:` followed by a space, at whitespace followed by an uppercase letter or
+/// following one of FastCapture's own file extensions, or at the end.
+fn path_len(rest: &str) -> usize {
+    let mut chars = rest.char_indices().peekable();
+    while let Some((index, c)) = chars.next() {
+        let next = chars.peek().map(|&(_, next)| next);
+        let ends = match c {
+            '"' => true,
+            ':' => next.is_none_or(|next| next == ' '),
+            c if c.is_whitespace() => {
+                next.is_some_and(char::is_uppercase) || ends_with_own_extension(&rest[..index])
+            }
+            _ => false,
+        };
+        if ends {
+            return index;
+        }
+    }
+    rest.len()
+}
+
+fn ends_with_own_extension(path: &str) -> bool {
+    path.rsplit_once('.').is_some_and(|(_, extension)| {
+        OWN_EXTENSIONS
+            .iter()
+            .any(|own| own.eq_ignore_ascii_case(extension))
+    })
 }
 
 fn append(dir: &Path, now: SystemTime, message: &str) -> std::io::Result<()> {
@@ -110,5 +275,138 @@ mod tests {
             "1970-01-01T00:00:00Z fresh\n"
         );
         fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn urls_become_their_host() {
+        assert_eq!(
+            scrub(
+                "The page at https://example.com/a/b?c couldn't be fetched yet: failed (403)",
+                &[],
+                None
+            ),
+            "The page at example.com couldn't be fetched yet: failed (403)"
+        );
+    }
+
+    #[test]
+    fn notebook_paths_keep_their_first_folder_and_the_error() {
+        let notebooks = vec![r"d:\notes".to_owned()];
+        assert_eq!(
+            scrub(
+                r"FastCapture could not save D:\Notes\raw\2026 lag spikes.md: Access is denied.",
+                &notebooks,
+                None
+            ),
+            r"FastCapture could not save <notebook>\raw\…: Access is denied."
+        );
+        assert_eq!(scrub("D:/Notes", &notebooks, None), "<notebook>");
+    }
+
+    #[test]
+    fn other_paths_in_the_profile_lose_their_names() {
+        assert_eq!(
+            scrub(
+                r"usage: C:\Users\ana\AppData\Local\FastCapture\usage.txt couldn't be read: x",
+                &[],
+                Some(r"c:\users\ana")
+            ),
+            r"usage: %USERPROFILE%\AppData\… couldn't be read: x"
+        );
+    }
+
+    #[test]
+    fn a_folder_directly_in_the_notebook_is_kept_whole() {
+        let notebooks = vec![r"d:\notes".to_owned()];
+        assert_eq!(
+            scrub(r"index: D:\Notes\raw", &notebooks, None),
+            r"index: <notebook>\raw"
+        );
+        assert_eq!(
+            scrub(r"index: d:/notes/raw/ Access is denied.", &notebooks, None),
+            r"index: <notebook>\raw Access is denied."
+        );
+    }
+
+    #[test]
+    fn a_longer_folder_name_is_not_the_notebook() {
+        let notebooks = vec![r"d:\notes".to_owned()];
+        assert_eq!(
+            scrub(r"saved D:\Notes2\x.md", &notebooks, None),
+            r"saved D:\Notes2\x.md"
+        );
+    }
+
+    #[test]
+    fn two_paths_in_one_message_are_both_scrubbed() {
+        let notebooks = vec![r"d:\notes".to_owned()];
+        assert_eq!(
+            scrub(
+                r"move D:\Notes\inbox\Secret plan.md to D:\Notes\Projects\Secret plan.md: Access is denied.",
+                &notebooks,
+                None
+            ),
+            r"move <notebook>\inbox\… to <notebook>\Projects\…: Access is denied."
+        );
+    }
+
+    #[test]
+    fn urls_end_at_whitespace_or_a_quote_and_leave_trailing_punctuation() {
+        assert_eq!(
+            scrub(
+                "links (https://a.example/x/y), \"http://b.example:8080/z\".",
+                &[],
+                None
+            ),
+            "links (a.example), \"b.example:8080\"."
+        );
+        assert_eq!(
+            scrub("see HTTPS://user:pw@c.example/secret.", &[], None),
+            "see c.example."
+        );
+    }
+
+    #[test]
+    fn with_no_notebooks_only_the_profile_is_scrubbed() {
+        assert_eq!(
+            scrub(r"read D:\Notes\raw\x.md: gone", &[], Some(r"c:\users\ana")),
+            r"read D:\Notes\raw\x.md: gone"
+        );
+        assert_eq!(scrub("nothing here", &[], None), "nothing here");
+    }
+
+    #[test]
+    fn a_notebook_in_the_profile_is_named_as_the_notebook() {
+        let notebooks = vec![r"c:\users\ana\notes".to_owned()];
+        assert_eq!(
+            scrub(
+                r"a C:\Users\Ana\Notes\raw\x.md: y, b C:\Users\Ana\Documents\z.md: w",
+                &notebooks,
+                Some(r"C:\Users\Ana")
+            ),
+            r"a <notebook>\raw\…: y, b %USERPROFILE%\Documents\…: w"
+        );
+    }
+
+    #[test]
+    fn scrubbing_never_panics_on_odd_text() {
+        let notebooks = vec![r"d:\ñotes".to_owned(), String::new(), r"\".to_owned()];
+        for message in [
+            "",
+            "https://",
+            "http://ß/",
+            r"D:\ÑOTES\ü\İx",
+            r"İİİ D:\Ñotes",
+            "\u{130}\u{130}https://é.example/\"",
+            r"C:\Users\Ana:",
+            r"D:\ñotes\",
+        ] {
+            let _ = scrub(message, &notebooks, Some(r"c:\users\ana"));
+        }
+    }
+
+    #[test]
+    fn notebook_roots_are_stored_lowercase_with_backslashes() {
+        assert_eq!(normalize_root(Path::new("D:/Notes/")), r"d:\notes");
     }
 }
