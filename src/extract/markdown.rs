@@ -3,7 +3,13 @@
 //! whitespace collapses as a browser shows it.
 
 use super::dom::{Data, Dom, NodeId};
+use std::cell::Cell;
 use std::collections::HashSet;
+
+/// How deep the converter follows nested elements. Below this a node gives only its text,
+/// gathered without recursion, so a page nested thousands of levels deep can't overflow the
+/// stack.
+const MAX_DEPTH: usize = 128;
 
 /// The Markdown for `node` and everything under it. Relative links and images are resolved
 /// against `base` when it is given.
@@ -175,6 +181,8 @@ struct Converter<'a> {
     in_word_list: bool,
     /// Images as `![alt](src)`; otherwise as their alt text.
     images: bool,
+    /// How many elements deep the conversion is, counting through child converters.
+    depth: Cell<usize>,
 }
 
 impl<'a> Converter<'a> {
@@ -187,6 +195,7 @@ impl<'a> Converter<'a> {
             inline: String::new(),
             in_word_list: false,
             images: true,
+            depth: Cell::new(0),
         }
     }
 
@@ -194,6 +203,7 @@ impl<'a> Converter<'a> {
     fn child(&self) -> Converter<'a> {
         let mut child = Converter::new(self.dom, self.base, self.skip);
         child.images = self.images;
+        child.depth.set(self.depth.get());
         child
     }
 
@@ -222,6 +232,17 @@ impl<'a> Converter<'a> {
     }
 
     fn node(&mut self, id: NodeId) {
+        if self.depth.get() >= MAX_DEPTH {
+            let text = self.flat_text(id);
+            self.inline.push_str(&text);
+            return;
+        }
+        self.depth.set(self.depth.get() + 1);
+        self.node_within_depth(id);
+        self.depth.set(self.depth.get() - 1);
+    }
+
+    fn node_within_depth(&mut self, id: NodeId) {
         match self.dom.data(id) {
             Data::Document => self.children(id),
             Data::Text(text) => self.inline.push_str(&escape(&collapse(text))),
@@ -502,6 +523,31 @@ impl<'a> Converter<'a> {
     }
 
     fn inline_of(&self, id: NodeId) -> String {
+        if self.depth.get() >= MAX_DEPTH {
+            return self.flat_text(id);
+        }
+        self.depth.set(self.depth.get() + 1);
+        let text = self.inline_within_depth(id);
+        self.depth.set(self.depth.get() - 1);
+        text
+    }
+
+    /// The text under `id`, as inline text, leaving out what the converter skips. Walks the
+    /// subtree with a stack of its own, for nodes past `MAX_DEPTH`.
+    fn flat_text(&self, id: NodeId) -> String {
+        let mut text = String::new();
+        let mut stack = vec![id];
+        while let Some(node) = stack.pop() {
+            match self.dom.data(node) {
+                Data::Text(part) => text.push_str(part),
+                Data::Element { .. } if self.skips(node) => {}
+                _ => stack.extend(self.dom.children(node).iter().rev()),
+            }
+        }
+        escape(&collapse(&text))
+    }
+
+    fn inline_within_depth(&self, id: NodeId) -> String {
         let Some(name) = self.dom.name(id) else {
             return String::new();
         };
@@ -780,6 +826,20 @@ mod tests {
             dom.root(),
             Some("https://example.com/docs/guide/page.html?x=1"),
         )
+    }
+
+    #[test]
+    fn deeply_nested_elements_keep_their_text_without_overflowing() {
+        for (tag, depth) in [
+            ("div", 10_000),
+            ("span", 10_000),
+            ("blockquote", 1_000),
+            ("ul><li", 1_000),
+            ("table><tr><td", 1_000),
+        ] {
+            let html = format!("{}x", format!("<{tag}>").repeat(depth));
+            assert!(md(&html).ends_with('x'), "{tag}");
+        }
     }
 
     #[test]
