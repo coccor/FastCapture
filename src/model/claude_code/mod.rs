@@ -382,6 +382,9 @@ impl Backend for ClaudeCode {
             RunError::TimedOut => {
                 BackendError::TimedOut(format!("{SERVICE} didn't finish within 5 minutes."))
             }
+            RunError::TooMuchOutput => BackendError::Fail(
+                "Claude Code wrote more than 32 MB, so its reply was dropped.".into(),
+            ),
         })?;
         let stream = read_stream(&output.stdout);
         if let Some(result) = &stream.result {
