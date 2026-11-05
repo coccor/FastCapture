@@ -6,15 +6,20 @@
 //!
 //! FastCapture must be quit first: one tray app runs per Windows session. The exe gets settings,
 //! a queue and a notebook of its own in a scratch folder, with `APPDATA` and `LOCALAPPDATA`
-//! pointing there; nothing of the user's FastCapture is read or written. While it starts it
-//! syncs the "start at sign-in" entry with its own settings, so the entry is put back as it was
-//! once it has started, and again at the end.
+//! pointing there; nothing of the user's FastCapture is read or written.
+//!
+//! The one thing the tray app shares with the user's FastCapture is the "start at sign-in" entry
+//! under `HKCU\...\Run`, which it brings in step with its settings when it starts. So the scratch
+//! settings say what the entry already says: off when there is none, on when it starts this very
+//! exe. When it starts another FastCapture, the run refuses: turn Start at sign-in off in that
+//! FastCapture for the run, or soak that exe. The entry is checked after the start and at the
+//! end, and put back with a warning should it have changed anyway.
 //!
 //! Every minute a line `elapsed_s,handles,gdi,user,private_bytes` goes to `soak.csv` in the
 //! scratch folder. At the end each counter's change per hour is printed, measured after the
-//! first hour (or the first third of a shorter run), with `flat` or `GROWING`. When the run ends
-//! or is interrupted with Ctrl+C, the exe is closed the way Quit closes it, so its tray icon
-//! goes too.
+//! first hour (or the first third of a shorter run), with `flat` or `GROWING`. However the run
+//! ends (done, an error, a panic, Ctrl+C or the console closing) the exe is closed the way Quit
+//! closes it, so its tray icon goes too, or ended with its job when it doesn't close in time.
 
 use fastcapture::extract::pdf::build::{self as pdf_build, Page};
 use fastcapture::ipc::pipe::{self, SendError};
@@ -77,30 +82,97 @@ fn model_reply() -> Scripted {
     Scripted::json(200, &body.to_string())
 }
 
-/// What must be undone however the run ends.
+/// The exe the run started. Dropping it closes the exe (see `Running::close`), so it closes
+/// however the run ends.
 struct Running {
     child: Child,
-    job: Option<Job>,
+    job: Job,
     /// The "start at sign-in" entry as it was before the run.
     sign_in: Option<String>,
 }
 
+impl Running {
+    /// Closes the exe as Quit does: its window gets `WM_CLOSE`, so the tray icon goes with it.
+    /// When it doesn't close in time, its job is ended.
+    fn close(&mut self) {
+        if self.child.try_wait().ok().flatten().is_none() {
+            close_windows_of(self.child.id());
+            let began = Instant::now();
+            while began.elapsed() < CLOSE_WITHIN && self.child.try_wait().ok().flatten().is_none() {
+                std::thread::sleep(Duration::from_millis(100));
+            }
+            if self.child.try_wait().ok().flatten().is_none() {
+                eprintln!("soak: fastcapture.exe didn't close; ending it");
+                self.job.end();
+                let _ = self.child.wait();
+            }
+        }
+        check_sign_in(self.sign_in.as_deref());
+    }
+}
+
+impl Drop for Running {
+    fn drop(&mut self) {
+        self.close();
+    }
+}
+
+/// The running exe, where both the end of `main` and the console's Ctrl handler can close it.
 static RUNNING: Mutex<Option<Running>> = Mutex::new(None);
 
+/// Closes the running exe. The lock is held until it has closed, so a Ctrl+C that comes while
+/// the run is closing it waits for that rather than ending this process half way.
+fn finish() {
+    let mut running = RUNNING
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    drop(running.take());
+}
+
+/// Calls `finish` when dropped, so a panic or an early return in `run` closes the exe too.
+struct Finish;
+
+impl Drop for Finish {
+    fn drop(&mut self) {
+        finish();
+    }
+}
+
 fn main() {
+    let code = run();
+    std::process::exit(code);
+}
+
+fn run() -> i32 {
     let args: Vec<String> = std::env::args().skip(1).collect();
     let (Some(exe), Some(hours)) = (
         args.first().map(PathBuf::from),
         args.get(1).and_then(|hours| hours.parse::<f64>().ok()),
     ) else {
         eprintln!("usage: soak <fastcapture.exe> <hours>");
-        std::process::exit(2);
+        return 2;
     };
     let exe = std::path::absolute(&exe).unwrap_or(exe);
     if !exe.is_file() {
         eprintln!("soak: no such file: {}", exe.display());
-        std::process::exit(2);
+        return 2;
     }
+    // The tray app brings the entry in step with its settings when it starts, the way
+    // `startup::this_command` writes it; settings that agree with the entry leave it alone.
+    let sign_in = startup::get(startup::VALUE);
+    let own = format!("\"{}\"", exe.display());
+    let start_at_sign_in = match &sign_in {
+        None => false,
+        Some(entry) if entry.eq_ignore_ascii_case(&own) => true,
+        Some(entry) => {
+            eprintln!(
+                "soak: The start at sign-in entry points at another FastCapture ({entry}), which \
+                 the soak's FastCapture would change. Turn Start at sign-in off in that \
+                 FastCapture's Settings for the run, or soak that exe."
+            );
+            return 2;
+        }
+    };
     let scratch = std::env::temp_dir().join(format!("fastcapture-soak-{}", std::process::id()));
     let appdata = scratch.join("appdata");
     let localappdata = scratch.join("localappdata");
@@ -117,7 +189,7 @@ fn main() {
             "soak: Quit FastCapture first. One tray app runs per Windows session, and the soak \
              run starts its own."
         );
-        std::process::exit(2);
+        return 2;
     }
 
     let server = TestServer::answering(model_reply());
@@ -134,7 +206,7 @@ fn main() {
         format!("local_endpoint={}", server.url()),
         "local_model=fake".to_owned(),
         format!("notebook={}", notebook.display()),
-        "start_at_sign_in=false".to_owned(),
+        format!("start_at_sign_in={start_at_sign_in}"),
         String::new(),
     ]
     .join("\r\n");
@@ -146,18 +218,33 @@ fn main() {
         ("LOCALAPPDATA", localappdata.clone()),
     ];
 
-    let sign_in = startup::get(startup::VALUE);
-    let child = Command::new(&exe)
-        .envs(environment.clone())
-        .spawn()
-        .expect("fastcapture.exe starts");
-    // Should this process die without cleaning up, closing the job ends the exe too.
-    let job = Job::new().filter(|job| job.add(&child));
+    // Should this process die without closing the exe, closing the job ends the exe too.
+    let Some(job) = Job::new() else {
+        eprintln!("soak: couldn't make a job object for fastcapture.exe; not starting it");
+        return 1;
+    };
+    let mut child = match Command::new(&exe).envs(environment.clone()).spawn() {
+        Ok(child) => child,
+        Err(error) => {
+            eprintln!("soak: fastcapture.exe didn't start: {error}");
+            return 1;
+        }
+    };
+    if !job.add(&child) {
+        eprintln!("soak: couldn't put fastcapture.exe in a job; ending it");
+        let _ = child.kill();
+        let _ = child.wait();
+        check_sign_in(sign_in.as_deref());
+        return 1;
+    }
     let process = child.as_raw_handle() as HANDLE;
-    *RUNNING.lock().unwrap() = Some(Running {
+    let _finish = Finish;
+    *RUNNING
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(Running {
         child,
         job,
-        sign_in,
+        sign_in: sign_in.clone(),
     });
     unsafe { SetConsoleCtrlHandler(Some(on_ctrl), 1) };
 
@@ -166,7 +253,7 @@ fn main() {
     println!("soak: scratch folder {}", scratch.display());
     println!("soak: writing {}", csv_path.display());
     wait_until_started(&localappdata, Duration::from_secs(30));
-    put_sign_in_back();
+    check_sign_in(sign_in.as_deref());
 
     let mut csv = std::fs::File::create(&csv_path).expect("soak.csv can be written");
     let _ = writeln!(csv, "elapsed_s,handles,gdi,user,private_bytes");
@@ -181,8 +268,7 @@ fn main() {
         let elapsed = began.elapsed();
         if let Some(code) = exited() {
             eprintln!("soak: fastcapture.exe ended early, with exit code {code:?}");
-            finish();
-            std::process::exit(1);
+            return 1;
         }
         if elapsed >= next_sample {
             let sample = Sample::read(process, elapsed);
@@ -218,8 +304,7 @@ fn main() {
          Markdown files in the notebook",
         server.requests().len()
     );
-    let verdict = report(&samples);
-    std::process::exit(if verdict { 0 } else { 1 });
+    if report(&samples) { 0 } else { 1 }
 }
 
 /// The files `add` attaches, written once.
@@ -412,15 +497,18 @@ fn wait_until_started(localappdata: &Path, within: Duration) {
     eprintln!("soak: fastcapture.exe didn't log that it started; going on");
 }
 
-/// Puts the "start at sign-in" entry back as it was before the run.
-fn put_sign_in_back() {
-    let Ok(running) = RUNNING.lock() else { return };
-    let Some(running) = running.as_ref() else {
+/// Checks the "start at sign-in" entry is still `before`. The scratch settings agree with it, so
+/// the exe leaves it alone; should it have changed anyway, it is put back, with a warning.
+fn check_sign_in(before: Option<&str>) {
+    let now = startup::get(startup::VALUE);
+    if now.as_deref() == before {
         return;
-    };
-    if startup::get(startup::VALUE) != running.sign_in
-        && let Err(error) = startup::set(startup::VALUE, running.sign_in.as_deref())
-    {
+    }
+    eprintln!(
+        "soak: WARNING: the start at sign-in entry changed during the run ({now:?}); putting \
+         back {before:?}"
+    );
+    if let Err(error) = startup::set(startup::VALUE, before) {
         eprintln!("soak: couldn't put the start at sign-in entry back: {error}");
     }
 }
@@ -430,39 +518,6 @@ fn exited() -> Option<Option<i32>> {
     let mut running = RUNNING.lock().ok()?;
     let child = &mut running.as_mut()?.child;
     child.try_wait().ok().flatten().map(|status| status.code())
-}
-
-/// Closes the exe as Quit does (its window gets `WM_CLOSE`, so the tray icon goes with it), or
-/// ends it when it doesn't close in time, then puts the sign-in entry back. Safe to call twice.
-fn finish() {
-    put_sign_in_back();
-    let Some(mut running) = RUNNING.lock().ok().and_then(|mut running| running.take()) else {
-        return;
-    };
-    if running.child.try_wait().ok().flatten().is_none() {
-        close_windows_of(running.child.id());
-        let began = Instant::now();
-        while began.elapsed() < CLOSE_WITHIN {
-            if running.child.try_wait().ok().flatten().is_some() {
-                break;
-            }
-            std::thread::sleep(Duration::from_millis(100));
-        }
-        if running.child.try_wait().ok().flatten().is_none() {
-            eprintln!("soak: fastcapture.exe didn't close; ending it");
-            match &running.job {
-                Some(job) => job.end(),
-                None => {
-                    let _ = running.child.kill();
-                }
-            }
-            let _ = running.child.wait();
-        }
-    }
-    // Once more, in case the exe synced its settings again before it closed.
-    if startup::get(startup::VALUE) != running.sign_in {
-        let _ = startup::set(startup::VALUE, running.sign_in.as_deref());
-    }
 }
 
 /// Posts `WM_CLOSE` to the tray app's window in process `id`.

@@ -57,6 +57,10 @@ cargo build --release
 cargo run --release --example soak -- target\release\fastcapture.exe 48
 ```
 
+The soak's FastCapture shares one thing with yours: the "start at sign-in" entry. So the run
+refuses when that entry starts another FastCapture; turn Start at sign-in off in its Settings for
+the run (and back on after), or soak the exe the entry starts.
+
 During the run, put the PC to sleep and wake it a few times, and move the capture box between
 monitors with different scales. The run must end `flat`: no growth in handles or GDI objects,
 and private bytes growing by no more than 1 MB an hour. A `GROWING` counter is a leak to find

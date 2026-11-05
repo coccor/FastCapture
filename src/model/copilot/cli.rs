@@ -394,13 +394,15 @@ while ($null -ne ($text = Read-Message)) {
     fn a_cli_that_never_answers_times_out_and_is_ended() {
         let temp = Temp::new("copilot-silent");
         let cli = fake(&temp, &["!silent".to_owned()]);
+        // Long enough for PowerShell, which runs the fake, to start and log the request even
+        // on a loaded machine; the fake never answers, so the wait always runs out.
         let started = Instant::now();
         assert_eq!(
-            Server::start(&cli, &temp.0, Duration::from_secs(3)).err(),
+            Server::start(&cli, &temp.0, Duration::from_secs(15)).err(),
             Some(StartError::TimedOut)
         );
         assert!(
-            started.elapsed() < Duration::from_secs(10),
+            started.elapsed() < Duration::from_secs(30),
             "{:?}",
             started.elapsed()
         );

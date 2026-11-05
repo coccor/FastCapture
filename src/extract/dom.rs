@@ -11,8 +11,10 @@ use std::rc::Rc;
 
 /// How deep the tree may grow. The parser looks through every open element for each tag it
 /// reads, so a page nested a million levels deep would take hours. Once the page nests deeper
-/// than this, the rest of it is read as text, its tags dropped. Browsers cap the depth of what
-/// they build at 512 too.
+/// than this, the rest of the page is read as text: every tag after that point is dropped,
+/// shallow or not, so later headings, lists and links become plain text. That loses more than
+/// browsers do (Blink also caps depth at 512, but only flattens what is deeper and keeps
+/// building the rest), and is only for pages no real site nests this deep.
 pub const MAX_DEPTH: usize = 512;
 
 /// How much of the page is parsed between looks at how deep it has grown.
@@ -508,9 +510,11 @@ mod tests {
             "<div>".repeat(100_000),
             "</div>".repeat(100_000)
         );
+        // Without the cap this takes hours. The bound is loose so a loaded machine still
+        // passes; the fuzzer's hang watchdog is what holds parsing to its speed.
         let started = std::time::Instant::now();
         let dom = Dom::parse(&html);
-        assert!(started.elapsed() < std::time::Duration::from_secs(10));
+        assert!(started.elapsed() < std::time::Duration::from_secs(60));
         let body = dom.find(dom.root(), "body").unwrap();
         let text = dom.text_of(body);
         let words: Vec<&str> = text.split_whitespace().collect();

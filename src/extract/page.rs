@@ -623,10 +623,12 @@ mod tests {
             "</blockquote>".repeat(5_000)
         );
         for html in [nested, quotes] {
+            // Before the fix this took minutes. The bound is loose so a loaded machine still
+            // passes; the fuzzer's hang watchdog is what holds extraction to its speed.
             let started = std::time::Instant::now();
             let _ = extract(&html, "https://example.com/");
             assert!(
-                started.elapsed() < std::time::Duration::from_secs(10),
+                started.elapsed() < std::time::Duration::from_secs(60),
                 "took {:?}",
                 started.elapsed()
             );
@@ -650,11 +652,7 @@ mod tests {
             }
             length
         };
-        let pieces = [
-            "", " ", "a", " a", "a ", " a b ", "
-
-", "ab", "c,d",
-        ];
+        let pieces = ["", " ", "a", " a", "a ", " a b ", "\n\n", "ab", "c,d"];
         let mut pages = vec![
             fixture("news.html"),
             fixture("blog.html"),
@@ -681,6 +679,21 @@ mod tests {
                     text.matches([',', '，']).count(),
                     "{html}"
                 );
+                // Link density as it was measured before: the links' lengths summed over
+                // every `a` under the node.
+                let total = direct(&text);
+                let links: usize = dom
+                    .descendants(id)
+                    .into_iter()
+                    .filter(|&node| dom.is(node, "a"))
+                    .map(|node| direct(&dom.text_of(node)))
+                    .sum();
+                let density = if total == 0 {
+                    0.0
+                } else {
+                    links as f64 / total as f64
+                };
+                assert_eq!(measure.link_density(id), density, "{html}");
             }
         }
     }
