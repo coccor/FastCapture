@@ -355,7 +355,11 @@ impl Reply {
                 false
             }
             Some("session.warning") => {
-                crate::log::line(&format!("copilot: warning: {data}"));
+                // The service's text can echo the capture, so only its length is logged.
+                crate::log::line(&format!(
+                    "copilot: warning ({} characters)",
+                    data.to_string().chars().count()
+                ));
                 false
             }
             Some("session.error") => {
@@ -401,7 +405,11 @@ pub fn error_from(data: &Value, now: u64) -> BackendError {
     let kind = data["errorType"].as_str().unwrap_or("");
     let code = data["errorCode"].as_str().unwrap_or("");
     let paused = |what: &str| {
-        crate::log::line(&format!("copilot: limit: {data}"));
+        // The service's text can echo the capture, so only its length is logged.
+        crate::log::line(&format!(
+            "copilot: limit ({} characters)",
+            data.to_string().chars().count()
+        ));
         let until = now + LIMIT_WAIT.as_millis() as u64;
         BackendError::PauseUntil {
             until,
@@ -585,6 +593,21 @@ mod tests {
                 home_folders: Vec::new(),
             },
         }
+    }
+
+    #[test]
+    fn a_limit_is_logged_by_length_not_by_what_the_service_said() {
+        let _ = crate::log::take_captured();
+        let data = json!({"errorType": "quota", "message": "over quota for: my secret plan"});
+        let length = data.to_string().chars().count();
+        assert!(matches!(
+            error_from(&data, NOW),
+            BackendError::PauseUntil { .. }
+        ));
+        assert_eq!(
+            crate::log::take_captured(),
+            [format!("copilot: limit ({length} characters)")]
+        );
     }
 
     /// `assistant.usage` as the screenshot check got it, cut down.

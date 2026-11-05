@@ -20,7 +20,7 @@ pub enum Fetched {
     Status(u16),
 }
 
-/// Fetches `url`. Errors that may pass (offline, timeout) are `Transient`; a page over 5 MB
+/// Fetches `url`. Being offline is `Transient`, a timeout is `TimedOut`, and a page over 5 MB
 /// or a bad address is `Permanent`.
 pub fn fetch(url: &str) -> Result<Fetched, HttpError> {
     let client = Client::new(USER_AGENT)?;

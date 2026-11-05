@@ -1421,19 +1421,18 @@ fn test(hwnd: HWND) {
         .flatten();
     let claude_code_path = window.settings.claude_code_path.clone();
     let copilot_path = window.settings.copilot_path.clone();
+    let local_timeout = window.settings.local_timeout;
     set_text(
         window.controls.test_status,
         "Asking the model for a test note…",
     );
     in_background(hwnd, move || {
         let backend: Result<Box<dyn Backend>, String> = match form.mode {
-            Some(Mode::Local) => OpenAi::local(
-                &form.local_endpoint,
-                &form.local_model,
-                openai::LOCAL_TIMEOUT,
-            )
-            .map(|backend| Box::new(backend) as Box<dyn Backend>)
-            .map_err(|error| error.to_string()),
+            Some(Mode::Local) => {
+                OpenAi::local(&form.local_endpoint, &form.local_model, local_timeout)
+                    .map(|backend| Box::new(backend) as Box<dyn Backend>)
+                    .map_err(|error| error.to_string())
+            }
             _ => {
                 let key = if form.new_key.is_empty() {
                     saved_key.unwrap_or_default()

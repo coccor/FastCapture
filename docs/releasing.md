@@ -76,6 +76,7 @@ them:
 Remove-Item "$env:TEMP\fastcapture-skipped.txt" -ErrorAction SilentlyContinue
 $env:FASTCAPTURE_SKIPPED = "$env:TEMP\fastcapture-skipped.txt"
 cargo test --lib -- spell autocorrect capture_box --test-threads=1
+if ($LASTEXITCODE) { throw "the autocorrect tests failed" }
 Get-Content "$env:TEMP\fastcapture-skipped.txt" -ErrorAction SilentlyContinue
 ```
 

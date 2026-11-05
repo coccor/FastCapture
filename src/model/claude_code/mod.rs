@@ -274,7 +274,11 @@ pub fn interpret(
             ));
         }
         if stream.limited || is_usage_limit(text) {
-            crate::log::line(&format!("claude code: limit: {text}"));
+            // The service's text can echo the capture, so only its length is logged.
+            crate::log::line(&format!(
+                "claude code: limit ({} characters)",
+                text.chars().count()
+            ));
             let reset = reset_in_text(text)
                 .or(stream.resets_at)
                 .map(|seconds| seconds * 1000)
@@ -549,6 +553,21 @@ mod tests {
             interpret(&not_logged_in, Some(1), "", 0),
             Err(BackendError::Pause(_))
         ));
+    }
+
+    #[test]
+    fn a_limit_is_logged_by_length_not_by_what_the_service_said() {
+        let _ = crate::log::take_captured();
+        let said = "Claude AI usage limit reached|1792429200";
+        let limited = stream(&[result(json!({"is_error": true, "result": said}))]);
+        assert!(matches!(
+            interpret(&limited, Some(1), "", 1_792_400_000_000),
+            Err(BackendError::PauseUntil { .. })
+        ));
+        assert_eq!(
+            crate::log::take_captured(),
+            [format!("claude code: limit ({} characters)", said.len())]
+        );
     }
 
     #[test]

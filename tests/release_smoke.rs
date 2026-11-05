@@ -19,7 +19,23 @@ fn extract(fixture: &str) -> (Option<i32>, String) {
         .join(fixture);
     let exe = exe();
     assert!(exe.is_file(), "build it first: {}", exe.display());
-    let output = Command::new(exe).arg("extract").arg(path).output().unwrap();
+    // A recovered panic is logged: the log goes to a scratch folder, not the developer's own.
+    let profile = std::env::temp_dir().join(format!(
+        "fastcapture-smoke-{}-{}",
+        std::process::id(),
+        fixture.replace('.', "-")
+    ));
+    let _ = std::fs::remove_dir_all(&profile);
+    std::fs::create_dir_all(profile.join("Local")).unwrap();
+    std::fs::create_dir_all(profile.join("Roaming")).unwrap();
+    let output = Command::new(exe)
+        .arg("extract")
+        .arg(path)
+        .env("LOCALAPPDATA", profile.join("Local"))
+        .env("APPDATA", profile.join("Roaming"))
+        .output()
+        .unwrap();
+    let _ = std::fs::remove_dir_all(&profile);
     (
         output.status.code(),
         String::from_utf8_lossy(&output.stdout).into_owned(),

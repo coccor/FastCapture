@@ -237,7 +237,7 @@ impl RetryLog {
                     return;
                 }
                 self.flush(capture_id);
-                crate::log::line(&format!("runner: will retry: {reason}"));
+                crate::log::line(&format!("runner: {capture_id}: will retry: {reason}"));
                 self.last.insert(capture_id.to_owned(), (reason.clone(), 0));
             }
             Outcome::Written(_) => {
@@ -580,7 +580,7 @@ mod tests {
         assert_eq!(
             lines,
             [
-                "runner: will retry: timed out",
+                "runner: c1: will retry: timed out",
                 "runner: c1: 2 more retries, same reason",
                 "runner: failed: gave up",
             ]
@@ -603,9 +603,9 @@ mod tests {
         assert_eq!(
             crate::log::take_captured(),
             [
-                "runner: will retry: slow",
+                "runner: c1: will retry: slow",
                 "runner: c1: 1 more retries, same reason",
-                "runner: will retry: busy",
+                "runner: c1: will retry: busy",
             ]
         );
     }

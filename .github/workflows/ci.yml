@@ -38,6 +38,17 @@ jobs:
     runs-on: windows-11-arm
     steps:
       - uses: actions/checkout@v4
+      # The x64 runners come with Rust; the Arm one may not, so it is installed when missing.
+      - name: Install Rust if missing
+        shell: pwsh
+        run: |
+          if (-not (Get-Command cargo -ErrorAction SilentlyContinue)) {
+            $installer = Join-Path $env:RUNNER_TEMP "rustup-init.exe"
+            Invoke-WebRequest "https://static.rust-lang.org/rustup/dist/aarch64-pc-windows-msvc/rustup-init.exe" -OutFile $installer
+            & $installer -y --profile minimal --default-toolchain stable
+            if ($LASTEXITCODE) { throw "rustup-init failed" }
+            "$env:USERPROFILE\.cargo\bin" >> $env:GITHUB_PATH
+          }
       - name: Unit and Windows integration tests
         run: cargo test --locked
 
