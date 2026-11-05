@@ -308,6 +308,51 @@ mod tests {
     }
 
     #[test]
+    fn a_capture_failing_at_any_save_step_leaves_all_of_it_or_none() {
+        let notebook = TempNotebook::new("fail-steps");
+        let first = notebook.0.join("first.log");
+        let second = notebook.0.join("second.log");
+        fs::write(&first, b"one").unwrap();
+        fs::write(&second, b"two").unwrap();
+        let capture = Capture {
+            text: "half written?".to_owned(),
+            attachments: vec![Attachment::File(first), Attachment::File(second)],
+            source_window: None,
+            source_url: None,
+        };
+        let conventions = notebook.conventions();
+        let (mut failed, mut succeeded) = (0, 0);
+        for steps in 0..12 {
+            saver::fail_after(steps);
+            let filed = file_capture(&request(&conventions, &capture));
+            saver::fail_after(u32::MAX);
+            match filed {
+                Ok(filed) => {
+                    succeeded += 1;
+                    assert!(notebook.0.join(&filed.raw).is_file(), "steps {steps}");
+                    assert_eq!(filed.attachments.len(), 2, "steps {steps}");
+                    for attachment in &filed.attachments {
+                        assert!(notebook.0.join(&attachment.path).is_file(), "steps {steps}");
+                    }
+                }
+                Err(_) => {
+                    failed += 1;
+                    assert_eq!(notebook.files("raw"), Vec::<String>::new(), "steps {steps}");
+                    assert_eq!(
+                        notebook.files("attachments"),
+                        Vec::<String>::new(),
+                        "steps {steps}"
+                    );
+                }
+            }
+            let _ = fs::remove_dir_all(notebook.0.join("raw"));
+            let _ = fs::remove_dir_all(notebook.0.join("attachments"));
+        }
+        assert_eq!(failed, 9, "three files, three steps each");
+        assert_eq!(succeeded, 3);
+    }
+
+    #[test]
     fn a_taken_name_gets_a_number_and_nothing_is_overwritten() {
         let notebook = TempNotebook::new("clash");
         let capture = Capture {

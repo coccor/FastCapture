@@ -101,9 +101,12 @@ fn write_then_swap(
             .create_new(true)
             .open(&temp)
             .map_err(|error| Error::io(&temp, error))?;
+        injected_failure()?;
         write(&mut file).map_err(|error| Error::io(&temp, error))?;
+        injected_failure()?;
         file.sync_all().map_err(|error| Error::io(&temp, error))?;
         drop(file);
+        injected_failure()?;
         if create_new {
             with_retries(|| move_without_replacing(&temp, path))
         } else {
@@ -116,6 +119,41 @@ fn write_then_swap(
         let _ = std::fs::remove_file(&temp);
     }
     result
+}
+
+#[cfg(test)]
+thread_local! {
+    static FAIL_AFTER: std::cell::Cell<Option<u32>> = const { std::cell::Cell::new(None) };
+}
+
+/// Makes this thread's saver operations succeed `steps` times, then fail the next one (a write, a
+/// sync or a swap, counted together) with a full disk, then succeed again.
+#[cfg(test)]
+pub(crate) fn fail_after(steps: u32) {
+    FAIL_AFTER.with(|cell| cell.set(Some(steps)));
+}
+
+#[cfg(test)]
+fn injected_failure() -> Result<()> {
+    FAIL_AFTER.with(|cell| match cell.get() {
+        Some(0) => {
+            cell.set(None);
+            Err(Error::Win32 {
+                call: "injected failure",
+                code: windows_sys::Win32::Foundation::ERROR_DISK_FULL,
+            })
+        }
+        Some(left) => {
+            cell.set(Some(left - 1));
+            Ok(())
+        }
+        None => Ok(()),
+    })
+}
+
+#[cfg(not(test))]
+fn injected_failure() -> Result<()> {
+    Ok(())
 }
 
 fn next_sibling_temp(path: &Path) -> Result<PathBuf> {
