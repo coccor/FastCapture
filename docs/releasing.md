@@ -49,6 +49,10 @@ The same `x.y.z` in:
 
 ## 5. Commit, merge, build
 
+Before building, run `cargo test --lib spell autocorrect capture_box -- --test-threads=1` on a
+desktop Windows with English installed. The output must have no `skipped` lines, because CI's
+runners always skip these tests.
+
 Commit the README, images and version bump as `FastCapture x.y.z` and merge it to `main`. CI's
 `package` job on `main` builds `FastCapture-x.y.z-windows-x64.zip` and `-arm64.zip` with their
 `.sha256` files as artifacts:

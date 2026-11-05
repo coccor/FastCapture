@@ -2162,12 +2162,12 @@ mod tests {
 
     /// The autocorrect tests need Windows' English checker with its autocorrect list, which
     /// Windows Server (CI's runners) lacks.
-    fn no_speller() -> bool {
+    fn no_speller(test: &str) -> bool {
         let missing = crate::platform::spell::with_english(|s| s.replacement("teh"))
             .flatten()
             .is_none();
         if missing {
-            eprintln!("skipped: no en-US autocorrect list");
+            crate::platform::spell::skipped(test, "no autocorrect list");
         }
         missing
     }
@@ -2198,7 +2198,7 @@ mod tests {
 
     #[test]
     fn a_typed_typo_is_fixed_and_ctrl_z_brings_it_back() {
-        if no_speller() {
+        if no_speller("a_typed_typo_is_fixed_and_ctrl_z_brings_it_back") {
             return;
         }
         let drafts = temp("fix");
@@ -2214,7 +2214,7 @@ mod tests {
 
     #[test]
     fn ctrl_z_after_a_fix_made_by_enter_keeps_the_line_break() {
-        if no_speller() {
+        if no_speller("ctrl_z_after_a_fix_made_by_enter_keeps_the_line_break") {
             return;
         }
         let drafts = temp("enter");
@@ -2230,7 +2230,7 @@ mod tests {
 
     #[test]
     fn all_capitals_are_left_alone_as_windows_does() {
-        if no_speller() {
+        if no_speller("all_capitals_are_left_alone_as_windows_does") {
             return;
         }
         let drafts = temp("caps");
@@ -2288,7 +2288,7 @@ mod tests {
 
     #[test]
     fn a_word_in_the_middle_is_fixed_in_place() {
-        if no_speller() {
+        if no_speller("a_word_in_the_middle_is_fixed_in_place") {
             return;
         }
         let drafts = temp("middle");
@@ -2304,7 +2304,7 @@ mod tests {
 
     #[test]
     fn fixes_land_after_non_ascii_text() {
-        if no_speller() {
+        if no_speller("fixes_land_after_non_ascii_text") {
             return;
         }
         let drafts = temp("unicode");
@@ -2317,7 +2317,7 @@ mod tests {
 
     #[test]
     fn ctrl_z_after_more_typing_does_not_bring_the_typo_back() {
-        if no_speller() {
+        if no_speller("ctrl_z_after_more_typing_does_not_bring_the_typo_back") {
             return;
         }
         let drafts = temp("later");
@@ -2334,7 +2334,7 @@ mod tests {
 
     #[test]
     fn pasted_restored_and_switched_off_text_is_left_alone() {
-        if no_speller() {
+        if no_speller("pasted_restored_and_switched_off_text_is_left_alone") {
             return;
         }
         let drafts = temp("alone");

@@ -21,7 +21,14 @@ jobs:
       - name: Clippy (warnings denied)
         run: cargo clippy --locked --all-targets --all-features -- -D warnings
       - name: Unit and Windows integration tests (serial)
-        run: cargo test --locked -- --test-threads=1
+        shell: pwsh
+        run: |
+          $env:FASTCAPTURE_SKIPPED = "$env:RUNNER_TEMP\skipped.txt"
+          cargo test --locked -- --test-threads=1
+          $code = $LASTEXITCODE
+          $count = if (Test-Path $env:FASTCAPTURE_SKIPPED) { (Get-Content $env:FASTCAPTURE_SKIPPED).Count } else { 0 }
+          "Tests skipped for lack of Windows' autocorrect list: $count" >> $env:GITHUB_STEP_SUMMARY
+          exit $code
       - name: Release smoke test
         run: |
           cargo build --locked --release
