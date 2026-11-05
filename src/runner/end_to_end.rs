@@ -153,6 +153,7 @@ fn a_link_capture_becomes_a_note_about_its_page() {
         )],
         body: ARTICLE.as_bytes().to_vec(),
         delay: Duration::ZERO,
+        drip: None,
     }]);
     let url = format!("{}/lag", pages.url());
     let job = temp.submit(Capture {

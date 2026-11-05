@@ -143,6 +143,7 @@ mod tests {
             headers: vec![("content-type".to_owned(), content_type.to_owned())],
             body: body.to_vec(),
             delay: Duration::ZERO,
+            drip: None,
         }
     }
 

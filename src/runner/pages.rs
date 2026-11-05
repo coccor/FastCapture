@@ -237,6 +237,7 @@ mod tests {
             headers: vec![("content-type".to_owned(), "text/html".to_owned())],
             body: ARTICLE.as_bytes().to_vec(),
             delay: std::time::Duration::ZERO,
+            drip: None,
         }]);
         let notebook = Notebook::new("real");
         let job = notebook.capture(&format!("{}/lag", server.url()));

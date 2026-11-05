@@ -13,6 +13,8 @@ pub struct Scripted {
     pub body: Vec<u8>,
     /// How long to wait before answering.
     pub delay: Duration,
+    /// When set, the body is written one byte at a time, this far apart, after the headers.
+    pub drip: Option<Duration>,
 }
 
 impl Scripted {
@@ -22,11 +24,17 @@ impl Scripted {
             headers: vec![("content-type".to_owned(), "application/json".to_owned())],
             body: body.as_bytes().to_vec(),
             delay: Duration::ZERO,
+            drip: None,
         }
     }
 
     pub fn with_header(mut self, name: &str, value: &str) -> Self {
         self.headers.push((name.to_owned(), value.to_owned()));
+        self
+    }
+
+    pub fn dripping(mut self, every: Duration) -> Self {
+        self.drip = Some(every);
         self
     }
 
@@ -133,7 +141,20 @@ fn answer(stream: TcpStream, reply: &Scripted) -> Option<Seen> {
     }
     head.push_str("\r\n");
     let _ = stream.write_all(head.as_bytes());
-    let _ = stream.write_all(&reply.body);
+    match reply.drip {
+        None => {
+            let _ = stream.write_all(&reply.body);
+        }
+        Some(every) => {
+            let _ = stream.flush();
+            for byte in &reply.body {
+                std::thread::sleep(every);
+                if stream.write_all(&[*byte]).is_err() || stream.flush().is_err() {
+                    break;
+                }
+            }
+        }
+    }
     let _ = stream.flush();
     Some(Seen {
         method,

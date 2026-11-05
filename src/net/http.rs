@@ -2,17 +2,18 @@
 //! and certificate store, so FastCapture needs no TLS crate. For the model backends and the
 //! pages of captured links; the worker thread owns the clients.
 
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use windows_sys::Win32::Foundation::GetLastError;
 use windows_sys::Win32::Networking::WinHttp::{
     ERROR_WINHTTP_CANNOT_CONNECT, ERROR_WINHTTP_CONNECTION_ERROR, ERROR_WINHTTP_NAME_NOT_RESOLVED,
     ERROR_WINHTTP_TIMEOUT, WINHTTP_ACCESS_TYPE_AUTOMATIC_PROXY, WINHTTP_DISABLE_COOKIES,
     WINHTTP_FLAG_SECURE, WINHTTP_OPTION_DISABLE_FEATURE,
     WINHTTP_OPTION_MAX_HTTP_AUTOMATIC_REDIRECTS, WINHTTP_OPTION_RECEIVE_RESPONSE_TIMEOUT,
-    WINHTTP_OPTION_URL, WINHTTP_QUERY_FLAG_NUMBER, WINHTTP_QUERY_RAW_HEADERS_CRLF,
-    WINHTTP_QUERY_STATUS_CODE, WinHttpCloseHandle, WinHttpConnect, WinHttpOpen, WinHttpOpenRequest,
-    WinHttpQueryDataAvailable, WinHttpQueryHeaders, WinHttpQueryOption, WinHttpReadData,
-    WinHttpReceiveResponse, WinHttpSendRequest, WinHttpSetOption, WinHttpSetTimeouts,
+    WINHTTP_OPTION_RECEIVE_TIMEOUT, WINHTTP_OPTION_URL, WINHTTP_QUERY_FLAG_NUMBER,
+    WINHTTP_QUERY_RAW_HEADERS_CRLF, WINHTTP_QUERY_STATUS_CODE, WinHttpCloseHandle, WinHttpConnect,
+    WinHttpOpen, WinHttpOpenRequest, WinHttpQueryDataAvailable, WinHttpQueryHeaders,
+    WinHttpQueryOption, WinHttpReadData, WinHttpReceiveResponse, WinHttpSendRequest,
+    WinHttpSetOption, WinHttpSetTimeouts,
 };
 
 /// The largest response body read; past it the request fails rather than filling memory.
@@ -205,6 +206,16 @@ impl Client {
         request: &Request<'_>,
         max_body: usize,
     ) -> Result<Response, HttpError> {
+        // WinHTTP's timeouts are per operation, so a server that sends a byte at a time could
+        // keep one request alive for ever; this is the one limit on the whole of it.
+        let started = Instant::now();
+        let deadline = started + request.timeout;
+        let out_of_time = || {
+            HttpError::TimedOut(format!(
+                "The request took longer than {} s",
+                request.timeout.as_secs()
+            ))
+        };
         let target = parse_url(request.url)?;
         let host = wide(&target.host);
         let connection =
@@ -261,6 +272,9 @@ impl Client {
             .map(|(name, value)| format!("{name}: {value}\r\n"))
             .collect();
         let headers: Vec<u16> = headers.encode_utf16().collect();
+        if Instant::now() >= deadline {
+            return Err(out_of_time());
+        }
         let sent = unsafe {
             WinHttpSendRequest(
                 handle.0,
@@ -281,6 +295,9 @@ impl Client {
         }
         if unsafe { WinHttpReceiveResponse(handle.0, std::ptr::null_mut()) } == 0 {
             return Err(failed("Receiving the response"));
+        }
+        if Instant::now() >= deadline {
+            return Err(out_of_time());
         }
 
         let mut status: u32 = 0;
@@ -303,6 +320,13 @@ impl Client {
 
         let mut body = Vec::new();
         loop {
+            let now = Instant::now();
+            if now >= deadline {
+                return Err(out_of_time());
+            }
+            // Each wait for data may take only what is left of the deadline.
+            let left = (deadline - now).as_millis().clamp(1, i32::MAX as u128) as u32;
+            set(WINHTTP_OPTION_RECEIVE_TIMEOUT, left);
             let mut available = 0u32;
             if unsafe { WinHttpQueryDataAvailable(handle.0, &mut available) } == 0 {
                 return Err(failed("Reading the response"));
@@ -600,5 +624,28 @@ mod tests {
             timeout: Duration::from_secs(2),
         });
         assert!(matches!(closed, Err(HttpError::Transient(_))), "{closed:?}");
+    }
+
+    #[test]
+    fn a_dripping_server_hits_the_total_deadline() {
+        let body = "x".repeat(200);
+        let server = TestServer::start(vec![
+            Scripted::json(200, &body).dripping(Duration::from_millis(100)), // 20 s in all
+        ]);
+        let started = std::time::Instant::now();
+        let result = Client::new("FastCapture-test").unwrap().send(&Request {
+            method: "GET",
+            url: &server.url(),
+            headers: Vec::new(),
+            body: &[],
+            timeout: Duration::from_secs(2),
+        });
+        assert!(matches!(result, Err(HttpError::TimedOut(_))), "{result:?}");
+        // WinHTTP waits about 4 s at least on loopback, whatever is asked.
+        assert!(
+            started.elapsed() < Duration::from_secs(8),
+            "{:?}",
+            started.elapsed()
+        );
     }
 }
