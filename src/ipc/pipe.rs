@@ -11,7 +11,7 @@ use crate::{Error, Result};
 use std::fs::File;
 use std::io::{Read, Write};
 use std::os::windows::io::{AsRawHandle, FromRawHandle, OwnedHandle};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 use windows_sys::Win32::Foundation::{
@@ -69,7 +69,12 @@ impl Server {
     /// Creates the pipe. Fails when another process already has it (a second tray app, or a
     /// squatter): `FILE_FLAG_FIRST_PIPE_INSTANCE` makes sure this process is its only server.
     pub fn create() -> Result<Self> {
-        let name = wide_path(&pipe_name()?);
+        Self::create_at(&pipe_name()?)
+    }
+
+    /// `create` for the pipe called `name`.
+    pub fn create_at(name: &Path) -> Result<Self> {
+        let name = wide_path(name);
         let security = CurrentUserAcl::current()?;
         let attributes = security.attributes();
         let raw = unsafe {
@@ -117,8 +122,13 @@ impl Server {
 /// Unblocks a `Server::serve` waiting for a client, after its `stop` flag was set.
 pub fn wake() {
     if let Ok(name) = pipe_name() {
-        let _ = open_client(&name);
+        wake_at(&name);
     }
+}
+
+/// `wake` for the pipe called `name`.
+pub fn wake_at(name: &Path) {
+    let _ = open_client(name);
 }
 
 #[derive(Debug)]
@@ -151,11 +161,16 @@ fn open_client(name: &std::path::Path) -> std::result::Result<File, u32> {
 
 /// Sends `request` to the tray app and returns its reply.
 pub fn send(request: &Request) -> std::result::Result<Reply, SendError> {
-    let frame = protocol::encode_request(request).map_err(SendError::Failed)?;
     let name = pipe_name().map_err(|error| SendError::Failed(error.to_string()))?;
-    let wide = wide_path(&name);
+    send_to(&name, request)
+}
+
+/// `send` to the pipe called `name`.
+pub fn send_to(name: &Path, request: &Request) -> std::result::Result<Reply, SendError> {
+    let frame = protocol::encode_request(request).map_err(SendError::Failed)?;
+    let wide = wide_path(name);
     let mut pipe = loop {
-        match open_client(&name) {
+        match open_client(name) {
             Ok(pipe) => break pipe,
             Err(ERROR_FILE_NOT_FOUND) => return Err(SendError::NotRunning),
             Err(ERROR_PIPE_BUSY) => {
@@ -224,12 +239,19 @@ mod tests {
         assert!(name.to_string_lossy().starts_with(r"\\.\pipe\FastCapture-"));
     }
 
-    /// The real pipe for this session: a running tray app would make this test fail with
-    /// "already exists", which is the behaviour it checks too.
+    /// Uses a pipe of its own, so a running tray app does not get in the way.
     #[test]
     fn a_request_gets_the_servers_reply_and_a_second_server_is_refused() {
-        let mut server = Server::create().unwrap();
-        assert!(Server::create().is_err(), "only one server per session");
+        let name = PathBuf::from(format!(
+            r"\\.\pipe\FastCapture-test-{}-{}",
+            std::process::id(),
+            line!()
+        ));
+        let mut server = Server::create_at(&name).unwrap();
+        assert!(
+            Server::create_at(&name).is_err(),
+            "only one server per pipe"
+        );
         let stop = Arc::new(AtomicBool::new(false));
         let thread_stop = stop.clone();
         let thread = std::thread::spawn(move || {
@@ -238,23 +260,29 @@ mod tests {
             });
         });
         for text in ["one", "two"] {
-            let reply = send(&Request::Add {
-                text: text.to_owned(),
-                attachments: Vec::new(),
-                notebook: None,
-            })
+            let reply = send_to(
+                &name,
+                &Request::Add {
+                    text: text.to_owned(),
+                    attachments: Vec::new(),
+                    notebook: None,
+                },
+            )
             .unwrap();
             assert_eq!(reply, Reply::Filed(PathBuf::from(format!(r"C:\{text}.md"))));
         }
         stop.store(true, Ordering::SeqCst);
-        wake();
+        wake_at(&name);
         thread.join().unwrap();
         assert!(matches!(
-            send(&Request::Add {
-                text: "x".to_owned(),
-                attachments: Vec::new(),
-                notebook: None,
-            }),
+            send_to(
+                &name,
+                &Request::Add {
+                    text: "x".to_owned(),
+                    attachments: Vec::new(),
+                    notebook: None,
+                }
+            ),
             Err(SendError::NotRunning)
         ));
     }
