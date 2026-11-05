@@ -30,8 +30,9 @@ use windows_sys::Win32::Foundation::{HWND, LPARAM, LRESULT, POINT, WPARAM};
 use windows_sys::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows_sys::Win32::UI::WindowsAndMessaging::{
     CreateWindowExW, DefWindowProcW, DestroyWindow, DispatchMessageW, GetMessageW, MSG,
-    PostMessageW, PostQuitMessage, RegisterClassExW, RegisterWindowMessageW, SendMessageW,
-    TranslateMessage, WM_APP, WM_DESTROY, WM_DWMCOLORIZATIONCOLORCHANGED, WM_ENDSESSION, WM_HOTKEY,
+    PBT_APMRESUMEAUTOMATIC, PostMessageW, PostQuitMessage, RegisterClassExW,
+    RegisterWindowMessageW, SendMessageW, TranslateMessage, WM_APP, WM_DESTROY,
+    WM_DWMCOLORIZATIONCOLORCHANGED, WM_ENDSESSION, WM_HOTKEY, WM_POWERBROADCAST,
     WM_QUERYENDSESSION, WM_SETTINGCHANGE, WM_THEMECHANGED, WNDCLASSEXW, WS_EX_TOOLWINDOW,
     WS_OVERLAPPED,
 };
@@ -1010,6 +1011,15 @@ extern "system" fn window_proc(
             save_open_draft();
             1
         }
+        // The PC woke from sleep: jobs may be due, and notebooks may have changed while no
+        // watcher could see.
+        WM_POWERBROADCAST if wparam == PBT_APMRESUMEAUTOMATIC as usize => {
+            wake_worker();
+            if let Some(indexes) = INDEXES.get() {
+                indexes.refresh_all();
+            }
+            1
+        }
         WM_ENDSESSION => {
             if wparam != 0 {
                 save_open_draft();
@@ -1042,6 +1052,22 @@ mod tests {
     use crate::platform::clipboard::{self, tests::Backup};
     use crate::queue::store::raw_sources;
     use windows_sys::Win32::UI::WindowsAndMessaging::IsWindow;
+
+    #[test]
+    fn waking_from_sleep_is_answered_without_a_panic() {
+        let _ui = crate::ui::test_support::lock();
+        let window = create_window().unwrap();
+        let answer = unsafe {
+            SendMessageW(
+                window,
+                WM_POWERBROADCAST,
+                PBT_APMRESUMEAUTOMATIC as usize,
+                0,
+            )
+        };
+        assert_eq!(answer, 1);
+        unsafe { DestroyWindow(window) };
+    }
 
     #[test]
     fn the_box_files_a_pasted_image_and_text_into_the_notebook_and_queue() {
