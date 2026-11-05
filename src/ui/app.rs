@@ -242,8 +242,17 @@ fn start_worker(window: HWND) {
         return;
     };
     let recovered = Store::new(queue.clone()).recover();
-    if recovered > 0 {
-        crate::log::line(&format!("queue: {recovered} interrupted jobs queued again"));
+    if recovered.queued > 0 {
+        crate::log::line(&format!(
+            "queue: {} interrupted jobs queued again",
+            recovered.queued
+        ));
+    }
+    if recovered.failed > 0 {
+        crate::log::line(&format!(
+            "queue: {} jobs failed after two interruptions",
+            recovered.failed
+        ));
     }
     let window = SendHwnd::new(window);
     let worker = Worker::start(

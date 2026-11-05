@@ -8,6 +8,17 @@ use crate::notebook::frontmatter::{self, Value};
 use crate::platform::saver;
 use std::path::{Path, PathBuf};
 
+/// Why a job that was interrupted twice failed.
+pub const INTERRUPTED_TWICE: &str =
+    "FastCapture stopped while writing this note, twice. Press R to try again.";
+
+/// What `Store::recover` did with the jobs left `working`.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct Recovered {
+    pub queued: usize,
+    pub failed: usize,
+}
+
 /// `%LocalAppData%\FastCapture\queue`.
 pub fn default_dir() -> Option<PathBuf> {
     crate::paths::local().map(|local| local.join("queue"))
@@ -115,17 +126,28 @@ impl Store {
         }
     }
 
-    /// After a restart: jobs left `working` were interrupted, so they are queued again. Returns
-    /// how many.
-    pub fn recover(&self) -> usize {
-        let mut recovered = 0;
-        for job in self.list() {
-            if job.state == State::Working
-                && self
-                    .set_state(&job.capture_id, State::Queued, job.last_error.clone())
-                    .is_ok()
-            {
-                recovered += 1;
+    /// After a restart: jobs left `working` were interrupted. The first time they are queued
+    /// again; a job interrupted twice probably crashes the app, so it fails instead of being
+    /// retried forever. `attempts` counts model tries and is left alone.
+    pub fn recover(&self) -> Recovered {
+        let mut recovered = Recovered::default();
+        for mut job in self.list() {
+            if job.state != State::Working {
+                continue;
+            }
+            job.interrupted += 1;
+            if job.interrupted >= 2 {
+                job.state = State::Failed;
+                job.last_error = Some(INTERRUPTED_TWICE.to_owned());
+            } else {
+                job.state = State::Queued;
+            }
+            if self.put(&job).is_ok() {
+                if job.state == State::Failed {
+                    recovered.failed += 1;
+                } else {
+                    recovered.queued += 1;
+                }
             }
         }
         recovered
@@ -273,19 +295,44 @@ mod tests {
     }
 
     #[test]
-    fn interrupted_jobs_are_queued_again() {
+    fn a_job_interrupted_twice_fails_but_once_is_queued_again() {
         let temp = Temp::new("recover");
         let store = Store::new(temp.0.clone());
-        store.put(&job("A", "1")).unwrap();
+        let mut offline = job("A", "1");
+        offline.attempts = 3; // three model tries while offline: not crashes
+        store.put(&offline).unwrap();
         store.put(&job("B", "2")).unwrap();
+        store.put(&job("C", "3")).unwrap();
         store.set_state("A", State::Working, None).unwrap();
+        store.set_state("B", State::Working, None).unwrap();
         store
-            .set_state("B", State::Failed, Some("bad key".into()))
+            .set_state("C", State::Failed, Some("bad key".into()))
             .unwrap();
-        assert_eq!(store.recover(), 1);
+
+        assert_eq!(
+            store.recover(),
+            Recovered {
+                queued: 2,
+                failed: 0
+            }
+        );
         assert_eq!(store.get("A").unwrap().state, State::Queued);
-        assert_eq!(store.get("A").unwrap().attempts, 1);
-        assert_eq!(store.get("B").unwrap().state, State::Failed);
+        assert_eq!(store.get("A").unwrap().interrupted, 1);
+
+        store.set_state("B", State::Working, None).unwrap();
+        assert_eq!(
+            store.recover(),
+            Recovered {
+                queued: 0,
+                failed: 1
+            }
+        );
+        let b = store.get("B").unwrap();
+        assert_eq!(
+            (b.state, b.last_error.as_deref()),
+            (State::Failed, Some(INTERRUPTED_TWICE))
+        );
+        assert_eq!(store.get("C").unwrap().state, State::Failed);
     }
 
     #[test]

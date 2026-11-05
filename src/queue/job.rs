@@ -52,6 +52,8 @@ pub struct Job {
     pub raw: PathBuf,
     pub state: State,
     pub attempts: u32,
+    /// How many times FastCapture stopped while this job was being worked on.
+    pub interrupted: u32,
     pub last_error: Option<String>,
     /// When the capture was made, as in the raw source's `captured:` (`YYYY-MM-DDTHH:MM`).
     pub created: String,
@@ -75,6 +77,7 @@ impl Job {
             raw,
             state: State::Queued,
             attempts: 0,
+            interrupted: 0,
             last_error: None,
             created,
             note: None,
@@ -114,6 +117,7 @@ impl Job {
             "raw": self.raw.to_string_lossy(),
             "state": self.state.key(),
             "attempts": self.attempts,
+            "interrupted": self.interrupted,
             "last_error": self.last_error,
             "created": self.created,
             "note": note,
@@ -161,6 +165,11 @@ impl Job {
                 .and_then(Value::as_u64)
                 .and_then(|n| u32::try_from(n).ok())
                 .unwrap_or(0),
+            interrupted: object
+                .get("interrupted")
+                .and_then(Value::as_u64)
+                .and_then(|n| u32::try_from(n).ok())
+                .unwrap_or(0),
             last_error: optional(object, "last_error"),
             created: string("created")?,
             note,
@@ -196,6 +205,7 @@ mod tests {
         assert_eq!(Job::from_json(&job.to_json()), Ok(job.clone()));
         job.state = State::Done;
         job.attempts = 3;
+        job.interrupted = 1;
         job.last_error = Some("model \"x\" not found".to_owned());
         job.note = Some(Written {
             path: PathBuf::from(r"inbox\Lag.md"),
@@ -217,6 +227,7 @@ mod tests {
             r#"{"version": 1, "capture_id": "A", "notebook": "n", "raw": "r", "state": "queued", "attempts": 0, "last_error": null, "created": "c"}"#,
         )
         .unwrap();
+        assert_eq!(job.interrupted, 0);
         assert_eq!(
             (job.note, job.regenerate, job.retry_at, job.finding),
             (None, false, None, false)
