@@ -251,7 +251,7 @@ fn start_pipe(window: HWND, stop: Arc<AtomicBool>) {
     });
 }
 
-/// Jobs left working by a crash are queued again, then the worker starts on the queue.
+/// Jobs left working by the last run are queued again, then the worker starts on the queue.
 fn start_worker(window: HWND) {
     let Some((queue, settings)) =
         with_app(|app| (app.context.queue.clone(), app.context.settings.clone()))
@@ -273,7 +273,13 @@ fn start_worker(window: HWND) {
             swept.restored, swept.deleted
         ));
     }
-    let recovered = Store::new(queue.clone()).recover();
+    // Whether the last run left its marker is read before this run writes its own.
+    let store = Store::new(queue.clone());
+    let unclean = store.was_running();
+    let recovered = store.recover(unclean);
+    if let Err(error) = store.mark_running() {
+        crate::log::line(&format!("queue: {error}"));
+    }
     if recovered.queued > 0 {
         crate::log::line(&format!(
             "queue: {} interrupted jobs queued again",
@@ -298,6 +304,13 @@ fn start_worker(window: HWND) {
     );
     let _ = WAKER.set(worker.waker());
     with_app(|app| app.worker = Some(worker));
+}
+
+/// Removes the queue's `.running` marker, so the next start knows this run exited cleanly.
+fn clear_running_marker() {
+    if let Some(Some(queue)) = with_app(|app| app.context.queue.clone()) {
+        Store::new(queue).clear_running();
+    }
 }
 
 fn start_settings_watch(window: HWND) {
@@ -1021,10 +1034,14 @@ extern "system" fn window_proc(
         WM_ENDSESSION => {
             if wparam != 0 {
                 save_open_draft();
+                // Windows may end the process without a WM_DESTROY: this is a clean exit too.
+                clear_running_marker();
             }
             0
         }
         WM_DESTROY => {
+            // A quit is a clean exit: a job mid-call when it happened isn't counted as interrupted.
+            clear_running_marker();
             // Changed indexes are written to their caches.
             if let Some(indexes) = INDEXES.get() {
                 indexes.stop();
