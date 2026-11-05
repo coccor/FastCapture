@@ -22,6 +22,10 @@ jobs:
         run: cargo clippy --locked --all-targets --all-features -- -D warnings
       - name: Unit and Windows integration tests (serial)
         run: cargo test --locked -- --test-threads=1
+      - name: Release smoke test
+        run: |
+          cargo build --locked --release
+          cargo test --locked --release --test release_smoke -- --ignored --test-threads=1
 
   package:
     needs: windows

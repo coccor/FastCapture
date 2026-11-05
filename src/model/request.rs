@@ -540,6 +540,37 @@ fn read_file(
     }
 }
 
+/// One line saying what a capture would read from the file `name` with `bytes`, without any of
+/// its text: `read <kind>: <n> characters[, <p> pages]`, `page: <n> characters`,
+/// `unreadable: <reason>` or `other: <kind>, <size>`.
+pub fn describe_file(name: &str, bytes: &[u8]) -> String {
+    let extension = Path::new(name)
+        .extension()
+        .map(|extension| extension.to_string_lossy().to_ascii_lowercase())
+        .unwrap_or_default();
+    if matches!(extension.as_str(), "html" | "htm") {
+        let text = String::from_utf8_lossy(bytes);
+        return match crate::crash::guarded(|| {
+            extract::page::extract(&text, "https://example.invalid/")
+        }) {
+            Ok(page) => format!("page: {} characters", page.markdown.chars().count()),
+            Err(reason) => format!("unreadable: {reason}"),
+        };
+    }
+    let mut scanned = Vec::new();
+    match read_file(name, bytes, &mut Budget::default(), &mut scanned) {
+        FileMaterial::Read { kind, pages, text } => {
+            let characters = text.chars().count();
+            match pages {
+                Some(pages) => format!("read {kind}: {characters} characters, {pages} pages"),
+                None => format!("read {kind}: {characters} characters"),
+            }
+        }
+        FileMaterial::Other { kind, size } => format!("other: {kind}, {size}"),
+        FileMaterial::Unreadable(reason) => format!("unreadable: {reason}"),
+    }
+}
+
 /// `512 bytes`, `34 KB`, `2.1 MB`.
 fn size_text(bytes: usize) -> String {
     const KB: usize = 1024;
