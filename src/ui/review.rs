@@ -650,7 +650,11 @@ fn suggested_target(review: &Review, row: &Row) -> Result<Option<Target>, String
         .and_then(|name| name.strip_suffix("]]"))
     else {
         let folder = home.trim().trim_matches('/').replace('/', "\\");
-        return Ok((!folder.is_empty()).then(|| Target::Folder(PathBuf::from(folder))));
+        let folder = PathBuf::from(folder);
+        if !crate::file::home::within(&folder) {
+            return Err(crate::file::home::outside_message(&folder));
+        }
+        return Ok((!folder.as_os_str().is_empty()).then_some(Target::Folder(folder)));
     };
     let note = row.note.as_ref().map(|note| note.path.as_path());
     let snapshot = snapshot(review, &row.notebook)

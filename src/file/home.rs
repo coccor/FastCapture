@@ -14,6 +14,24 @@ pub fn is_home_type(kind: Option<&str>, home_types: &[String]) -> bool {
     })
 }
 
+/// Whether `relative` stays inside the notebook it is joined onto: every component is a plain
+/// name (`.` is allowed), so no drive, share, root or `..` can lead out. The notebook's own
+/// root (an empty path) is inside.
+pub fn within(relative: &Path) -> bool {
+    use std::path::Component;
+    relative
+        .components()
+        .all(|part| matches!(part, Component::Normal(_) | Component::CurDir))
+}
+
+/// Why a folder outside the notebook is refused.
+pub fn outside_message(folder: &Path) -> String {
+    format!(
+        "The suggested home \"{}\" is outside the notebook, so the note stays in the inbox.",
+        folder.display()
+    )
+}
+
 /// How a folder home is written: relative to the notebook, with `/` and a trailing `/`
 /// (`Payments/Incidents/`).
 pub fn folder_name(folder: &Path) -> String {
@@ -152,6 +170,24 @@ pub fn filter(options: &[HomeOption], typed: &str) -> Vec<usize> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn homes_outside_the_notebook_are_refused() {
+        for inside in ["", "Payments", r"Payments\Incidents", r".\Payments"] {
+            assert!(within(Path::new(inside)), "{inside}");
+        }
+        for outside in [
+            r"..\Desktop",
+            r"Payments\..\..\x",
+            r"C:\x",
+            r"C:x",
+            r"\x",
+            r"\\server\share\x",
+            r"\\?\C:\x",
+        ] {
+            assert!(!within(Path::new(outside)), "{outside}");
+        }
+    }
 
     #[test]
     fn options_put_the_suggestion_first_and_filter_as_you_type() {
