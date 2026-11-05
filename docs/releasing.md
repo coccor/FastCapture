@@ -49,9 +49,19 @@ The same `x.y.z` in:
 
 ## 5. Commit, merge, build
 
-Before building, run `cargo test --lib spell autocorrect capture_box -- --test-threads=1` on a
-desktop Windows with English installed. The output must have no `skipped` lines, because CI's
-runners always skip these tests.
+Before building, run the autocorrect tests on a desktop Windows with English installed. CI's
+runners never have Windows' autocorrect list, so they skip these tests and only this run checks
+them:
+
+```powershell
+Remove-Item "$env:TEMP\fastcapture-skipped.txt" -ErrorAction SilentlyContinue
+$env:FASTCAPTURE_SKIPPED = "$env:TEMP\fastcapture-skipped.txt"
+cargo test --lib -- spell autocorrect capture_box --test-threads=1
+Get-Content "$env:TEMP\fastcapture-skipped.txt" -ErrorAction SilentlyContinue
+```
+
+The last line must print nothing. A test that names itself there returned early for lack of the
+autocorrect list: it did not run, so it did not pass.
 
 Commit the README, images and version bump as `FastCapture x.y.z` and merge it to `main`. CI's
 `package` job on `main` builds `FastCapture-x.y.z-windows-x64.zip` and `-arm64.zip` with their
