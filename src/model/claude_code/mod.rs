@@ -379,10 +379,9 @@ impl Backend for ClaudeCode {
             RunError::Start(reason) => {
                 BackendError::Pause(format!("{SERVICE} couldn't be started: {reason}"))
             }
-            RunError::TimedOut => BackendError::Retry {
-                after: None,
-                reason: format!("{SERVICE} didn't finish within 5 minutes."),
-            },
+            RunError::TimedOut => {
+                BackendError::TimedOut(format!("{SERVICE} didn't finish within 5 minutes."))
+            }
         })?;
         let stream = read_stream(&output.stdout);
         if let Some(result) = &stream.result {

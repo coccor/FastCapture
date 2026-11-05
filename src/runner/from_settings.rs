@@ -31,7 +31,7 @@ pub fn build(
                 .local_model
                 .as_deref()
                 .ok_or("Choose a local model in Settings.")?;
-            OpenAi::local(endpoint, model)
+            OpenAi::local(endpoint, model, settings.local_timeout)
                 .map(|backend| Box::new(backend) as Box<dyn Backend>)
                 .map_err(|error| error.to_string())
         }

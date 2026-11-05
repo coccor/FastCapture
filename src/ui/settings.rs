@@ -1427,9 +1427,13 @@ fn test(hwnd: HWND) {
     );
     in_background(hwnd, move || {
         let backend: Result<Box<dyn Backend>, String> = match form.mode {
-            Some(Mode::Local) => OpenAi::local(&form.local_endpoint, &form.local_model)
-                .map(|backend| Box::new(backend) as Box<dyn Backend>)
-                .map_err(|error| error.to_string()),
+            Some(Mode::Local) => OpenAi::local(
+                &form.local_endpoint,
+                &form.local_model,
+                openai::LOCAL_TIMEOUT,
+            )
+            .map(|backend| Box::new(backend) as Box<dyn Backend>)
+            .map_err(|error| error.to_string()),
             _ => {
                 let key = if form.new_key.is_empty() {
                     saved_key.unwrap_or_default()

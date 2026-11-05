@@ -56,10 +56,13 @@ fn key_header(endpoint: &str, key: &str) -> (&'static str, String) {
     }
 }
 
+/// How long a local server may take per request unless the settings say otherwise.
+pub const LOCAL_TIMEOUT: Duration = Duration::from_secs(300);
+
 impl OpenAi {
-    /// A local server: 5 minutes per request, no key.
-    pub fn local(endpoint: &str, model: &str) -> Result<Self, BackendError> {
-        Self::new(endpoint, model, None, "local", Duration::from_secs(300))
+    /// A local server: `timeout` per request, no key.
+    pub fn local(endpoint: &str, model: &str, timeout: Duration) -> Result<Self, BackendError> {
+        Self::new(endpoint, model, None, "local", timeout)
     }
 
     /// A cloud API: `https://` only, since the key goes with every request; 2 minutes per
@@ -409,7 +412,12 @@ mod tests {
     #[test]
     fn the_request_carries_the_schema_and_the_image_as_a_data_url() {
         let server = TestServer::start(vec![Scripted::json(200, &chat(NOTE, "stop"))]);
-        let local = OpenAi::local(&format!("{}/v1", server.url()), "llama3.2-vision").unwrap();
+        let local = OpenAi::local(
+            &format!("{}/v1", server.url()),
+            "llama3.2-vision",
+            LOCAL_TIMEOUT,
+        )
+        .unwrap();
         assert_eq!(local.complete(&request()).unwrap().title, "Lag");
         assert_eq!(local.label(), "local/llama3.2-vision");
         let seen = &server.requests()[0];
@@ -441,7 +449,7 @@ mod tests {
             Scripted::json(200, &chat(&format!("Sure! {NOTE}"), "stop")),
             Scripted::json(200, &chat(NOTE, "stop")),
         ]);
-        let local = OpenAi::local(&server.url(), "m").unwrap();
+        let local = OpenAi::local(&server.url(), "m", LOCAL_TIMEOUT).unwrap();
         assert_eq!(local.complete(&request()).unwrap().title, "Lag");
         assert_eq!(local.complete(&request()).unwrap().title, "Lag");
         let seen = server.requests();

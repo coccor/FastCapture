@@ -929,6 +929,7 @@ fn regenerate_selected(hwnd: HWND) {
     job.state = State::Queued;
     job.attempts = 0;
     job.interrupted = 0;
+    job.timeouts = 0;
     job.retry_at = None;
     job.last_error = None;
     if let Err(error) = store.put(&job) {

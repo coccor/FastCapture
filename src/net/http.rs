@@ -21,9 +21,8 @@ pub const MAX_RESPONSE_BYTES: usize = 32 * 1024 * 1024;
 pub const MAX_REDIRECTS: u32 = 5;
 
 /// Errors that may pass if the request is tried again later: the network or the server was
-/// unreachable, slow or cut off.
-const TRANSIENT: [u32; 4] = [
-    ERROR_WINHTTP_TIMEOUT,
+/// unreachable or cut off. A timeout is its own case (`HttpError::TimedOut`).
+const TRANSIENT: [u32; 3] = [
     ERROR_WINHTTP_CANNOT_CONNECT,
     ERROR_WINHTTP_NAME_NOT_RESOLVED,
     ERROR_WINHTTP_CONNECTION_ERROR,
@@ -33,6 +32,9 @@ const TRANSIENT: [u32; 4] = [
 pub enum HttpError {
     /// The request may succeed later (offline, server not running, timeout).
     Transient(String),
+    /// The server didn't answer in time. It may succeed later, but a job that keeps timing out
+    /// is given up on.
+    TimedOut(String),
     /// Trying again won't help (a bad URL, a TLS failure, a response too large).
     Permanent(String),
 }
@@ -40,7 +42,9 @@ pub enum HttpError {
 impl std::fmt::Display for HttpError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Self::Transient(message) | Self::Permanent(message) => f.write_str(message),
+            Self::Transient(message) | Self::TimedOut(message) | Self::Permanent(message) => {
+                f.write_str(message)
+            }
         }
     }
 }
@@ -152,7 +156,9 @@ impl Drop for Handle {
 fn failed(what: &str) -> HttpError {
     let code = unsafe { GetLastError() };
     let message = format!("{what} failed (WinHTTP error {code})");
-    if TRANSIENT.contains(&code) {
+    if code == ERROR_WINHTTP_TIMEOUT {
+        HttpError::TimedOut(message)
+    } else if TRANSIENT.contains(&code) {
         HttpError::Transient(message)
     } else {
         HttpError::Permanent(message)
@@ -580,7 +586,7 @@ mod tests {
             started.elapsed() < Duration::from_secs(7),
             "gave up before the reply"
         );
-        assert!(matches!(slow, Err(HttpError::Transient(_))), "{slow:?}");
+        assert!(matches!(slow, Err(HttpError::TimedOut(_))), "{slow:?}");
 
         let port = {
             let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();

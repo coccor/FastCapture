@@ -40,15 +40,19 @@ fn fetch_pages_with(
             continue;
         }
         let page = match fetch(&url) {
-            Err(HttpError::Transient(reason)) if job.attempts < FETCH_TRIES => {
+            Err(HttpError::Transient(reason) | HttpError::TimedOut(reason))
+                if job.attempts < FETCH_TRIES =>
+            {
                 return Err(BackendError::Retry {
                     after: None,
                     reason: format!("The page at {url} couldn't be fetched yet: {reason}"),
                 });
             }
-            Err(HttpError::Transient(reason) | HttpError::Permanent(reason)) => {
-                Err(format!("failed ({reason})"))
-            }
+            Err(
+                HttpError::Transient(reason)
+                | HttpError::TimedOut(reason)
+                | HttpError::Permanent(reason),
+            ) => Err(format!("failed ({reason})")),
             Ok(Fetched::Status(status)) => Err(format!("failed ({status})")),
             Ok(Fetched::NotPage { content_type }) => Err(format!("not a page ({content_type})")),
             Ok(Fetched::Page {

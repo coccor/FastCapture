@@ -106,10 +106,9 @@ impl Copilot {
             let left = deadline.saturating_duration_since(Instant::now());
             if left.is_zero() {
                 let _ = server.call("session.abort", json!({"sessionId": session}), CALL_TIMEOUT);
-                return Err(BackendError::Retry {
-                    after: None,
-                    reason: format!("{SERVICE} didn't finish within 5 minutes."),
-                });
+                return Err(BackendError::TimedOut(format!(
+                    "{SERVICE} didn't finish within 5 minutes."
+                )));
             }
             match server.notification(left) {
                 Ok(notification) => {
@@ -450,10 +449,7 @@ fn sentence(text: &str) -> String {
 
 fn from_start(error: StartError) -> BackendError {
     match error {
-        StartError::TimedOut => BackendError::Retry {
-            after: None,
-            reason: sentence(&error.to_string()),
-        },
+        StartError::TimedOut => BackendError::TimedOut(sentence(&error.to_string())),
         StartError::Protocol(_) => BackendError::Pause(format!(
             "{} Update FastCapture, or the Copilot CLI.",
             sentence(&error.to_string())
@@ -478,10 +474,9 @@ fn from_rpc(error: RpcError, server: &mut Server) -> BackendError {
                 ),
             }
         }
-        RpcError::TimedOut => BackendError::Retry {
-            after: None,
-            reason: "The Copilot CLI didn't answer in time.".to_owned(),
-        },
+        RpcError::TimedOut => {
+            BackendError::TimedOut("The Copilot CLI didn't answer in time.".to_owned())
+        }
         RpcError::Remote { message, .. } => BackendError::Fail(format!("{SERVICE}: {message}")),
     }
 }

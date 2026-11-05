@@ -6,6 +6,7 @@
 use super::keymap::KeyStroke;
 use crate::notebook::notebook_ini::Warning;
 use std::path::{Path, PathBuf};
+use std::time::Duration;
 
 pub const SETTINGS_FILE: &str = "fastcapture.ini";
 pub const DEFAULT_CAPTURE_HOTKEY: &str = "Ctrl+Alt+C";
@@ -39,6 +40,8 @@ pub struct Settings {
     /// Local mode: the server's address and the model to use.
     pub local_endpoint: Option<String>,
     pub local_model: Option<String>,
+    /// How long the local model may take per request.
+    pub local_timeout: Duration,
     pub claude_model: String,
     /// The first-use screen for Cloud mode was accepted (for Anthropic).
     pub cloud_accepted: bool,
@@ -131,6 +134,7 @@ impl Default for Settings {
             backend: CloudBackend::Claude,
             local_endpoint: None,
             local_model: None,
+            local_timeout: crate::model::openai::LOCAL_TIMEOUT,
             claude_model: crate::model::claude::DEFAULT_MODEL.to_owned(),
             cloud_accepted: false,
             openai_endpoint: None,
@@ -166,6 +170,16 @@ fn parse_hotkey(value: &str) -> Option<Option<KeyStroke>> {
 }
 
 /// A token count: digits, with `k` or `M` allowed (`500k`, `2M`). Empty or `0` is no cap.
+pub fn parse_local_timeout(value: &str) -> Option<Duration> {
+    let seconds = value
+        .bytes()
+        .all(|byte| byte.is_ascii_digit())
+        .then(|| value.parse::<u64>().ok())??;
+    (30..=3600)
+        .contains(&seconds)
+        .then(|| Duration::from_secs(seconds))
+}
+
 pub fn parse_token_cap(value: &str) -> Option<Option<u64>> {
     let value = value.trim();
     if value.is_empty() {
@@ -260,6 +274,7 @@ pub fn parse(text: &str) -> (Settings, Vec<Warning>) {
                 settings.local_model = (!value.is_empty()).then(|| value.to_owned());
                 Some(())
             }
+            "local_timeout" => parse_local_timeout(value).map(|t| settings.local_timeout = t),
             "claude_model" => (!value.is_empty() && !value.contains(char::is_whitespace))
                 .then(|| settings.claude_model = value.to_owned()),
             "cloud_accepted" => parse_bool(value).map(|on| settings.cloud_accepted = on),
@@ -611,6 +626,22 @@ mod tests {
         );
         assert_eq!(warnings.len(), 1);
         assert_eq!(settings.token_cap, None, "a bad value means none");
+    }
+
+    #[test]
+    fn the_local_models_time_limit_is_settable_within_bounds() {
+        let default = Duration::from_secs(300);
+        let (settings, warnings) = parse("local_timeout=600\n");
+        assert!(warnings.is_empty());
+        assert_eq!(settings.local_timeout, Duration::from_secs(600));
+        for bad in ["10", "abc", "99999"] {
+            let (settings, warnings) = parse(&format!("local_timeout={bad}\n"));
+            assert_eq!(warnings.len(), 1, "{bad}");
+            assert_eq!(settings.local_timeout, default, "{bad}");
+        }
+        let (settings, warnings) = parse("mode=local\n");
+        assert!(warnings.is_empty());
+        assert_eq!(settings.local_timeout, default);
     }
 
     #[test]
