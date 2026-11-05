@@ -8,6 +8,8 @@ pub mod crash;
 pub mod error;
 pub mod extract;
 pub mod file;
+#[doc(hidden)]
+pub mod fuzzing;
 pub mod icon;
 pub mod index;
 pub mod ipc;

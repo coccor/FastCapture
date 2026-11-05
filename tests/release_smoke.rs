@@ -37,7 +37,14 @@ fn a_pdf_that_panics_its_parser_is_unreadable_not_fatal() {
 #[test]
 #[ignore = "needs the release exe"]
 fn other_broken_inputs_end_cleanly() {
-    for fixture in ["truncated.pdf", "not-a-zip.docx", "nested.html"] {
+    for fixture in [
+        "truncated.pdf",
+        "not-a-zip.docx",
+        "nested.html",
+        "word-list-level.html",
+        // Overflows inside lopdf, which wraps rather than panics in a release build.
+        "pdf-offset-overflow.pdf",
+    ] {
         let (code, out) = extract(fixture);
         assert_eq!(code, Some(0), "{fixture}: {out}");
     }

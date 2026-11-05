@@ -29,8 +29,9 @@ pub fn extract(html: &str, url: &str) -> Page {
     let dom = Dom::parse(html);
     let mut page = metadata(&dom, url);
     let body = dom.find(dom.root(), "body").unwrap_or(dom.root());
-    let skip = clutter(&dom, body);
-    let content = main_content(&dom, body, &skip);
+    let measure = Measure::new(&dom);
+    let skip = clutter(&dom, &measure, body);
+    let content = main_content(&dom, &measure, body, &skip);
     let markdown = without_empty_sections(&markdown::to_markdown_without(
         &dom,
         &content,
@@ -168,36 +169,127 @@ fn class_weight(dom: &Dom, id: NodeId) -> f64 {
     (if content { 25.0 } else { 0.0 }) - (if clutter { 25.0 } else { 0.0 })
 }
 
-fn text_length(dom: &Dom, id: NodeId) -> usize {
-    let mut length = 0;
-    let mut space = true;
-    for c in dom.text_of(id).chars() {
-        if c.is_whitespace() {
-            if !space {
-                length += 1;
-            }
-            space = true;
-        } else {
-            length += 1;
-            space = false;
-        }
-    }
-    length
+/// The text under every node, measured once from the leaves up, so a page nested thousands of
+/// levels deep costs no more than a flat one: its length with runs of whitespace counted as one
+/// and leading whitespace not at all, the length of the link text in it, and its commas.
+struct Measure {
+    text: Vec<Span>,
+    links: Vec<usize>,
+    commas: Vec<usize>,
 }
 
-/// How much of the text under `id` is link text, 0 to 1.
-fn link_density(dom: &Dom, id: NodeId) -> f64 {
-    let total = text_length(dom, id);
-    if total == 0 {
-        return 0.0;
+/// The measure of a stretch of text, enough to join it to the stretch after it.
+#[derive(Clone, Copy, Default)]
+struct Span {
+    length: usize,
+    empty: bool,
+    /// It starts with whitespace.
+    leading_space: bool,
+    /// It ends with something other than whitespace.
+    ends_in_text: bool,
+}
+
+impl Span {
+    fn of(text: &str) -> Self {
+        let mut length = 0;
+        let mut space = true;
+        for c in text.chars() {
+            if c.is_whitespace() {
+                length += usize::from(!space);
+                space = true;
+            } else {
+                length += 1;
+                space = false;
+            }
+        }
+        Self {
+            length,
+            empty: text.is_empty(),
+            leading_space: text.starts_with(char::is_whitespace),
+            ends_in_text: !text.is_empty() && !space,
+        }
     }
-    let links: usize = dom
-        .descendants(id)
-        .into_iter()
-        .filter(|&node| dom.is(node, "a"))
-        .map(|node| text_length(dom, node))
-        .sum();
-    links as f64 / total as f64
+
+    /// This stretch followed by `next`: a run of whitespace at the start of `next` counts once
+    /// it follows text.
+    fn then(self, next: Self) -> Self {
+        if next.empty {
+            return self;
+        }
+        if self.empty {
+            return next;
+        }
+        Self {
+            length: self.length
+                + next.length
+                + usize::from(self.ends_in_text && next.leading_space),
+            empty: false,
+            leading_space: self.leading_space,
+            ends_in_text: next.ends_in_text,
+        }
+    }
+}
+
+impl Measure {
+    fn new(dom: &Dom) -> Self {
+        let all = dom.descendants(dom.root());
+        let size = all.iter().max().map_or(0, |&id| id + 1);
+        let mut measure = Self {
+            text: vec![
+                Span {
+                    empty: true,
+                    ..Span::default()
+                };
+                size
+            ],
+            links: vec![0; size],
+            commas: vec![0; size],
+        };
+        // Children come after their parent in document order, so in reverse every child is
+        // measured before its parent.
+        for &id in all.iter().rev() {
+            if let Data::Text(text) = dom.data(id) {
+                measure.text[id] = Span::of(text);
+                measure.commas[id] = text.matches([',', '，']).count();
+                continue;
+            }
+            let mut span = Span {
+                empty: true,
+                ..Span::default()
+            };
+            let mut links = 0;
+            let mut commas = 0;
+            for &child in dom.children(id) {
+                span = span.then(measure.text[child]);
+                links += measure.links[child];
+                commas += measure.commas[child];
+            }
+            if dom.is(id, "a") {
+                links += span.length;
+            }
+            measure.text[id] = span;
+            measure.links[id] = links;
+            measure.commas[id] = commas;
+        }
+        measure
+    }
+
+    fn text_length(&self, id: NodeId) -> usize {
+        self.text[id].length
+    }
+
+    fn commas(&self, id: NodeId) -> usize {
+        self.commas[id]
+    }
+
+    /// How much of the text under `id` is link text, 0 to 1.
+    fn link_density(&self, id: NodeId) -> f64 {
+        let total = self.text_length(id);
+        if total == 0 {
+            return 0.0;
+        }
+        self.links[id] as f64 / total as f64
+    }
 }
 
 fn under_any(dom: &Dom, id: NodeId, names: &[&str]) -> bool {
@@ -207,7 +299,7 @@ fn under_any(dom: &Dom, id: NodeId, names: &[&str]) -> bool {
 
 /// The blocks to leave out wherever they are: asides, footers, the site's header, elements
 /// named like clutter, and blocks that are mostly links.
-fn clutter(dom: &Dom, body: NodeId) -> HashSet<NodeId> {
+fn clutter(dom: &Dom, measure: &Measure, body: NodeId) -> HashSet<NodeId> {
     let mut skip = HashSet::new();
     let mut stack: Vec<NodeId> = dom.children(body).iter().rev().copied().collect();
     while let Some(id) = stack.pop() {
@@ -220,8 +312,8 @@ fn clutter(dom: &Dom, body: NodeId) -> HashSet<NodeId> {
         let around = matches!(name, "aside" | "footer" | "nav")
             || (name == "header" && !under_any(dom, id, &["article", "main"]));
         let link_list = matches!(name, "ul" | "ol" | "div" | "section" | "table" | "p")
-            && text_length(dom, id) > 0
-            && link_density(dom, id) > 0.5;
+            && measure.text_length(id) > 0
+            && measure.link_density(id) > 0.5;
         if unlikely || around || link_list {
             skip.insert(id);
         } else {
@@ -232,7 +324,7 @@ fn clutter(dom: &Dom, body: NodeId) -> HashSet<NodeId> {
 }
 
 /// The blocks that hold the main content, in document order.
-fn main_content(dom: &Dom, body: NodeId, skip: &HashSet<NodeId>) -> Vec<NodeId> {
+fn main_content(dom: &Dom, measure: &Measure, body: NodeId, skip: &HashSet<NodeId>) -> Vec<NodeId> {
     let mut scores: HashMap<NodeId, f64> = HashMap::new();
     let mut stack = vec![body];
     while let Some(id) = stack.pop() {
@@ -253,12 +345,11 @@ fn main_content(dom: &Dom, body: NodeId, skip: &HashSet<NodeId>) -> Vec<NodeId> 
         if !paragraph {
             continue;
         }
-        let text = dom.text_of(id);
-        let length = text_length(dom, id);
+        let length = measure.text_length(id);
         if length < 25 {
             continue;
         }
-        let score = 1.0 + text.matches([',', '，']).count() as f64 + (length / 100).min(3) as f64;
+        let score = 1.0 + measure.commas(id) as f64 + (length / 100).min(3) as f64;
         let ancestors = std::iter::successors(dom.parent(id), |&node| dom.parent(node)).take(3);
         for (level, ancestor) in ancestors.enumerate() {
             if dom.name(ancestor).is_none() {
@@ -272,7 +363,7 @@ fn main_content(dom: &Dom, body: NodeId, skip: &HashSet<NodeId>) -> Vec<NodeId> 
     }
     let Some((best, best_score)) = scores
         .iter()
-        .map(|(&id, &score)| (id, score * (1.0 - link_density(dom, id))))
+        .map(|(&id, &score)| (id, score * (1.0 - measure.link_density(id))))
         .max_by(|a, b| a.1.total_cmp(&b.1).then(b.0.cmp(&a.0)))
     else {
         return vec![body];
@@ -293,13 +384,13 @@ fn main_content(dom: &Dom, body: NodeId, skip: &HashSet<NodeId>) -> Vec<NodeId> 
             }
             let score = scores
                 .get(&sibling)
-                .map(|&score| score * (1.0 - link_density(dom, sibling)));
+                .map(|&score| score * (1.0 - measure.link_density(sibling)));
             if score.is_some_and(|score| score >= threshold) {
                 return true;
             }
             dom.is(sibling, "p") && {
-                let length = text_length(dom, sibling);
-                let density = link_density(dom, sibling);
+                let length = measure.text_length(sibling);
+                let density = measure.link_density(sibling);
                 (length > 80 && density < 0.25)
                     || (length > 0
                         && density == 0.0
@@ -517,5 +608,80 @@ mod tests {
             "{}",
             page.markdown
         );
+    }
+
+    /// A page nested thousands of levels deep, which once took minutes: every level measured
+    /// the text of everything under it.
+    #[test]
+    fn a_page_nested_thousands_deep_is_read_quickly() {
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join(r"tests\fixtures\bad\nested.html");
+        let nested = std::fs::read_to_string(path).unwrap();
+        let quotes = format!(
+            "<html><body>{}Some text, with commas, quoted deep down.{}</body></html>",
+            "<blockquote><a href=\"/x\">link</a>".repeat(5_000),
+            "</blockquote>".repeat(5_000)
+        );
+        for html in [nested, quotes] {
+            let started = std::time::Instant::now();
+            let _ = extract(&html, "https://example.com/");
+            assert!(
+                started.elapsed() < std::time::Duration::from_secs(10),
+                "took {:?}",
+                started.elapsed()
+            );
+        }
+    }
+
+    /// The length kept for each node matches the text under it, measured directly.
+    #[test]
+    fn text_lengths_add_up_across_nodes() {
+        let direct = |text: &str| {
+            let mut length = 0;
+            let mut space = true;
+            for c in text.chars() {
+                if c.is_whitespace() {
+                    length += usize::from(!space);
+                    space = true;
+                } else {
+                    length += 1;
+                    space = false;
+                }
+            }
+            length
+        };
+        let pieces = [
+            "", " ", "a", " a", "a ", " a b ", "
+
+", "ab", "c,d",
+        ];
+        let mut pages = vec![
+            fixture("news.html"),
+            fixture("blog.html"),
+            fixture("docs.html"),
+            fixture("links.html"),
+        ];
+        for a in pieces {
+            for b in pieces {
+                for c in pieces {
+                    pages.push(format!(
+                        "<body><p>{a}<b>{b}</b>{c}<a href=x>{b}{a}</a><i>{c}</i></p></body>"
+                    ));
+                }
+            }
+        }
+        for html in pages {
+            let dom = Dom::parse(&html);
+            let measure = Measure::new(&dom);
+            for id in dom.descendants(dom.root()) {
+                let text = dom.text_of(id);
+                assert_eq!(measure.text_length(id), direct(&text), "{html}");
+                assert_eq!(
+                    measure.commas(id),
+                    text.matches([',', '，']).count(),
+                    "{html}"
+                );
+            }
+        }
     }
 }

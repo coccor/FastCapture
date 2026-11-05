@@ -325,6 +325,23 @@ mod tests {
     }
 
     #[test]
+    fn pdfs_that_make_the_parser_panic_are_unreadable() {
+        // Found by fuzzing: each of these panics inside pdf-extract or lopdf, which the guard
+        // turns into a PDF that can't be read.
+        let bad = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join(r"tests\fixtures\bad");
+        let mut checked = 0;
+        for entry in std::fs::read_dir(bad).unwrap() {
+            let path = entry.unwrap().path();
+            if path.extension().is_some_and(|e| e == "pdf") {
+                let bytes = std::fs::read(&path).unwrap();
+                assert!(read(&bytes, 20).is_err(), "{}", path.display());
+                checked += 1;
+            }
+        }
+        assert!(checked >= 9, "{checked}");
+    }
+
+    #[test]
     fn a_scanned_page_is_rendered_by_windows() {
         let bytes = pdf(&[Page::Text(FIRST), Page::Picture], false);
         let rendered = render(&bytes, &[1], 1568).unwrap();

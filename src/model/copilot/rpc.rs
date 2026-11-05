@@ -43,6 +43,10 @@ pub fn frame(message: &Value) -> Vec<u8> {
     bytes
 }
 
+/// The longest message read. A longer length is an error rather than something to wait for,
+/// so a broken header can't make the reader hold the stream without end.
+pub const MAX_MESSAGE_BYTES: usize = 64 * 1024 * 1024;
+
 /// Splits a stream of bytes into messages, however the bytes arrive.
 #[derive(Default)]
 pub struct Decoder {
@@ -68,6 +72,9 @@ impl Decoder {
         let Some(length) = length else {
             return Some(Err(format!("a message without a length: {header:?}")));
         };
+        if length > MAX_MESSAGE_BYTES {
+            return Some(Err(format!("a message of {length} bytes, too long")));
+        }
         let start = end + 4;
         if self.buffer.len() < start + length {
             return None;
@@ -264,6 +271,25 @@ mod tests {
             }
         }
         assert_eq!(got, [first, second]);
+    }
+
+    #[test]
+    fn a_length_too_long_is_an_error_not_an_overflow() {
+        // Found by fuzzing: the largest length overflowed where the body's end was worked out.
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join(r"tests\fixtures\bad\rpc-huge-length.txt");
+        for bytes in [
+            std::fs::read(path).unwrap(),
+            format!("Content-Length: {}\r\n\r\n{{}}", MAX_MESSAGE_BYTES + 1).into_bytes(),
+        ] {
+            let mut decoder = Decoder::default();
+            decoder.push(&bytes);
+            let message = decoder.message();
+            assert!(
+                matches!(&message, Some(Err(error)) if error.ends_with("too long")),
+                "{message:?}"
+            );
+        }
     }
 
     #[test]

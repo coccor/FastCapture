@@ -133,8 +133,16 @@ fn word_list_level(dom: &Dom, id: NodeId) -> Option<usize> {
     }
     let level = &list[list.find("level")? + "level".len()..];
     let digits: String = level.chars().take_while(char::is_ascii_digit).collect();
-    digits.parse().ok().filter(|&level| level >= 1)
+    digits
+        .parse()
+        .ok()
+        .filter(|&level| level >= 1)
+        .map(|level: usize| level.min(WORD_LIST_LEVELS))
 }
+
+/// Word's lists go nine levels deep; a deeper level, from a page that only looks like Word's
+/// HTML, is read as the ninth rather than indented without end.
+const WORD_LIST_LEVELS: usize = 9;
 
 /// The span holding a Word list item's bullet or number (`style="mso-list:Ignore"`).
 fn word_list_marker_span(dom: &Dom, id: NodeId) -> bool {
@@ -1062,6 +1070,20 @@ mod tests {
             "Ledger batch review\n\nFindings from the **night run**:\n\n\
              - Lag peaked at 40k\n  - only ledger-events\n- Recovered by 02:35\n\
              1. Check the batch size"
+        );
+    }
+
+    #[test]
+    fn a_word_list_level_out_of_range_is_the_deepest_level() {
+        // Found by fuzzing: a huge level was indented with that many spaces, overflowing or
+        // running out of memory.
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join(r"tests\fixtures\bad\word-list-level.html");
+        let html = std::fs::read_to_string(path).unwrap();
+        let deepest = "  ".repeat(WORD_LIST_LEVELS - 1);
+        assert_eq!(
+            md(&html),
+            format!("1. First\n{deepest}2. Overflows\n{deepest}3. Runs out of memory")
         );
     }
 }
