@@ -9,6 +9,7 @@ pub mod raw;
 pub mod read;
 pub mod sidecar;
 pub mod submit;
+pub mod sweep;
 pub mod ulid;
 
 pub use model::{Attachment, Capture, Kind};

@@ -8,6 +8,7 @@ pub mod hotkey;
 pub mod instance;
 pub mod job;
 pub mod png;
+pub mod process;
 pub mod random;
 pub mod saver;
 pub mod shell;

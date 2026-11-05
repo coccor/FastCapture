@@ -9,6 +9,7 @@ use crate::add::{self, Context};
 use crate::capture::Capture;
 use crate::capture::file::FileError;
 use crate::capture::submit::submit;
+use crate::capture::sweep::{self, Swept};
 use crate::config::settings::{Settings, SettingsFile};
 use crate::index::service::Indexes;
 use crate::ipc::pipe;
@@ -285,7 +286,8 @@ fn start_settings_watch(window: HWND) {
     }
 }
 
-/// After a restart: raw sources with no job (written while the tray app was closed) get one.
+/// After a restart: temps a crash left half-saved are put back or cleared, then raw sources with
+/// no job (written while the tray app was closed, or just put back) get one.
 fn start_orphan_scan(window: HWND) {
     let Some(queue) = with_app(|app| app.context.queue.clone()).flatten() else {
         return;
@@ -293,12 +295,24 @@ fn start_orphan_scan(window: HWND) {
     let notebook = with_app(|app| app.notebook.clone()).flatten();
     let window = SendHwnd::new(window);
     std::thread::spawn(move || {
-        let added = notebook
-            .map(|root| {
-                Store::new(queue)
-                    .enqueue_orphans(&crate::notebook::Conventions::load(&root))
-                    .len()
-            })
+        let conventions = notebook.map(|root| crate::notebook::Conventions::load(&root));
+        let mut swept = Swept::default();
+        if let Some(conventions) = &conventions {
+            swept += sweep::sweep_notebook(conventions);
+        }
+        let mut own = vec![(queue.clone(), false)];
+        if let Some(local) = crate::paths::local() {
+            own.push((local.join("index"), false));
+        }
+        swept += sweep::sweep(&own);
+        if swept.restored > 0 || swept.deleted > 0 {
+            crate::log::line(&format!(
+                "sweep: {} restored, {} removed",
+                swept.restored, swept.deleted
+            ));
+        }
+        let added = conventions
+            .map(|conventions| Store::new(queue).enqueue_orphans(&conventions).len())
             .unwrap_or(0);
         if added > 0 {
             crate::log::line(&format!("queue: {added} raw sources without a job"));
