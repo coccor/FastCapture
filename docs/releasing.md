@@ -65,7 +65,8 @@ autocorrect list: it did not run, so it did not pass.
 
 Commit the README, images and version bump as `FastCapture x.y.z` and merge it to `main`. CI's
 `package` job on `main` builds `FastCapture-x.y.z-windows-x64.zip` and `-arm64.zip` with their
-`.sha256` files as artifacts:
+`.sha256` files as artifacts, plus `FastCapture-x.y.z-windows-x64.pdb.zip` and `-arm64.pdb.zip`
+holding each build's symbols:
 
 ```powershell
 gh run download <run id> -R coccor/FastCapture --dir dist
@@ -77,6 +78,9 @@ gh run download <run id> -R coccor/FastCapture --dir dist
 $assets = (Get-ChildItem dist -Recurse -Include *.zip, *.sha256).FullName
 gh release create vx.y.z -R coccor/FastCapture --title "FastCapture x.y.z" --notes-file notes.md @assets
 ```
+
+The `.pdb.zip` files are the release's symbols, for reading its crash dumps; they ride along with
+the zips, so attach both. The download paragraph below leaves them out: users don't need them.
 
 The notes say what the release brings in a sentence, then one bullet per change, and end with:
 

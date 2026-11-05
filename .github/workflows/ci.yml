@@ -66,11 +66,13 @@ jobs:
           New-Item -ItemType Directory -Force $stage | Out-Null
           Copy-Item "target/${{ matrix.target }}/release/fastcapture.exe", README.md, LICENSE $stage
           Compress-Archive -Path "$stage/*" -DestinationPath "dist/$name.zip" -Force
+          Compress-Archive -Path "target/${{ matrix.target }}/release/fastcapture.pdb" -DestinationPath "dist/$name.pdb.zip" -Force
           (Get-FileHash "dist/$name.zip" -Algorithm SHA256).Hash.ToLower() + "  $name.zip" | Set-Content "dist/$name.sha256"
       - uses: actions/upload-artifact@v4
         with:
           name: FastCapture-windows-${{ matrix.arch }}
           path: |
             dist/*.zip
+            dist/*.pdb.zip
             dist/*.sha256
           if-no-files-found: error
