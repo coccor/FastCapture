@@ -47,22 +47,60 @@ The same `x.y.z` in:
 - `Cargo.toml` (`version`), then `cargo build` to update `Cargo.lock`
 - `assets/fastcapture.manifest` (`assemblyIdentity` `version="x.y.z.0"`)
 
-## 5. Commit, merge, build
+## 5. Soak the build
+
+Before building a release or a Store submission, quit FastCapture and give a release build of
+this commit a 48-hour soak run:
+
+```powershell
+cargo build --release
+cargo run --release --example soak -- target\release\fastcapture.exe 48
+```
+
+The soak's FastCapture shares one thing with yours: the "start at sign-in" entry. So the run
+refuses when that entry starts another FastCapture; turn Start at sign-in off in its Settings for
+the run (and back on after), or soak the exe the entry starts.
+
+During the run, put the PC to sleep and wake it a few times, and move the capture box between
+monitors with different scales. The run must end `flat`: no growth in handles or GDI objects,
+and private bytes growing by no more than 1 MB an hour. A `GROWING` counter is a leak to find
+before the release; `soak.csv` in the scratch folder the run names shows when it grew.
+
+## 6. Commit, merge, build
+
+Before building, run the autocorrect tests on a desktop Windows with English installed. CI's
+runners never have Windows' autocorrect list, so they skip these tests and only this run checks
+them:
+
+```powershell
+Remove-Item "$env:TEMP\fastcapture-skipped.txt" -ErrorAction SilentlyContinue
+$env:FASTCAPTURE_SKIPPED = "$env:TEMP\fastcapture-skipped.txt"
+cargo test --lib -- spell autocorrect capture_box --test-threads=1
+if ($LASTEXITCODE) { throw "the autocorrect tests failed" }
+Get-Content "$env:TEMP\fastcapture-skipped.txt" -ErrorAction SilentlyContinue
+```
+
+The last line must print nothing. A test that names itself there returned early for lack of the
+autocorrect list: it did not run, so it did not pass.
 
 Commit the README, images and version bump as `FastCapture x.y.z` and merge it to `main`. CI's
 `package` job on `main` builds `FastCapture-x.y.z-windows-x64.zip` and `-arm64.zip` with their
-`.sha256` files as artifacts:
+`.sha256` files as artifacts, plus `FastCapture-x.y.z-windows-x64.pdb.zip` and `-arm64.pdb.zip`
+holding each build's symbols:
 
 ```powershell
 gh run download <run id> -R coccor/FastCapture --dir dist
 ```
 
-## 6. Publish the release
+## 7. Publish the release
 
 ```powershell
 $assets = (Get-ChildItem dist -Recurse -Include *.zip, *.sha256).FullName
 gh release create vx.y.z -R coccor/FastCapture --title "FastCapture x.y.z" --notes-file notes.md @assets
 ```
+
+The `.pdb.zip` files are the release's symbols, for reading its crash dumps; they ride along with
+the zips, so attach both. The download paragraph below leaves them out: users don't need them.
 
 The notes say what the release brings in a sentence, then one bullet per change, and end with:
 

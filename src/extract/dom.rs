@@ -6,7 +6,19 @@ use html5ever::interface::tree_builder::{ElementFlags, NodeOrText, QuirksMode, T
 use html5ever::tendril::{StrTendril, TendrilSink};
 use html5ever::{Attribute, QualName, parse_document};
 use std::borrow::Cow;
-use std::cell::{Ref, RefCell};
+use std::cell::{Cell, Ref, RefCell};
+use std::rc::Rc;
+
+/// How deep the tree may grow. The parser looks through every open element for each tag it
+/// reads, so a page nested a million levels deep would take hours. Once the page nests deeper
+/// than this, the rest of the page is read as text: every tag after that point is dropped,
+/// shallow or not, so later headings, lists and links become plain text. That loses more than
+/// browsers do (Blink also caps depth at 512, but only flattens what is deeper and keeps
+/// building the rest), and is only for pages no real site nests this deep.
+pub const MAX_DEPTH: usize = 512;
+
+/// How much of the page is parsed between looks at how deep it has grown.
+const CHUNK: usize = 4 * 1024;
 
 /// A node's index in its `Dom`.
 pub type NodeId = usize;
@@ -36,7 +48,31 @@ pub struct Dom {
 
 impl Dom {
     pub fn parse(html: &str) -> Self {
-        parse_document(Sink::default(), Default::default()).one(html)
+        let deepest = Rc::new(Cell::new(0));
+        let sink = Sink {
+            deepest: Rc::clone(&deepest),
+            ..Sink::default()
+        };
+        let mut parser = parse_document(sink, Default::default());
+        let mut rest = html;
+        while !rest.is_empty() && deepest.get() <= MAX_DEPTH {
+            // Chunks end before a tag where they can, so the text-only rest starts at one.
+            let mut end = rest.len().min(CHUNK);
+            while !rest.is_char_boundary(end) {
+                end += 1;
+            }
+            if end < rest.len()
+                && let Some(tag) = rest[..end].rfind('<').filter(|&at| at > 0)
+            {
+                end = tag;
+            }
+            parser.process(StrTendril::from_slice(&rest[..end]));
+            rest = &rest[end..];
+        }
+        if !rest.is_empty() {
+            parser.process(StrTendril::from(text_only(rest)));
+        }
+        parser.finish()
     }
 
     /// The document node.
@@ -108,17 +144,78 @@ impl Dom {
     }
 }
 
+/// The text of `html` with its tags and comments dropped, and scripts and styles with their
+/// contents. A tag that isn't inline becomes a space, so words either side stay apart. A `<`
+/// that starts no tag stays, as the parser reads it as text.
+fn text_only(html: &str) -> String {
+    const INLINE: &[&str] = &[
+        "a", "abbr", "b", "code", "em", "i", "mark", "s", "small", "span", "strong", "sub", "sup",
+        "u",
+    ];
+    let mut out = String::with_capacity(html.len() / 2);
+    let mut rest = html;
+    while let Some(at) = rest.find('<') {
+        out.push_str(&rest[..at]);
+        rest = &rest[at..];
+        let after = &rest[1..];
+        if let Some(comment) = after.strip_prefix("!--") {
+            rest = comment.find("-->").map_or("", |end| &comment[end + 3..]);
+            continue;
+        }
+        let starts_tag = after
+            .chars()
+            .next()
+            .is_some_and(|c| c.is_ascii_alphabetic() || matches!(c, '/' | '!' | '?'));
+        if !starts_tag {
+            out.push('<');
+            rest = after;
+            continue;
+        }
+        let Some(close) = rest.find('>') else {
+            rest = "";
+            break;
+        };
+        let name: String = after
+            .trim_start_matches('/')
+            .chars()
+            .take_while(char::is_ascii_alphanumeric)
+            .map(|c| c.to_ascii_lowercase())
+            .collect();
+        let start_tag = !after.starts_with('/');
+        rest = &rest[close + 1..];
+        if start_tag && (name == "script" || name == "style") {
+            let end_tag = format!("</{name}");
+            rest = rest
+                .as_bytes()
+                .windows(end_tag.len())
+                .position(|window| window.eq_ignore_ascii_case(end_tag.as_bytes()))
+                .and_then(|end| rest[end..].find('>').map(|close| &rest[end + close + 1..]))
+                .unwrap_or("");
+            continue;
+        }
+        if !INLINE.contains(&name.as_str()) {
+            out.push(' ');
+        }
+    }
+    out.push_str(rest);
+    out
+}
+
 /// The tree as the parser builds it. Handles are indexes, so nodes can be moved about while
 /// the vector grows.
 #[derive(Default)]
 struct Sink {
     nodes: RefCell<Vec<Building>>,
+    /// How deep the tree has grown, at its deepest.
+    deepest: Rc<Cell<usize>>,
 }
 
 struct Building {
     parent: Option<NodeId>,
     children: Vec<NodeId>,
     data: Raw,
+    /// How many ancestors it had when it was put in its place.
+    depth: usize,
 }
 
 enum Raw {
@@ -141,6 +238,7 @@ impl Sink {
             parent: None,
             children: Vec::new(),
             data,
+            depth: 0,
         });
         nodes.len() - 1
     }
@@ -168,6 +266,7 @@ impl Sink {
                     parent: None,
                     children: Vec::new(),
                     data: Raw::Text(text.to_string()),
+                    depth: 0,
                 });
                 nodes.len() - 1
             }
@@ -179,6 +278,9 @@ impl Sink {
         let at = at.min(nodes[parent].children.len());
         nodes[parent].children.insert(at, id);
         nodes[id].parent = Some(parent);
+        let depth = nodes[parent].depth + 1;
+        nodes[id].depth = depth;
+        self.deepest.set(self.deepest.get().max(depth));
     }
 }
 
@@ -330,8 +432,10 @@ impl TreeSink for Sink {
     fn reparent_children(&self, node: &NodeId, new_parent: &NodeId) {
         let mut nodes = self.nodes.borrow_mut();
         let children = std::mem::take(&mut nodes[*node].children);
+        let depth = nodes[*new_parent].depth + 1;
         for &child in &children {
             nodes[child].parent = Some(*new_parent);
+            nodes[child].depth = depth;
         }
         nodes[*new_parent].children.extend(children);
     }
@@ -397,5 +501,37 @@ mod tests {
         let p = dom.find(dom.root(), "p").unwrap();
         assert_eq!(dom.children(p).len(), 1);
         assert_eq!(dom.text_of(p), "a & b\u{a0}c <d>");
+    }
+
+    #[test]
+    fn a_page_nested_too_deep_is_read_as_text_past_the_cap() {
+        let html = format!(
+            "<p>before</p>{}deep<b>er</b><br>down<SCRIPT>gone()</script><!-- <p> --> 1 < 2{}<p>after</p>",
+            "<div>".repeat(100_000),
+            "</div>".repeat(100_000)
+        );
+        // Without the cap this takes hours. The bound is loose so a loaded machine still
+        // passes; the fuzzer's hang watchdog is what holds parsing to its speed.
+        let started = std::time::Instant::now();
+        let dom = Dom::parse(&html);
+        assert!(started.elapsed() < std::time::Duration::from_secs(60));
+        let body = dom.find(dom.root(), "body").unwrap();
+        let text = dom.text_of(body);
+        let words: Vec<&str> = text.split_whitespace().collect();
+        assert_eq!(words, ["before", "deeper", "down", "1", "<", "2", "after"]);
+        let divs = names(&dom, body).iter().filter(|n| *n == "div").count();
+        assert!((MAX_DEPTH..MAX_DEPTH + CHUNK).contains(&divs), "{divs}");
+    }
+
+    #[test]
+    fn a_page_of_any_size_parses_whole_when_shallow() {
+        // Many chunks, and a character that crosses a chunk's end.
+        let html = format!("<p>{}é</p>", "x".repeat(CHUNK * 3 - 4)).repeat(3);
+        let dom = Dom::parse(&html);
+        let body = dom.find(dom.root(), "body").unwrap();
+        assert_eq!(
+            dom.text_of(body),
+            html.replace("<p>", "").replace("</p>", "")
+        );
     }
 }

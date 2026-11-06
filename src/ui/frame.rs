@@ -535,6 +535,7 @@ mod tests {
 
     #[test]
     fn the_strip_scales_and_the_buttons_sit_in_the_top_right_corner() {
+        let _ui = crate::ui::test_support::lock();
         for dpi in [96, 144, 192] {
             let layout = Layout::new(800, dpi, ALL);
             let (button, height) = (scale(46, dpi), scale(40, dpi));
@@ -560,6 +561,7 @@ mod tests {
 
     #[test]
     fn edges_resize_and_the_middle_does_not() {
+        let _ui = crate::ui::test_support::lock();
         assert_eq!(edge(0, 0, 500, 300, 6), Some(Target::TopLeft));
         assert_eq!(edge(499, 150, 500, 300, 6), Some(Target::Right));
         assert_eq!(edge(250, 299, 500, 300, 6), Some(Target::Bottom));
@@ -568,6 +570,7 @@ mod tests {
 
     #[test]
     fn edges_resize_the_strip_drags_and_caption_buttons_win_in_their_corner() {
+        let _ui = crate::ui::test_support::lock();
         let layout = Layout::new(800, 96, ALL);
         let hit = |x, y, border| layout.hit(x, y, 800, 600, border);
         let border = Some(8);
@@ -595,6 +598,7 @@ mod tests {
 
     #[test]
     fn the_strip_paints_the_title_and_a_red_close_when_hovered() {
+        let _ui = crate::ui::test_support::lock();
         let mut frame = Frame::new("Settings", ALL, true, 96);
         let canvas = Canvas::new(400, 40);
         frame.paint(canvas.dc, 400, &DARK, false);
@@ -679,6 +683,7 @@ mod tests {
 
     #[test]
     fn a_framed_window_is_all_client_hit_tests_its_strip_and_closes_from_its_button() {
+        let _ui = crate::ui::test_support::lock();
         FRAME.with(|frame| *frame.borrow_mut() = Some(Frame::new("Test", ALL, true, 96)));
         let window = framed_window(WS_OVERLAPPEDWINDOW);
         assert!(!window.is_null());

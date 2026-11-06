@@ -131,20 +131,28 @@ pub fn build_with(job: &Job, today: &str, index: Option<&Snapshot>) -> Result<No
     let mut files = Vec::new();
     let mut image_attachments = Vec::new();
     let mut scanned = Vec::new();
-    for attachment in &info.attachments {
+    for (index, attachment) in info.attachments.iter().enumerate() {
+        let number = index + 1;
         let name = attachment
             .file_name()
             .unwrap_or_default()
             .to_string_lossy()
             .into_owned();
         if detect::is_image_path(attachment) {
-            image_attachments.push((name, attachment));
+            image_attachments.push((
+                attachment_label(number, &extension_of(&name)),
+                name,
+                attachment,
+            ));
             continue;
         }
         let material = match std::fs::read(job.notebook.join(attachment)) {
-            Ok(bytes) => read_file(&name, &bytes, &mut budget, &mut scanned),
+            Ok(bytes) => read_file(number, &name, &bytes, &mut budget, &mut scanned),
             Err(error) => {
-                crate::log::line(&format!("request: {}: {error}", attachment.display()));
+                crate::log::line(&format!(
+                    "request: {}: {error}",
+                    attachment_label(number, &extension_of(&name))
+                ));
                 FileMaterial::Unreadable("it couldn't be opened".to_owned())
             }
         };
@@ -156,13 +164,17 @@ pub fn build_with(job: &Job, today: &str, index: Option<&Snapshot>) -> Result<No
     let mut left_out = Vec::new();
     let images = image_attachments
         .into_iter()
-        .map(|(name, attachment)| {
+        .map(|(label, name, attachment)| {
             let bytes =
                 std::fs::read(job.notebook.join(attachment)).map_err(|error| error.to_string());
-            (name, bytes)
+            (label, name, bytes)
         })
-        .chain(scanned.into_iter().map(|(name, png)| (name, Ok(png))));
-    for (name, bytes) in images {
+        .chain(
+            scanned
+                .into_iter()
+                .map(|(label, name, png)| (label, name, Ok(png))),
+        );
+    for (label, name, bytes) in images {
         if prepared.len() >= MAX_IMAGES {
             left_out.push(name);
             continue;
@@ -170,7 +182,7 @@ pub fn build_with(job: &Job, today: &str, index: Option<&Snapshot>) -> Result<No
         match bytes.and_then(|bytes| images::prepare(&bytes)) {
             Ok(image) => prepared.push(image),
             Err(error) => {
-                crate::log::line(&format!("request: {name}: {error}"));
+                crate::log::line(&format!("request: {label}: {error}"));
                 left_out.push(format!("{name} (couldn't be read)"));
             }
         }
@@ -478,18 +490,35 @@ enum FileMaterial {
     Unreadable(String),
 }
 
+/// `name`'s extension, lowercase, or nothing.
+fn extension_of(name: &str) -> String {
+    Path::new(name)
+        .extension()
+        .map(|extension| extension.to_string_lossy().to_ascii_lowercase())
+        .unwrap_or_default()
+}
+
+/// How the log names an attachment: by its place in the capture, counted from 1, and its
+/// extension, never by its name.
+fn attachment_label(number: usize, extension: &str) -> String {
+    if extension.is_empty() {
+        format!("attachment {number}")
+    } else {
+        format!("attachment {number} (.{extension})")
+    }
+}
+
 /// A file attachment read by its type within `budget`. A PDF's scanned pages are rendered and
-/// added to `scanned`, named for the request.
+/// added to `scanned` with the label the log gives the attachment, and named for the request.
+/// `number` counts the capture's attachments from 1.
 fn read_file(
+    number: usize,
     name: &str,
     bytes: &[u8],
     budget: &mut Budget,
-    scanned: &mut Vec<(String, Vec<u8>)>,
+    scanned: &mut Vec<(String, String, Vec<u8>)>,
 ) -> FileMaterial {
-    let extension = Path::new(name)
-        .extension()
-        .map(|extension| extension.to_string_lossy().to_ascii_lowercase())
-        .unwrap_or_default();
+    let extension = extension_of(name);
     let (kind, pages, text) = match extension.as_str() {
         "pdf" => {
             let pdf = match extract::pdf::read(bytes, budget.pages_left()) {
@@ -500,13 +529,17 @@ fn read_file(
             let wanted = pdf.scanned();
             if !wanted.is_empty() {
                 match extract::pdf::render(bytes, &wanted, MAX_EDGE) {
-                    Ok(pngs) => scanned.extend(
-                        wanted
-                            .iter()
-                            .zip(pngs)
-                            .map(|(index, png)| (format!("{name} page {}", index + 1), png)),
-                    ),
-                    Err(error) => crate::log::line(&format!("request: {name}: {error}")),
+                    Ok(pngs) => scanned.extend(wanted.iter().zip(pngs).map(|(index, png)| {
+                        (
+                            attachment_label(number, &extension),
+                            format!("{name} page {}", index + 1),
+                            png,
+                        )
+                    })),
+                    Err(error) => crate::log::line(&format!(
+                        "request: {}: {error}",
+                        attachment_label(number, &extension)
+                    )),
                 }
             }
             ("pdf", Some(pdf.page_count), pdf.text())
@@ -537,6 +570,34 @@ fn read_file(
     match budget.take(name, text) {
         Some(text) => FileMaterial::Read { kind, pages, text },
         None => FileMaterial::Unreadable("cut to fit".to_owned()),
+    }
+}
+
+/// One line saying what a capture would read from the file `name` with `bytes`, without any of
+/// its text: `read <kind>: <n> characters[, <p> pages]`, `page: <n> characters`,
+/// `unreadable: <reason>` or `other: <kind>, <size>`.
+pub fn describe_file(name: &str, bytes: &[u8]) -> String {
+    let extension = extension_of(name);
+    if matches!(extension.as_str(), "html" | "htm") {
+        let text = String::from_utf8_lossy(bytes);
+        return match crate::crash::guarded(|| {
+            extract::page::extract(&text, "https://example.invalid/")
+        }) {
+            Ok(page) => format!("page: {} characters", page.markdown.chars().count()),
+            Err(reason) => format!("unreadable: {reason}"),
+        };
+    }
+    let mut scanned = Vec::new();
+    match read_file(1, name, bytes, &mut Budget::default(), &mut scanned) {
+        FileMaterial::Read { kind, pages, text } => {
+            let characters = text.chars().count();
+            match pages {
+                Some(pages) => format!("read {kind}: {characters} characters, {pages} pages"),
+                None => format!("read {kind}: {characters} characters"),
+            }
+        }
+        FileMaterial::Other { kind, size } => format!("other: {kind}, {size}"),
+        FileMaterial::Unreadable(reason) => format!("unreadable: {reason}"),
     }
 }
 

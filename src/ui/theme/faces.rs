@@ -44,35 +44,7 @@ pub fn choose(build: Option<u32>, probe: impl Fn(&str) -> bool) -> Faces {
 /// This PC's faces, found once.
 pub fn current() -> Faces {
     static CURRENT: OnceLock<Faces> = OnceLock::new();
-    *CURRENT.get_or_init(|| choose(os_build(), is_installed))
-}
-
-/// The Windows build, from `RtlGetVersion`, which doesn't lie about the version as
-/// `GetVersionEx` does to programs without a manifest naming it.
-fn os_build() -> Option<u32> {
-    use windows_sys::Win32::System::LibraryLoader::{GetModuleHandleW, GetProcAddress};
-    #[repr(C)]
-    struct VersionInfo {
-        size: u32,
-        major: u32,
-        minor: u32,
-        build: u32,
-        platform: u32,
-        service_pack: [u16; 128],
-    }
-    type RtlGetVersion = unsafe extern "system" fn(*mut VersionInfo) -> i32;
-    let name: Vec<u16> = "ntdll.dll\0".encode_utf16().collect();
-    unsafe {
-        let ntdll = GetModuleHandleW(name.as_ptr());
-        if ntdll.is_null() {
-            return None;
-        }
-        let function = GetProcAddress(ntdll, c"RtlGetVersion".as_ptr().cast())?;
-        let function: RtlGetVersion = std::mem::transmute(function);
-        let mut info: VersionInfo = std::mem::zeroed();
-        info.size = size_of::<VersionInfo>() as u32;
-        (function(&mut info) == 0).then_some(info.build)
-    }
+    *CURRENT.get_or_init(|| choose(crate::platform::system::windows_build(), is_installed))
 }
 
 /// A GDI font of `face` at `pixels` high, `weight`, italic or not. The caller deletes it.

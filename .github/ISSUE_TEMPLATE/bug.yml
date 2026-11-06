@@ -1,0 +1,26 @@
+name: Bug report
+description: Something FastCapture did wrong, or didn't do
+labels: [bug]
+body:
+  - type: textarea
+    id: diagnostics
+    attributes:
+      label: Diagnostics
+      description: Right-click the tray icon, choose Copy diagnostics, and paste it here. It holds nothing you captured.
+      render: text
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: What you did
+      description: The steps before it went wrong.
+    validations:
+      required: true
+  - type: textarea
+    id: happened
+    attributes:
+      label: What happened
+      description: What you saw, and what you expected instead.
+    validations:
+      required: true

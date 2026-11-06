@@ -1,0 +1,3 @@
+Here is the note:
+{"title":"Rust ownership","summary":"How ownership moves.","body":"## Moves\n\nA value has one owner.\n\n- [ ] a task","key_points":["one owner","borrowing"],"tasks":["read the book"],"tags":["rust","Memory Safety"],"links":[{"note":"Borrowing","new":false},{"note":"Lifetimes","new":true}],"home":{"kind":"topic","note":"[[Rust]]","reason":"it is about Rust 🦀"}}
+Thanks.

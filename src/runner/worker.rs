@@ -218,6 +218,52 @@ fn sleep(shared: &Shared, timeout: Option<Duration>) -> bool {
     !signals.stop
 }
 
+/// Logs each job's outcomes. A job that is retried for the same reason again and again has that
+/// reason logged once, then how many more times it came.
+#[derive(Default)]
+struct RetryLog {
+    /// By capture id: the reason of its last retry, and how many retries since it was logged.
+    last: std::collections::HashMap<String, (String, u32)>,
+}
+
+impl RetryLog {
+    fn note(&mut self, capture_id: &str, outcome: &Outcome) {
+        match outcome {
+            Outcome::Retry { reason, .. } => {
+                if let Some((last, more)) = self.last.get_mut(capture_id)
+                    && last == reason
+                {
+                    *more += 1;
+                    return;
+                }
+                self.flush(capture_id);
+                crate::log::line(&format!("runner: {capture_id}: will retry: {reason}"));
+                self.last.insert(capture_id.to_owned(), (reason.clone(), 0));
+            }
+            Outcome::Written(_) => {
+                self.flush(capture_id);
+                crate::log::line(&format!("runner: wrote {capture_id}"));
+            }
+            Outcome::Failed(reason) => {
+                self.flush(capture_id);
+                crate::log::line(&format!("runner: failed: {reason}"));
+            }
+            _ => {}
+        }
+    }
+
+    /// Logs the retries not yet logged for `capture_id` and forgets it.
+    fn flush(&mut self, capture_id: &str) {
+        if let Some((_, more)) = self.last.remove(capture_id)
+            && more > 0
+        {
+            crate::log::line(&format!(
+                "runner: {capture_id}: {more} more retries, same reason"
+            ));
+        }
+    }
+}
+
 fn run(
     shared: &Shared,
     store: &Store,
@@ -229,6 +275,7 @@ fn run(
     let mut backend: Option<Box<dyn Backend>> = None;
     let mut scanned: Option<Instant> = None;
     let mut settling = false;
+    let mut retries = RetryLog::default();
     loop {
         let (stop, rebuild, paused, paused_until) = match shared.signals.lock() {
             Ok(mut signals) => {
@@ -335,16 +382,13 @@ fn run(
             continue;
         }
         set_status(shared, Status::Working, changed);
+        let capture_id = job.capture_id.clone();
         let outcome = process::process_with(store, job, active, now, &day, indexes);
         record_usage(active, usage, &day);
         match &outcome {
-            Outcome::Written(written) => {
-                crate::log::line(&format!("runner: wrote {}", written.path.display()));
+            Outcome::Written(_) | Outcome::Retry { .. } | Outcome::Failed(_) => {
+                retries.note(&capture_id, &outcome)
             }
-            Outcome::Retry { reason, .. } => {
-                crate::log::line(&format!("runner: will retry: {reason}"))
-            }
-            Outcome::Failed(reason) => crate::log::line(&format!("runner: failed: {reason}")),
             Outcome::Pause(reason) => {
                 crate::log::line(&format!("runner: paused: {reason}"));
                 if let Ok(mut signals) = shared.signals.lock() {
@@ -374,11 +418,7 @@ fn adopt_findings(store: &Store, factory: &dyn Factory, changed: &dyn Fn()) -> b
     for notebook in factory.notebooks() {
         let (new, waiting) = findings::adopt(store, &mut jobs, &notebook, now, &captured);
         for job in &new {
-            crate::log::line(&format!(
-                "queue: finding {} in {}",
-                job.raw.display(),
-                notebook.display()
-            ));
+            crate::log::line(&format!("queue: finding {}", job.capture_id));
         }
         added += new.len();
         settling |= waiting;
@@ -522,6 +562,52 @@ mod tests {
             })),
             cap,
         ))
+    }
+
+    #[test]
+    fn the_same_retry_reason_is_logged_once_with_a_count() {
+        let _ = crate::log::take_captured();
+        let mut retries = RetryLog::default();
+        let retry = Outcome::Retry {
+            reason: "timed out".into(),
+            at: 0,
+        };
+        for _ in 0..3 {
+            retries.note("c1", &retry);
+        }
+        retries.note("c1", &Outcome::Failed("gave up".into()));
+        let lines = crate::log::take_captured();
+        assert_eq!(
+            lines,
+            [
+                "runner: c1: will retry: timed out",
+                "runner: c1: 2 more retries, same reason",
+                "runner: failed: gave up",
+            ]
+        );
+    }
+
+    #[test]
+    fn a_new_retry_reason_is_logged_after_the_count_of_the_old_one() {
+        let _ = crate::log::take_captured();
+        let mut retries = RetryLog::default();
+        for reason in ["slow", "slow", "busy"] {
+            retries.note(
+                "c1",
+                &Outcome::Retry {
+                    reason: reason.into(),
+                    at: 0,
+                },
+            );
+        }
+        assert_eq!(
+            crate::log::take_captured(),
+            [
+                "runner: c1: will retry: slow",
+                "runner: c1: 1 more retries, same reason",
+                "runner: c1: will retry: busy",
+            ]
+        );
     }
 
     #[test]

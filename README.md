@@ -64,7 +64,7 @@ Requires Windows 10 1809 or later, or Windows 11.
 |---|---|
 | **Ctrl+Alt+C** (anywhere) | Opens the capture box. Settings › **Capture key** changes it. |
 | Tray icon, click | Opens the review window |
-| Tray icon, right click | Capture…, Capture clipboard, Review, Pause processing, Settings…, Open settings file, Open notebook folder, Quit |
+| Tray icon, right click | Capture…, Capture clipboard, Review, Pause processing, Settings…, Open settings file, Open notebook folder, Copy diagnostics, Quit |
 | Settings › **Clipboard key** (none by default) | Captures the clipboard as it is, with no box |
 
 ### The capture box
@@ -178,7 +178,7 @@ Tray menu › **Settings…** chooses how notes are written and the everyday opt
 
 Notes are written by one model, never both:
 
-- **A model on this PC (Local):** an OpenAI-compatible server running here, such as Ollama, LM Studio or Foundry Local. **Find servers** looks for them; choose a model it lists. Only addresses on this PC are accepted, so nothing leaves it. If the model doesn't read images, screenshots are attached to notes unread.
+- **A model on this PC (Local):** an OpenAI-compatible server running here, such as Ollama, LM Studio or Foundry Local. **Find servers** looks for them; choose a model it lists. Only addresses on this PC are accepted, so nothing leaves it. If the model doesn't read images, screenshots are attached to notes unread. A note may take 5 minutes; `local_timeout` in the settings file changes that.
 - **A cloud API (Cloud)**, from one of four providers:
   - **Claude API:** from [console.anthropic.com](https://console.anthropic.com) › API Keys; choose Sonnet, Opus or Haiku.
   - **OpenAI-compatible API:** any service that answers OpenAI's chat completions: give its base address, a model and your key. **List models** asks the service for its models; you can also type one. For example, `https://api.openai.com/v1` (OpenAI), `https://openrouter.ai/api/v1` (OpenRouter, with models such as `openai/gpt-5-mini`), or `https://<resource>.openai.azure.com/openai/v1` (Azure OpenAI, whose model is your deployment's name). The address must be `https://`. A service without structured output gets the note's schema in the prompt instead; a model that can't read images fails captures with screenshots and says so.
@@ -188,7 +188,7 @@ Notes are written by one model, never both:
 
   The two APIs take your own key, saved in Windows Credential Manager (`FastCapture/claude`, `FastCapture/openai`), never in a file or the log. Choosing Cloud asks you to confirm what will be sent, and to whom: once for Anthropic, once for Claude Code, once for GitHub Copilot, and again whenever the OpenAI-compatible address moves to another host.
 
-**Test** writes a note from a sample capture with what you chose. Until you choose, captures wait in the queue; nothing is lost. **Pause processing** in the tray menu holds them too. A rejected key or a billing problem pauses processing with a notification; a network error or an overloaded API is retried after 30 seconds, 2 minutes, 10 minutes, then every 30 minutes.
+**Test** writes a note from a sample capture with what you chose. Until you choose, captures wait in the queue; nothing is lost. **Pause processing** in the tray menu holds them too. A rejected key or a billing problem pauses processing with a notification; a network error or an overloaded API is retried after 30 seconds, 2 minutes, 10 minutes, then every 30 minutes. A model that runs out of time three times on one capture fails it, saying so; press **R** to try again.
 
 ### What is sent
 
@@ -274,6 +274,7 @@ Everything in Settings is saved to `%AppData%\FastCapture\fastcapture.ini`, one 
 | `capture_width`, `capture_height` | | The capture box's size, written when you resize it |
 | `mode` | (none) | `local` or `cloud`, set by Settings |
 | `local_endpoint`, `local_model` | | The local server's address and model |
+| `local_timeout` | `300` | Seconds a model on this PC may take per note, 30 to 3600 |
 | `backend` | `claude` | Cloud's provider: `claude`, `openai` (any OpenAI-compatible API), `claude_code` or `copilot` |
 | `claude_model` | `claude-sonnet-5-5` | `claude-opus-5-5` and `claude-haiku-5-5` work too |
 | `cloud_accepted` | `false` | Set when you confirm Cloud for Anthropic |
@@ -315,7 +316,7 @@ publishes a SHA-256 checksum for each zip you can verify.
 
 If FastCapture keeps a thought from getting lost, **[star it on GitHub](https://github.com/coccor/FastCapture)**.
 It's the single best way to help others find it. Found a bug or missing something?
-[Open an issue](https://github.com/coccor/FastCapture/issues).
+[Open an issue](https://github.com/coccor/FastCapture/issues). Tray › **Copy diagnostics** puts what a bug report needs on the clipboard, with nothing you captured.
 
 ## Building from source
 
@@ -323,13 +324,15 @@ Requires Windows 10 1809 or later, the stable Rust toolchain with the MSVC targe
 
 ```
 cargo build --release
-cargo test -- --test-threads=1
+cargo test
 cargo run --release --example bench
 ```
 
 `examples/bench.rs` times the box opening, a 4K screenshot's encoding, Ctrl+Enter, building a model request, an article page, a 20-page PDF, and the index of 10,000 notes (built, rebuilt from its cache, searched) against their budgets. `examples/review_window.rs <queue folder> [<notebook>]` (or `--sample <empty folder> [light|dark]` for a scratch notebook with three captures) and `examples/settings_window.rs <fastcapture.ini>` open those windows on their own. `examples/look.rs [system|light|dark] [home|capture|menu|question]` shows the painted controls, or one of the home picker, the capture box, the tray menu and a question, for checking the look by eye.
 
 `cargo run --release --example live_note -- [--dry-run] [--effort low|medium|high] [--claude-code MODEL] [--copilot MODEL] [--notebook PATH] [--attach PATH]… ["text"]` writes one real note with your settings (any cloud provider; `--effort` is for the Claude API only, and `--claude-code` and `--copilot` use your Claude Code or Copilot CLI whatever the settings say) into a scratch notebook and prints it with the time and the tokens used; links in the text are fetched, and `--notebook` offers that notebook's notes as candidates (it is only read). **In Cloud mode it costs money**, except with `--dry-run`, which prints what would be sent and stops. The tests never reach the internet.
+
+`cargo run --release --example soak -- target\release\fastcapture.exe <hours>` is the soak run: with FastCapture quit, and Start at sign-in off or starting that same exe (the run refuses otherwise, so it never changes the entry), it starts that exe with scratch settings against a fake model on this PC, captures text, a picture and a PDF into it every two minutes, writes its handles, GDI and USER objects and private bytes to `soak.csv` every minute, and ends with each one's change per hour and `flat` or `GROWING`. [`docs/fuzzing.md`](docs/fuzzing.md) says how to fuzz the parsers that read notes, pages, replies and PDFs.
 
 ## License
 

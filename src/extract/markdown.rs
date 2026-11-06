@@ -3,7 +3,13 @@
 //! whitespace collapses as a browser shows it.
 
 use super::dom::{Data, Dom, NodeId};
+use std::cell::Cell;
 use std::collections::HashSet;
+
+/// How deep the converter follows nested elements. Deeper than this, a node gives only its
+/// text, gathered without recursion, so a page nested thousands of levels deep can't overflow
+/// the stack.
+const MAX_DEPTH: usize = 128;
 
 /// The Markdown for `node` and everything under it. Relative links and images are resolved
 /// against `base` when it is given.
@@ -127,8 +133,16 @@ fn word_list_level(dom: &Dom, id: NodeId) -> Option<usize> {
     }
     let level = &list[list.find("level")? + "level".len()..];
     let digits: String = level.chars().take_while(char::is_ascii_digit).collect();
-    digits.parse().ok().filter(|&level| level >= 1)
+    digits
+        .parse()
+        .ok()
+        .filter(|&level| level >= 1)
+        .map(|level: usize| level.min(WORD_LIST_LEVELS))
 }
+
+/// Word's lists go nine levels deep; a deeper level, from a page that only looks like Word's
+/// HTML, is read as the ninth rather than indented without end.
+const WORD_LIST_LEVELS: usize = 9;
 
 /// The span holding a Word list item's bullet or number (`style="mso-list:Ignore"`).
 fn word_list_marker_span(dom: &Dom, id: NodeId) -> bool {
@@ -175,6 +189,8 @@ struct Converter<'a> {
     in_word_list: bool,
     /// Images as `![alt](src)`; otherwise as their alt text.
     images: bool,
+    /// How many elements deep the conversion is, counting through child converters.
+    depth: Cell<usize>,
 }
 
 impl<'a> Converter<'a> {
@@ -187,6 +203,7 @@ impl<'a> Converter<'a> {
             inline: String::new(),
             in_word_list: false,
             images: true,
+            depth: Cell::new(0),
         }
     }
 
@@ -194,6 +211,7 @@ impl<'a> Converter<'a> {
     fn child(&self) -> Converter<'a> {
         let mut child = Converter::new(self.dom, self.base, self.skip);
         child.images = self.images;
+        child.depth.set(self.depth.get());
         child
     }
 
@@ -222,6 +240,17 @@ impl<'a> Converter<'a> {
     }
 
     fn node(&mut self, id: NodeId) {
+        if self.depth.get() >= MAX_DEPTH {
+            let text = self.flat_text(id);
+            self.inline.push_str(&text);
+            return;
+        }
+        self.depth.set(self.depth.get() + 1);
+        self.node_within_depth(id);
+        self.depth.set(self.depth.get() - 1);
+    }
+
+    fn node_within_depth(&mut self, id: NodeId) {
         match self.dom.data(id) {
             Data::Document => self.children(id),
             Data::Text(text) => self.inline.push_str(&escape(&collapse(text))),
@@ -408,7 +437,11 @@ impl<'a> Converter<'a> {
     }
 
     fn sub_list(&self, id: NodeId) -> String {
+        if self.depth.get() >= MAX_DEPTH {
+            return self.flat_text(id).trim().to_owned();
+        }
         let mut sub = self.child();
+        sub.depth.set(sub.depth.get() + 1);
         sub.list(id, self.dom.is(id, "ol"));
         sub.blocks.join("\n")
     }
@@ -502,6 +535,55 @@ impl<'a> Converter<'a> {
     }
 
     fn inline_of(&self, id: NodeId) -> String {
+        if self.depth.get() >= MAX_DEPTH {
+            return self.flat_text(id);
+        }
+        self.depth.set(self.depth.get() + 1);
+        let text = self.inline_within_depth(id);
+        self.depth.set(self.depth.get() - 1);
+        text
+    }
+
+    /// The text under `id`, as inline text, leaving out what the converter skips. Walks the
+    /// subtree with a stack of its own, for nodes past `MAX_DEPTH`. Blocks and line breaks are
+    /// spaces, so the words either side of them stay apart.
+    fn flat_text(&self, id: NodeId) -> String {
+        let mut text = String::new();
+        // A node to read, or `None` for the end of a block.
+        let mut stack = vec![Some(id)];
+        while let Some(next) = stack.pop() {
+            let Some(node) = next else {
+                text.push(' ');
+                continue;
+            };
+            match self.dom.data(node) {
+                Data::Text(part) => text.push_str(part),
+                Data::Element { .. } if self.skips(node) => {}
+                Data::Element { name, .. } if name == "br" => text.push(' '),
+                Data::Element { name, .. } if is_block(name) => {
+                    text.push(' ');
+                    stack.push(None);
+                    stack.extend(
+                        self.dom
+                            .children(node)
+                            .iter()
+                            .rev()
+                            .map(|&child| Some(child)),
+                    );
+                }
+                _ => stack.extend(
+                    self.dom
+                        .children(node)
+                        .iter()
+                        .rev()
+                        .map(|&child| Some(child)),
+                ),
+            }
+        }
+        escape(&collapse(&text))
+    }
+
+    fn inline_within_depth(&self, id: NodeId) -> String {
         let Some(name) = self.dom.name(id) else {
             return String::new();
         };
@@ -783,6 +865,26 @@ mod tests {
     }
 
     #[test]
+    fn deeply_nested_elements_keep_their_text_without_overflowing() {
+        // Each depth overflows a 1 MB stack without the cap. A list straight inside a list
+        // takes less stack per level, so those go deeper.
+        for (tag, end, depth) in [
+            ("div", "x", 2_000),
+            ("span", "x", 2_000),
+            ("blockquote", "x", 2_000),
+            ("ul", "<li>x", 3_000),
+            ("ol", "<li>x", 3_000),
+            ("ul><li", "x", 2_000),
+            ("table><tr><td", "x", 2_000),
+        ] {
+            let html = format!("{}{end}", format!("<{tag}>").repeat(depth));
+            assert!(md(&html).ends_with('x'), "{tag}");
+        }
+        let deep = format!("{}<div>a</div><div>b<br>c</div>", "<div>".repeat(500));
+        assert_eq!(md(&deep), "a b c");
+    }
+
+    #[test]
     fn headings_paragraphs_and_inline_formatting() {
         assert_eq!(
             md(
@@ -968,6 +1070,20 @@ mod tests {
             "Ledger batch review\n\nFindings from the **night run**:\n\n\
              - Lag peaked at 40k\n  - only ledger-events\n- Recovered by 02:35\n\
              1. Check the batch size"
+        );
+    }
+
+    #[test]
+    fn a_word_list_level_out_of_range_is_the_deepest_level() {
+        // Found by fuzzing: a huge level was indented with that many spaces, overflowing or
+        // running out of memory.
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join(r"tests\fixtures\bad\word-list-level.html");
+        let html = std::fs::read_to_string(path).unwrap();
+        let deepest = "  ".repeat(WORD_LIST_LEVELS - 1);
+        assert_eq!(
+            md(&html),
+            format!("1. First\n{deepest}2. Overflows\n{deepest}3. Runs out of memory")
         );
     }
 }

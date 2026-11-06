@@ -4,9 +4,12 @@
 pub mod add;
 pub mod capture;
 pub mod config;
+pub mod crash;
 pub mod error;
 pub mod extract;
 pub mod file;
+#[doc(hidden)]
+pub mod fuzzing;
 pub mod icon;
 pub mod index;
 pub mod ipc;
@@ -30,6 +33,7 @@ use std::io::Write;
 
 /// Runs the app with the process's arguments and returns its exit code.
 pub fn run() -> i32 {
+    crash::install();
     let args: Vec<_> = std::env::args_os().skip(1).collect();
     let cwd = std::env::current_dir().unwrap_or_default();
     let launch = match launch::parse(&args, &cwd) {
@@ -45,6 +49,7 @@ pub fn run() -> i32 {
         Launch::Settings => open_settings(),
         Launch::Version => print(&format!("FastCapture {}", env!("CARGO_PKG_VERSION"))),
         Launch::Help => print(launch::USAGE),
+        Launch::Extract(path) => extract_file(&path),
         Launch::Tray => ui::app::run(),
     }
 }
@@ -53,6 +58,28 @@ fn print(text: &str) -> i32 {
     platform::console::attach();
     let _ = writeln!(std::io::stdout(), "{text}");
     0
+}
+
+/// Prints one line saying what a capture would read from the file at `path`.
+fn extract_file(path: &std::path::Path) -> i32 {
+    match std::fs::read(path) {
+        Ok(bytes) => {
+            let name = path
+                .file_name()
+                .map(|name| name.to_string_lossy().into_owned())
+                .unwrap_or_default();
+            print(&model::request::describe_file(&name, &bytes))
+        }
+        Err(error) => {
+            platform::console::attach();
+            let _ = writeln!(
+                std::io::stderr(),
+                "fastcapture: {}: {error}",
+                path.display()
+            );
+            1
+        }
+    }
 }
 
 /// Opens `fastcapture.ini` in its default program, writing the starter file first when there

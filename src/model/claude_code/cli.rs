@@ -149,6 +149,7 @@ pub fn probe(path: &Path) -> Result<Cli, String> {
         .map_err(|error| match error {
             RunError::Start(reason) => format!("Claude Code couldn't be started: {reason}"),
             RunError::TimedOut => format!("Claude Code didn't answer {flag} in time"),
+            RunError::TooMuchOutput => format!("Claude Code wrote too much answering {flag}"),
         })?;
         Ok(String::from_utf8_lossy(&output.stdout).into_owned())
     };

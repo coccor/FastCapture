@@ -6,6 +6,7 @@ pub mod autocorrect;
 pub mod capture_box;
 pub mod clipboard_capture;
 pub mod controls;
+pub mod diagnostics;
 pub mod frame;
 pub mod home_picker;
 pub mod paint;
@@ -14,4 +15,6 @@ pub mod review;
 pub mod review_list;
 pub mod settings;
 pub mod settings_form;
+#[cfg(test)]
+pub(crate) mod test_support;
 pub mod theme;

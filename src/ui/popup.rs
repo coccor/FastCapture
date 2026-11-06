@@ -1113,6 +1113,7 @@ mod tests {
 
     #[test]
     fn a_line_keeps_its_access_key_and_shortcut_apart() {
+        let _ui = crate::ui::test_support::lock();
         let line = Line::from(&entries()[0]);
         assert_eq!(line.label, "Capture…");
         assert_eq!(line.shortcut, "Ctrl+Alt+C");
@@ -1124,6 +1125,7 @@ mod tests {
 
     #[test]
     fn a_menu_opens_where_it_fits() {
+        let _ui = crate::ui::test_support::lock();
         let work = rect(0, 0, 1920, 1040);
         let below = place(Anchor::Below(POINT { x: 100, y: 100 }), 200, 300, work);
         assert_eq!((below.x, below.y), (100, 100));
@@ -1139,6 +1141,7 @@ mod tests {
 
     #[test]
     fn the_keyboard_skips_what_can_t_be_chosen_and_enter_chooses() {
+        let _ui = crate::ui::test_support::lock();
         theme::set_preference(ThemePreference::Dark);
         let popup = open_menu(
             std::ptr::null_mut(),
@@ -1187,6 +1190,7 @@ mod tests {
 
     #[test]
     fn a_menu_is_painted_in_the_theme() {
+        let _ui = crate::ui::test_support::lock();
         theme::set_preference(ThemePreference::Dark);
         let popup = open_menu(
             std::ptr::null_mut(),
@@ -1224,6 +1228,7 @@ mod tests {
 
     #[test]
     fn a_question_answers_with_the_button_enter_or_esc() {
+        let _ui = crate::ui::test_support::lock();
         let question = Question {
             title: "Discard this note?",
             text: "The note goes to the Recycle Bin.",
@@ -1276,6 +1281,7 @@ mod tests {
 
     #[test]
     fn a_question_moved_to_a_monitor_at_another_scale_is_laid_out_again() {
+        let _ui = crate::ui::test_support::lock();
         use crate::ui::theme::metrics::TITLE_STRIP;
         use windows_sys::Win32::Graphics::Gdi::MapWindowPoints;
         let question = Question {

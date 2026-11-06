@@ -40,6 +40,9 @@ pub struct Scan {
     pub folders: Vec<PathBuf>,
     /// The note limit was reached before the walk ended.
     pub truncated: bool,
+    /// Every `*.fastcapture-tmp` file in the folders walked, relative to the notebook: what an
+    /// atomic save left behind.
+    pub temps: Vec<PathBuf>,
 }
 
 pub fn skip_directory(name: &str) -> bool {
@@ -182,6 +185,8 @@ pub fn scan_limited(
                             size: entry.EndOfFile as u64,
                             mtime: entry.LastWriteTime as u64,
                         });
+                    } else if name.ends_with(".fastcapture-tmp") {
+                        scan.temps.push(path);
                     }
                 }
                 if entry.NextEntryOffset == 0 {
@@ -292,6 +297,20 @@ pub(crate) mod tests {
         assert_eq!(b.size, 2);
         assert_ne!(b.mtime, 0);
         assert!(!scan.truncated);
+    }
+
+    #[test]
+    fn saver_temps_are_listed_apart_from_notes() {
+        let scratch = Scratch::new("temps");
+        scratch.file("a.md", "a");
+        scratch.file(r"Work\.b.md.4242.0.fastcapture-tmp", "b");
+        scratch.file(r"Work\c.txt", "c");
+        let scan = scan(&scratch.0, &[], NOTE_LIMIT).unwrap();
+        assert_eq!(paths(&scan), ["a.md"]);
+        assert_eq!(
+            scan.temps,
+            [PathBuf::from(r"Work\.b.md.4242.0.fastcapture-tmp")]
+        );
     }
 
     #[test]

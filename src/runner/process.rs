@@ -28,6 +28,9 @@ pub enum Outcome {
     Failed(String),
 }
 
+/// How many times a model may run out of time on one job before the job fails.
+pub const TIMEOUTS_BEFORE_FAILING: u32 = 3;
+
 /// Runs `job` with `backend` at `now` (milliseconds since 1970) on `today` (`YYYY-MM-DD`), and
 /// saves the job's new state in `store`. No candidate notes are offered.
 pub fn process(store: &Store, job: Job, backend: &dyn Backend, now: u64, today: &str) -> Outcome {
@@ -48,6 +51,7 @@ pub fn process_with(
     save(store, &job);
 
     let outcome = run(&job, backend, today, indexes);
+    let mut gave_up = None;
     match &outcome {
         Ok(written) => {
             job.state = State::Done;
@@ -61,6 +65,22 @@ pub fn process_with(
             job.state = State::Queued;
             job.retry_at = Some(now + wait.as_millis() as u64);
             job.last_error = Some(reason.clone());
+        }
+        Err(BackendError::TimedOut(reason)) => {
+            job.timeouts += 1;
+            if job.timeouts >= TIMEOUTS_BEFORE_FAILING {
+                let message = format!(
+                    "{reason} That happened three times. Choose a faster model, or raise local_timeout for a local one, then press R."
+                );
+                job.state = State::Failed;
+                job.last_error = Some(message.clone());
+                gave_up = Some(message);
+            } else {
+                let wait = backoff::delay(job.attempts, None);
+                job.state = State::Queued;
+                job.retry_at = Some(now + wait.as_millis() as u64);
+                job.last_error = Some(reason.clone());
+            }
         }
         Err(BackendError::Pause(reason) | BackendError::PauseUntil { reason, .. }) => {
             // Not the job's fault: it keeps its place, and its try doesn't count.
@@ -79,6 +99,13 @@ pub fn process_with(
         Err(BackendError::Retry { reason, .. }) => Outcome::Retry {
             at: job.retry_at.unwrap_or(now),
             reason,
+        },
+        Err(BackendError::TimedOut(reason)) => match gave_up {
+            Some(message) => Outcome::Failed(message),
+            None => Outcome::Retry {
+                at: job.retry_at.unwrap_or(now),
+                reason,
+            },
         },
         Err(BackendError::Pause(reason)) => Outcome::Pause(reason),
         Err(BackendError::PauseUntil { until, reason }) => Outcome::PauseUntil { until, reason },
@@ -324,6 +351,68 @@ pub(crate) mod tests {
         assert_eq!(
             (saved.state, saved.attempts, saved.note),
             (State::Done, 1, Some(written))
+        );
+    }
+
+    #[test]
+    fn a_model_that_times_out_three_times_fails_with_what_to_do() {
+        let temp = Temp::new("timeouts");
+        let store = temp.store();
+        let job = temp.capture("slow");
+        let timed_out = || {
+            Err(BackendError::TimedOut(
+                "The local model didn't finish within 5 minutes.".into(),
+            ))
+        };
+        let backend = Scripted::new(vec![timed_out(), timed_out(), timed_out()]);
+        let mut job = job;
+        for round in 1..=2 {
+            assert!(
+                matches!(
+                    process(&store, job.clone(), &backend, 0, "d"),
+                    Outcome::Retry { .. }
+                ),
+                "{round}"
+            );
+            job = store.get(&job.capture_id).unwrap();
+            assert_eq!(job.timeouts, round);
+        }
+        let Outcome::Failed(reason) = process(&store, job.clone(), &backend, 0, "d") else {
+            panic!()
+        };
+        assert_eq!(
+            reason,
+            "The local model didn't finish within 5 minutes. That happened three times. Choose a faster model, or raise local_timeout for a local one, then press R."
+        );
+        let saved = store.get(&job.capture_id).unwrap();
+        assert_eq!(saved.state, State::Failed);
+        assert_eq!(saved.last_error, Some(reason));
+    }
+
+    #[test]
+    fn a_winhttp_timeout_reads_as_two_sentences_when_given_up_on() {
+        use crate::model::backend::from_http;
+        use crate::net::http::HttpError;
+        let temp = Temp::new("timeouts-http");
+        let store = temp.store();
+        let timed_out = || {
+            Err(from_http(
+                HttpError::TimedOut("Receiving the response failed (WinHTTP error 12002)".into()),
+                "Claude",
+            ))
+        };
+        let backend = Scripted::new(vec![timed_out(), timed_out(), timed_out()]);
+        let mut job = temp.capture("slow");
+        for _ in 0..2 {
+            process(&store, job.clone(), &backend, 0, "d");
+            job = store.get(&job.capture_id).unwrap();
+        }
+        let Outcome::Failed(reason) = process(&store, job, &backend, 0, "d") else {
+            panic!()
+        };
+        assert_eq!(
+            reason,
+            "Claude didn't answer in time: Receiving the response failed (WinHTTP error 12002). That happened three times. Choose a faster model, or raise local_timeout for a local one, then press R."
         );
     }
 

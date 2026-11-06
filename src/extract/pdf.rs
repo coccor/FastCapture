@@ -2,7 +2,6 @@
 //! to read. Text comes from pdf-extract; pages are rendered by Windows (`Windows.Data.Pdf`).
 
 use crate::platform::png::ComScope;
-use std::panic::{AssertUnwindSafe, catch_unwind};
 use windows::Data::Pdf::{PdfDocument, PdfPageRenderOptions};
 use windows::Storage::Streams::{DataReader, DataWriter, InMemoryRandomAccessStream};
 
@@ -58,11 +57,12 @@ impl Pdf {
 /// or that can't be parsed, is an error saying so.
 pub fn read(bytes: &[u8], max_pages: usize) -> Result<Pdf, String> {
     // A malformed file can make the parser panic; it is just a PDF that can't be read.
-    catch_unwind(AssertUnwindSafe(|| read_unguarded(bytes, max_pages)))
-        .unwrap_or_else(|_| Err("it couldn't be read".to_owned()))
+    crate::crash::guarded(|| read_unguarded(bytes, max_pages)).and_then(|result| result)
 }
 
-fn read_unguarded(bytes: &[u8], max_pages: usize) -> Result<Pdf, String> {
+/// `read` without the guard against a panic in the parser, for fuzzing, where a panic is the
+/// finding.
+pub fn read_unguarded(bytes: &[u8], max_pages: usize) -> Result<Pdf, String> {
     let mut document =
         pdf_extract::Document::load_mem(bytes).map_err(|_| "it couldn't be read".to_owned())?;
     if document.is_encrypted() && document.decrypt("").is_err() {
@@ -322,6 +322,23 @@ mod tests {
         let mut cut = pdf(&[Page::Text(FIRST)], false);
         cut.truncate(cut.len() / 2);
         assert!(read(&cut, 20).is_err());
+    }
+
+    #[test]
+    fn pdfs_that_make_the_parser_panic_are_unreadable() {
+        // Found by fuzzing: each of these panics inside pdf-extract or lopdf, which the guard
+        // turns into a PDF that can't be read.
+        let bad = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join(r"tests\fixtures\bad");
+        let mut checked = 0;
+        for entry in std::fs::read_dir(bad).unwrap() {
+            let path = entry.unwrap().path();
+            if path.extension().is_some_and(|e| e == "pdf") {
+                let bytes = std::fs::read(&path).unwrap();
+                assert!(read(&bytes, 20).is_err(), "{}", path.display());
+                checked += 1;
+            }
+        }
+        assert!(checked >= 9, "{checked}");
     }
 
     #[test]

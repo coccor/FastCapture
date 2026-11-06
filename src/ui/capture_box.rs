@@ -51,12 +51,12 @@ use windows_sys::Win32::UI::WindowsAndMessaging::{
     GetForegroundWindow, GetWindowLongPtrW, GetWindowRect, GetWindowTextLengthW, GetWindowTextW,
     HTCAPTION, HTCLIENT, IDC_ARROW, IsWindow, KillTimer, LoadCursorW, MINMAXINFO, RegisterClassW,
     SW_HIDE, SW_SHOW, SWP_NOACTIVATE, SWP_NOZORDER, SendMessageW, SetForegroundWindow, SetTimer,
-    SetWindowLongPtrW, SetWindowPos, SetWindowTextW, ShowWindow, WM_APP, WM_CHAR,
-    WM_CLIPBOARDUPDATE, WM_CLOSE, WM_CTLCOLOREDIT, WM_DESTROY, WM_DPICHANGED, WM_DROPFILES,
+    SetWindowLongPtrW, SetWindowPos, SetWindowTextW, ShowWindow, WM_APP, WM_CHAR, WM_CLEAR,
+    WM_CLIPBOARDUPDATE, WM_CLOSE, WM_CTLCOLOREDIT, WM_CUT, WM_DESTROY, WM_DPICHANGED, WM_DROPFILES,
     WM_ENTERSIZEMOVE, WM_ERASEBKGND, WM_EXITSIZEMOVE, WM_GETMINMAXINFO, WM_KEYDOWN, WM_LBUTTONDOWN,
     WM_NCCALCSIZE, WM_NCDESTROY, WM_NCHITTEST, WM_PAINT, WM_PASTE, WM_SETFOCUS, WM_SETFONT,
-    WM_SIZE, WM_TIMER, WNDCLASSW, WS_CAPTION, WS_CHILD, WS_CLIPCHILDREN, WS_EX_ACCEPTFILES,
-    WS_EX_TOPMOST, WS_POPUP, WS_TABSTOP, WS_VISIBLE, WS_VSCROLL,
+    WM_SIZE, WM_TIMER, WM_UNDO, WNDCLASSW, WS_CAPTION, WS_CHILD, WS_CLIPCHILDREN,
+    WS_EX_ACCEPTFILES, WS_EX_TOPMOST, WS_POPUP, WS_TABSTOP, WS_VISIBLE, WS_VSCROLL,
 };
 
 /// The box's size when it has none saved, and the smallest it can be made.
@@ -87,9 +87,14 @@ pub const WM_CAPTURE_AGAIN: u32 = WM_APP + 0x60;
 /// A pasted bitmap finished encoding on its worker thread: a boxed `Result<Vec<u8>, String>` in
 /// lparam.
 const WM_IMAGE_READY: u32 = WM_APP + 0x61;
+/// Saves the box's draft to the end of the session: the app sends it when Windows signs out.
+pub const WM_SAVE_DRAFT: u32 = WM_APP + 0x62;
 const SNIP_TIMER: usize = 0x4350_534E;
 const SNIP_WAIT_MS: u32 = 30_000;
 const EDIT_HOOK: usize = 0x4350_4544;
+/// The draft is saved this long after the last edit.
+const DRAFT_TIMER: usize = 0x4350_4446;
+const DRAFT_DELAY_MS: u32 = 1_500;
 
 /// What a key in the box's edit does.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -361,6 +366,8 @@ struct CaptureBox {
     preparing: usize,
     /// Ctrl+Enter came while images were being prepared: file once they are ready.
     submit_when_ready: bool,
+    /// The box changed since its draft was last saved.
+    draft_pending: bool,
 }
 
 const SNIP_LABEL: &str = "+ Snip (Ctrl+Shift+S)";
@@ -504,6 +511,7 @@ pub fn open(options: Open) -> Option<HWND> {
         swallow_paste_char: false,
         preparing: 0,
         submit_when_ready: false,
+        draft_pending: false,
     });
     unsafe { SetWindowLongPtrW(hwnd, GWLP_USERDATA, Box::into_raw(state) as isize) };
     set_edit_text(edit, &restored.text);
@@ -791,6 +799,7 @@ fn autocorrect_before(hwnd: HWND) {
     };
     replace_range(edit, fix.start..end, &fix.replacement);
     capture.last_fix = Some(fix);
+    draft_changed(hwnd);
 }
 
 /// Ctrl+Z right after a fix: puts the typed word back. False when there is no such fix, and the
@@ -820,6 +829,7 @@ fn undo_fix(hwnd: HWND) -> bool {
         return false;
     }
     replace_range(edit, fix.start..end, &fix.original);
+    draft_changed(hwnd);
     let caret = fix.start + fix.original.encode_utf16().count() + boundary;
     unsafe { SendMessageW(edit, EM_SETSEL, caret, caret as LPARAM) };
     true
@@ -865,6 +875,7 @@ fn attach(hwnd: HWND, attachment: Attachment) {
         capture.items.push(attachment);
         capture.error = None;
     }
+    draft_changed(hwnd);
     relayout(hwnd);
 }
 
@@ -914,6 +925,7 @@ fn insert_text(hwnd: HWND, text: &str) {
         };
     }
     invalidate(hwnd);
+    draft_changed(hwnd);
 }
 
 /// Remembers the page the clipboard's rich text came from, and returns that rich text.
@@ -1029,6 +1041,7 @@ fn remove_item(hwnd: HWND, index: usize) {
         && index < capture.items.len()
     {
         capture.items.remove(index);
+        draft_changed(hwnd);
     }
     relayout(hwnd);
 }
@@ -1181,9 +1194,14 @@ fn submit(hwnd: HWND) {
                     draft::clear(dir);
                 }
                 capture.items.clear();
+                capture.draft_pending = false;
                 set_edit_text(capture.edit, "");
             }
-            unsafe { DestroyWindow(hwnd) };
+            // Nothing may save the draft again once the capture is filed.
+            unsafe {
+                KillTimer(hwnd, DRAFT_TIMER);
+                DestroyWindow(hwnd);
+            }
         }
         Err(error) => {
             if let Some(dir) = &capture.draft_dir {
@@ -1194,14 +1212,29 @@ fn submit(hwnd: HWND) {
     }
 }
 
+/// The box changed: its draft is saved once typing pauses. A running delay starts over.
+fn draft_changed(hwnd: HWND) {
+    if let Some(capture) = state(hwnd) {
+        capture.draft_pending = true;
+        unsafe { SetTimer(hwnd, DRAFT_TIMER, DRAFT_DELAY_MS, None) };
+    }
+}
+
+/// Saves what the box holds as its draft.
+fn save_draft(hwnd: HWND) {
+    if let Some(capture) = state(hwnd) {
+        capture.draft_pending = false;
+        if let Some(dir) = &capture.draft_dir
+            && let Err(error) = draft::save(dir, &current_capture(capture))
+        {
+            crate::log::line(&format!("draft: {error}"));
+        }
+    }
+}
+
 /// Esc: closes the box, keeping what it holds as a draft.
 fn close(hwnd: HWND) {
-    if let Some(capture) = state(hwnd)
-        && let Some(dir) = &capture.draft_dir
-        && let Err(error) = draft::save(dir, &current_capture(capture))
-    {
-        crate::log::line(&format!("draft: {error}"));
-    }
+    save_draft(hwnd);
     unsafe { DestroyWindow(hwnd) };
 }
 
@@ -1272,6 +1305,11 @@ unsafe extern "system" fn edit_proc(
                 run(hwnd, action);
                 return 0;
             }
+            if key == VK_DELETE {
+                let result = unsafe { DefSubclassProc(edit, message, wparam, lparam) };
+                draft_changed(hwnd);
+                return result;
+            }
         }
         WM_CHAR => {
             let ch = wparam as u32;
@@ -1298,6 +1336,7 @@ unsafe extern "system" fn edit_proc(
             }
             // Typing changes what the footer says the capture holds.
             invalidate(hwnd);
+            draft_changed(hwnd);
         }
         WM_LBUTTONDOWN => {
             if let Some(capture) = state(hwnd) {
@@ -1312,10 +1351,17 @@ unsafe extern "system" fn edit_proc(
                 return 0;
             }
             invalidate(hwnd);
+            draft_changed(hwnd);
         }
         WM_NCDESTROY => unsafe {
             RemoveWindowSubclass(edit, Some(edit_proc), EDIT_HOOK);
         },
+        // Edits that are not typing: the draft follows once the edit has made them.
+        WM_CUT | WM_CLEAR | WM_UNDO => {
+            let result = unsafe { DefSubclassProc(edit, message, wparam, lparam) };
+            draft_changed(hwnd);
+            return result;
+        }
         _ => {}
     }
     unsafe { DefSubclassProc(edit, message, wparam, lparam) }
@@ -1782,6 +1828,15 @@ unsafe extern "system" fn box_proc(
             end_snip(hwnd);
             0
         }
+        WM_TIMER if wparam == DRAFT_TIMER => {
+            unsafe { KillTimer(hwnd, DRAFT_TIMER) };
+            save_draft(hwnd);
+            0
+        }
+        WM_SAVE_DRAFT => {
+            save_draft(hwnd);
+            0
+        }
         WM_CLOSE => {
             close(hwnd);
             0
@@ -1789,6 +1844,7 @@ unsafe extern "system" fn box_proc(
         WM_DESTROY => {
             unsafe {
                 KillTimer(hwnd, SNIP_TIMER);
+                KillTimer(hwnd, DRAFT_TIMER);
                 RemoveClipboardFormatListener(hwnd);
             }
             if let Some(capture) = state(hwnd) {
@@ -1856,6 +1912,7 @@ mod tests {
 
     #[test]
     fn keys_map_to_the_box_actions() {
+        let _ui = crate::ui::test_support::lock();
         assert_eq!(
             key_action(VK_RETURN, true, false, false),
             Some(Action::Submit)
@@ -1903,6 +1960,7 @@ mod tests {
 
     #[test]
     fn ctrl_v_attaches_files_and_lone_images_and_pastes_text_otherwise() {
+        let _ui = crate::ui::test_support::lock();
         assert_eq!(paste_kind(true, false, true), Paste::Files);
         assert_eq!(paste_kind(false, true, false), Paste::Image);
         assert_eq!(
@@ -1915,6 +1973,7 @@ mod tests {
 
     #[test]
     fn the_edit_fills_what_the_strip_error_and_footer_leave() {
+        let _ui = crate::ui::test_support::lock();
         let plain = layout(96, (720, 420), &[], false, 160, (80, 60));
         assert_eq!((plain.width, plain.height), (720, 420));
         assert_eq!(plain.edit.top, 34 + 6);
@@ -1941,6 +2000,7 @@ mod tests {
 
     #[test]
     fn chips_that_do_not_fit_are_clipped_not_overlapping() {
+        let _ui = crate::ui::test_support::lock();
         let tight = layout(96, (420, 240), &[200; 12], true, 160, (80, 60));
         assert_eq!(tight.chips.len(), 12);
         assert_eq!(
@@ -1960,6 +2020,7 @@ mod tests {
 
     #[test]
     fn the_notebook_selector_follows_the_title_and_stops_before_the_close_button() {
+        let _ui = crate::ui::test_support::lock();
         let plain = layout(96, (720, 420), &[], false, 160, (80, 60));
         assert_eq!(plain.notebook.left, 12 + 80 + 6);
         assert_eq!(plain.notebook.right, plain.notebook.left + 8 + 60 + 26);
@@ -1974,6 +2035,7 @@ mod tests {
 
     #[test]
     fn the_notebook_menu_offers_the_current_notebook_once() {
+        let _ui = crate::ui::test_support::lock();
         let recent = vec![PathBuf::from(r"D:\Notes"), PathBuf::from(r"E:\Work")];
         assert_eq!(
             notebook_choices(Path::new(r"E:\Work"), recent.clone()),
@@ -2012,6 +2074,7 @@ mod tests {
 
     #[test]
     fn the_notebook_selector_changes_where_this_capture_goes() {
+        let _ui = crate::ui::test_support::lock();
         let drafts = temp("selector");
         let (hwnd, filed) = open_box(&drafts, None);
         let selector = state(hwnd).unwrap().layout.notebook;
@@ -2048,6 +2111,7 @@ mod tests {
 
     #[test]
     fn any_folder_can_be_picked_from_the_notebook_menu() {
+        let _ui = crate::ui::test_support::lock();
         let drafts = temp("other");
         let (hwnd, _) = open_box(&drafts, None);
         // The two recent notebooks, then "Other folder…".
@@ -2065,6 +2129,7 @@ mod tests {
 
     #[test]
     fn the_box_resizes_from_its_edges_and_keeps_a_minimum() {
+        let _ui = crate::ui::test_support::lock();
         use windows_sys::Win32::UI::WindowsAndMessaging::{
             HTBOTTOMRIGHT, MINMAXINFO, SWP_NOMOVE, WM_GETMINMAXINFO,
         };
@@ -2111,6 +2176,7 @@ mod tests {
 
     #[test]
     fn the_title_footer_and_chips_say_what_and_where() {
+        let _ui = crate::ui::test_support::lock();
         assert_eq!(accessible_name("Work notes"), "Capture to Work notes");
         assert_eq!(notebook_name(Path::new(r"D:\Work notes")), "Work notes");
         assert_eq!(chip_label(&Attachment::Png(Vec::new()), 1), "Image 2");
@@ -2162,12 +2228,12 @@ mod tests {
 
     /// The autocorrect tests need Windows' English checker with its autocorrect list, which
     /// Windows Server (CI's runners) lacks.
-    fn no_speller() -> bool {
+    fn no_speller(test: &str) -> bool {
         let missing = crate::platform::spell::with_english(|s| s.replacement("teh"))
             .flatten()
             .is_none();
         if missing {
-            eprintln!("skipped: no en-US autocorrect list");
+            crate::platform::spell::skipped(test, "no autocorrect list");
         }
         missing
     }
@@ -2198,7 +2264,8 @@ mod tests {
 
     #[test]
     fn a_typed_typo_is_fixed_and_ctrl_z_brings_it_back() {
-        if no_speller() {
+        let _ui = crate::ui::test_support::lock();
+        if no_speller("a_typed_typo_is_fixed_and_ctrl_z_brings_it_back") {
             return;
         }
         let drafts = temp("fix");
@@ -2214,7 +2281,8 @@ mod tests {
 
     #[test]
     fn ctrl_z_after_a_fix_made_by_enter_keeps_the_line_break() {
-        if no_speller() {
+        let _ui = crate::ui::test_support::lock();
+        if no_speller("ctrl_z_after_a_fix_made_by_enter_keeps_the_line_break") {
             return;
         }
         let drafts = temp("enter");
@@ -2230,7 +2298,8 @@ mod tests {
 
     #[test]
     fn all_capitals_are_left_alone_as_windows_does() {
-        if no_speller() {
+        let _ui = crate::ui::test_support::lock();
+        if no_speller("all_capitals_are_left_alone_as_windows_does") {
             return;
         }
         let drafts = temp("caps");
@@ -2243,6 +2312,7 @@ mod tests {
 
     #[test]
     fn the_close_button_keeps_its_corner() {
+        let _ui = crate::ui::test_support::lock();
         let drafts = temp("corner");
         let (hwnd, _) = open_box(&drafts, None);
         let mut frame: RECT = unsafe { std::mem::zeroed() };
@@ -2263,6 +2333,7 @@ mod tests {
 
     #[test]
     fn moving_the_box_does_not_rewrite_its_size() {
+        let _ui = crate::ui::test_support::lock();
         use windows_sys::Win32::UI::WindowsAndMessaging::SWP_NOSIZE;
         let drafts = temp("move");
         std::fs::create_dir_all(&drafts).unwrap();
@@ -2288,7 +2359,8 @@ mod tests {
 
     #[test]
     fn a_word_in_the_middle_is_fixed_in_place() {
-        if no_speller() {
+        let _ui = crate::ui::test_support::lock();
+        if no_speller("a_word_in_the_middle_is_fixed_in_place") {
             return;
         }
         let drafts = temp("middle");
@@ -2304,7 +2376,8 @@ mod tests {
 
     #[test]
     fn fixes_land_after_non_ascii_text() {
-        if no_speller() {
+        let _ui = crate::ui::test_support::lock();
+        if no_speller("fixes_land_after_non_ascii_text") {
             return;
         }
         let drafts = temp("unicode");
@@ -2317,7 +2390,8 @@ mod tests {
 
     #[test]
     fn ctrl_z_after_more_typing_does_not_bring_the_typo_back() {
-        if no_speller() {
+        let _ui = crate::ui::test_support::lock();
+        if no_speller("ctrl_z_after_more_typing_does_not_bring_the_typo_back") {
             return;
         }
         let drafts = temp("later");
@@ -2334,7 +2408,8 @@ mod tests {
 
     #[test]
     fn pasted_restored_and_switched_off_text_is_left_alone() {
-        if no_speller() {
+        let _ui = crate::ui::test_support::lock();
+        if no_speller("pasted_restored_and_switched_off_text_is_left_alone") {
             return;
         }
         let drafts = temp("alone");
@@ -2391,6 +2466,7 @@ mod tests {
 
     #[test]
     fn the_saved_size_is_used_when_it_is_big_enough() {
+        let _ui = crate::ui::test_support::lock();
         let work = RECT {
             left: 0,
             top: 0,
@@ -2409,6 +2485,7 @@ mod tests {
 
     #[test]
     fn a_saved_size_is_clamped_to_the_work_area() {
+        let _ui = crate::ui::test_support::lock();
         let small = RECT {
             left: 1920,
             top: 0,
@@ -2420,6 +2497,7 @@ mod tests {
 
     #[test]
     fn a_resized_box_reopens_at_its_size() {
+        let _ui = crate::ui::test_support::lock();
         use windows_sys::Win32::UI::WindowsAndMessaging::SWP_NOMOVE;
         let drafts = temp("size");
         std::fs::create_dir_all(&drafts).unwrap();
@@ -2458,6 +2536,7 @@ mod tests {
 
     #[test]
     fn a_dpi_change_rescales_the_box() {
+        let _ui = crate::ui::test_support::lock();
         let drafts = temp("dpi");
         let (hwnd, _) = open_box(&drafts, None);
         let suggested = RECT {
@@ -2483,6 +2562,7 @@ mod tests {
 
     #[test]
     fn ctrl_enter_files_what_the_box_holds_and_closes_it() {
+        let _ui = crate::ui::test_support::lock();
         let drafts = temp("submit");
         let (hwnd, filed) = open_box(&drafts, None);
         set_edit_text(state(hwnd).unwrap().edit, "line one\r\nline two");
@@ -2500,6 +2580,7 @@ mod tests {
 
     #[test]
     fn an_open_box_follows_a_theme_change() {
+        let _ui = crate::ui::test_support::lock();
         use crate::ui::theme::{DARK, LIGHT, ThemePreference};
         theme::set_system_for_test(theme::System::default());
         theme::set_preference(ThemePreference::Light);
@@ -2521,6 +2602,7 @@ mod tests {
 
     #[test]
     fn esc_keeps_a_draft_that_the_next_box_brings_back() {
+        let _ui = crate::ui::test_support::lock();
         let drafts = temp("draft");
         let (hwnd, filed) = open_box(&drafts, None);
         set_edit_text(state(hwnd).unwrap().edit, "half a thought");
@@ -2534,6 +2616,7 @@ mod tests {
 
     #[test]
     fn a_failure_stays_in_the_box_with_its_error() {
+        let _ui = crate::ui::test_support::lock();
         let drafts = temp("fail");
         let (hwnd, _) = open_box(&drafts, Some("The notebook is read-only."));
         set_edit_text(state(hwnd).unwrap().edit, "keep me");
@@ -2550,6 +2633,7 @@ mod tests {
 
     #[test]
     fn folders_are_refused_and_large_files_ask_first() {
+        let _ui = crate::ui::test_support::lock();
         let drafts = temp("attach");
         std::fs::create_dir_all(&drafts).unwrap();
         let big = drafts.join("big.bin");
@@ -2579,7 +2663,91 @@ mod tests {
     }
 
     #[test]
+    fn typing_schedules_a_draft_and_the_timer_saves_it() {
+        let _ui = crate::ui::test_support::lock();
+        let drafts = temp("draft-timer");
+        let (hwnd, _) = open_box(&drafts, None);
+        type_for_test(hwnd, "half a thought");
+        assert!(state(hwnd).unwrap().draft_pending);
+        unsafe { SendMessageW(hwnd, WM_TIMER, DRAFT_TIMER, 0) };
+        assert_eq!(draft::load(&drafts).unwrap().text, "half a thought");
+        assert!(!state(hwnd).unwrap().draft_pending);
+        unsafe { DestroyWindow(hwnd) };
+        draft::clear(&drafts);
+    }
+
+    #[test]
+    fn attaching_and_removing_schedule_a_draft() {
+        let _ui = crate::ui::test_support::lock();
+        let base = temp("draft-attach");
+        std::fs::create_dir_all(&base).unwrap();
+        let file = base.join("a.txt");
+        std::fs::write(&file, b"a").unwrap();
+        let (hwnd, _) = open_box(&base.join("draft"), None);
+        attach(hwnd, Attachment::File(file));
+        assert!(state(hwnd).unwrap().draft_pending);
+        unsafe { SendMessageW(hwnd, WM_TIMER, DRAFT_TIMER, 0) };
+        assert!(!state(hwnd).unwrap().draft_pending);
+        assert_eq!(
+            draft::load(&base.join("draft")).unwrap().attachments.len(),
+            1
+        );
+        remove_item(hwnd, 0);
+        assert!(state(hwnd).unwrap().draft_pending);
+        unsafe { DestroyWindow(hwnd) };
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn inserted_text_and_edits_that_are_not_typing_schedule_a_draft() {
+        let _ui = crate::ui::test_support::lock();
+        let drafts = temp("draft-edits");
+        let (hwnd, _) = open_box(&drafts, None);
+        insert_text(hwnd, "pasted as markdown");
+        assert!(state(hwnd).unwrap().draft_pending, "insert_text");
+        unsafe { SendMessageW(hwnd, WM_TIMER, DRAFT_TIMER, 0) };
+        assert!(!state(hwnd).unwrap().draft_pending);
+        let edit = state(hwnd).unwrap().edit;
+        unsafe { SendMessageW(edit, EM_SETSEL, 0, -1) };
+        unsafe { SendMessageW(edit, WM_CUT, 0, 0) };
+        assert!(state(hwnd).unwrap().draft_pending, "cut");
+        unsafe { SendMessageW(hwnd, WM_TIMER, DRAFT_TIMER, 0) };
+        unsafe { SendMessageW(edit, WM_UNDO, 0, 0) };
+        assert!(state(hwnd).unwrap().draft_pending, "undo");
+        unsafe { DestroyWindow(hwnd) };
+        draft::clear(&drafts);
+    }
+
+    #[test]
+    fn a_filed_capture_leaves_no_draft_behind() {
+        let _ui = crate::ui::test_support::lock();
+        let drafts = temp("draft-filed");
+        let (hwnd, _) = open_box(&drafts, None);
+        type_for_test(hwnd, "filed soon");
+        unsafe { SendMessageW(hwnd, WM_TIMER, DRAFT_TIMER, 0) };
+        assert!(draft::load(&drafts).is_some());
+        type_for_test(hwnd, " more");
+        run(hwnd, Action::Submit);
+        assert_eq!(unsafe { IsWindow(hwnd) }, 0);
+        unsafe { SendMessageW(hwnd, WM_TIMER, DRAFT_TIMER, 0) };
+        assert_eq!(draft::load(&drafts), None);
+    }
+
+    #[test]
+    fn the_end_of_the_session_saves_the_draft() {
+        let _ui = crate::ui::test_support::lock();
+        let drafts = temp("draft-session");
+        let (hwnd, _) = open_box(&drafts, None);
+        type_for_test(hwnd, "before the restart");
+        unsafe { SendMessageW(hwnd, WM_SAVE_DRAFT, 0, 0) };
+        assert_eq!(draft::load(&drafts).unwrap().text, "before the restart");
+        unsafe { DestroyWindow(hwnd) };
+        draft::clear(&drafts);
+    }
+
+    #[test]
     fn a_snip_hides_the_box_and_the_hotkey_brings_it_back() {
+        let _ui = crate::ui::test_support::lock();
         let drafts = temp("snip");
         let (hwnd, _) = open_box(&drafts, None);
         let before = SNIPS.with(std::cell::Cell::get);
@@ -2633,6 +2801,7 @@ mod preparing_tests {
 
     #[test]
     fn a_pasted_bitmap_is_encoded_off_the_ui_thread_and_ctrl_enter_waits_for_it() {
+        let _ui = crate::ui::test_support::lock();
         let _backup = Backup::take();
         let format = u32::from(windows_sys::Win32::System::Ole::CF_DIB);
         clipboard::set(std::ptr::null_mut(), format, &dib()).unwrap();
@@ -2659,6 +2828,7 @@ mod preparing_tests {
 
     #[test]
     fn rich_text_pastes_as_markdown_and_ctrl_alt_v_as_plain_text() {
+        let _ui = crate::ui::test_support::lock();
         let _backup = Backup::take();
         let drafts =
             std::env::temp_dir().join(format!("fastcapture-box-rich-{}", std::process::id()));

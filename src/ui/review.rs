@@ -467,7 +467,7 @@ fn reload(hwnd: HWND) {
     for job in gone {
         crate::log::line(&format!(
             "review: {} is gone; its job is removed",
-            job.raw.display()
+            job.capture_id
         ));
         store.remove(&job.capture_id);
     }
@@ -650,7 +650,11 @@ fn suggested_target(review: &Review, row: &Row) -> Result<Option<Target>, String
         .and_then(|name| name.strip_suffix("]]"))
     else {
         let folder = home.trim().trim_matches('/').replace('/', "\\");
-        return Ok((!folder.is_empty()).then(|| Target::Folder(PathBuf::from(folder))));
+        let folder = PathBuf::from(folder);
+        if !crate::file::home::within(&folder) {
+            return Err(crate::file::home::outside_message(&folder));
+        }
+        return Ok((!folder.as_os_str().is_empty()).then_some(Target::Folder(folder)));
     };
     let note = row.note.as_ref().map(|note| note.path.as_path());
     let snapshot = snapshot(review, &row.notebook)
@@ -924,6 +928,8 @@ fn regenerate_selected(hwnd: HWND) {
     job.regenerate = job.note.is_some();
     job.state = State::Queued;
     job.attempts = 0;
+    job.interrupted = 0;
+    job.timeouts = 0;
     job.retry_at = None;
     job.last_error = None;
     if let Err(error) = store.put(&job) {
@@ -1264,6 +1270,7 @@ mod tests {
 
     #[test]
     fn an_open_review_window_follows_a_theme_change_and_paints_its_rows() {
+        let _ui = crate::ui::test_support::lock();
         use crate::runner::process::tests::Temp;
         use crate::ui::theme::{DARK, LIGHT, ThemePreference};
         theme::set_system_for_test(theme::System::default());
@@ -1330,6 +1337,7 @@ mod tests {
 
     #[test]
     fn notes_are_shown_regenerated_and_discarded() {
+        let _ui = crate::ui::test_support::lock();
         use crate::runner::process::tests::{Scripted, Temp, note};
         use crate::runner::process::{Outcome, process};
         let temp = Temp::new("review-notes");
@@ -1489,6 +1497,7 @@ mod tests {
 
     #[test]
     fn notes_are_filed_kept_and_put_back_from_the_keyboard() {
+        let _ui = crate::ui::test_support::lock();
         use crate::runner::process::tests::Temp;
         let temp = Temp::new("review-filing");
         let notebook = temp.notebook();
@@ -1619,6 +1628,7 @@ mod tests {
 
     #[test]
     fn captures_are_listed_and_del_recycles_only_what_is_theirs() {
+        let _ui = crate::ui::test_support::lock();
         let temp = std::env::temp_dir().join(format!("fastcapture-review-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&temp);
         let notebook = temp.join("Notes");
@@ -1720,6 +1730,7 @@ mod tests {
 
     #[test]
     fn a_finding_is_filed_put_back_placed_again_and_recycled_alone() {
+        let _ui = crate::ui::test_support::lock();
         use crate::runner::process::tests::Temp;
         let temp = Temp::new("review-finding");
         let notebook = temp.notebook();
@@ -1811,6 +1822,7 @@ mod tests {
 
     #[test]
     fn the_window_keeps_its_place_in_the_settings() {
+        let _ui = crate::ui::test_support::lock();
         let temp =
             std::env::temp_dir().join(format!("fastcapture-review-place-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&temp);

@@ -9,6 +9,8 @@ use std::io::{Read, Write};
 use std::os::windows::process::CommandExt;
 use std::path::Path;
 use std::process::{Command, Stdio};
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
 /// How much of stderr is kept.
@@ -29,6 +31,8 @@ pub enum RunError {
     Start(String),
     /// It ran past the time limit and was stopped.
     TimedOut,
+    /// It wrote more to stdout than was allowed and was stopped.
+    TooMuchOutput,
 }
 
 /// Runs `program` with `args` in `dir`, writes `stdin` to it, and waits up to `timeout`. A
@@ -40,6 +44,28 @@ pub fn run(
     dir: &Path,
     remove: &[OsString],
     timeout: Duration,
+) -> Result<Output, RunError> {
+    run_capped(
+        program,
+        args,
+        stdin,
+        dir,
+        remove,
+        timeout,
+        crate::net::http::MAX_RESPONSE_BYTES,
+    )
+}
+
+/// `run`, ending the program with `TooMuchOutput` once it has written more than `stdout_cap`
+/// bytes to stdout.
+pub fn run_capped(
+    program: &Path,
+    args: &[String],
+    stdin: &[u8],
+    dir: &Path,
+    remove: &[OsString],
+    timeout: Duration,
+    stdout_cap: usize,
 ) -> Result<Output, RunError> {
     let mut command = Command::new(program);
     command
@@ -66,11 +92,26 @@ pub fn run(
         }
         // Dropped here, which closes it: the program sees the end of its input.
     });
+    let too_much = Arc::new(AtomicBool::new(false));
+    let over = Arc::clone(&too_much);
     let mut out = child.stdout.take();
     let stdout = std::thread::spawn(move || {
         let mut bytes = Vec::new();
         if let Some(out) = out.as_mut() {
-            let _ = out.read_to_end(&mut bytes);
+            let mut chunk = vec![0; 64 * 1024];
+            while let Ok(read @ 1..) = out.read(&mut chunk) {
+                if over.load(Ordering::Relaxed) {
+                    continue;
+                }
+                if bytes.len() + read > stdout_cap {
+                    // Nothing more is kept; reading on keeps the program from blocking until
+                    // it is ended.
+                    over.store(true, Ordering::Relaxed);
+                    bytes = Vec::new();
+                } else {
+                    bytes.extend_from_slice(&chunk[..read]);
+                }
+            }
         }
         bytes
     });
@@ -78,17 +119,23 @@ pub fn run(
     let stderr = std::thread::spawn(move || {
         let mut bytes = Vec::new();
         if let Some(err) = err.as_mut() {
-            let _ = err.read_to_end(&mut bytes);
+            let mut chunk = [0; 1024];
+            while let Ok(read @ 1..) = err.read(&mut chunk) {
+                let room = STDERR_KEPT.saturating_sub(bytes.len());
+                bytes.extend_from_slice(&chunk[..read.min(room)]);
+            }
         }
-        bytes.truncate(STDERR_KEPT);
         String::from_utf8_lossy(&bytes).into_owned()
     });
 
     let until = Instant::now() + timeout;
     let status = loop {
+        let overflowed = too_much.load(Ordering::Relaxed);
         match child.try_wait() {
-            Ok(Some(status)) => break status,
-            Ok(None) if Instant::now() < until => std::thread::sleep(Duration::from_millis(20)),
+            Ok(Some(status)) if !overflowed => break status,
+            Ok(None) if !overflowed && Instant::now() < until => {
+                std::thread::sleep(Duration::from_millis(20))
+            }
             _ => {
                 match &job {
                     Some(job) if in_job => job.end(),
@@ -99,15 +146,23 @@ pub fn run(
                 let _ = child.wait();
                 // Without the job, something the program started may still hold the pipes, so
                 // the reading threads are left to finish on their own.
-                return Err(RunError::TimedOut);
+                return Err(if overflowed {
+                    RunError::TooMuchOutput
+                } else {
+                    RunError::TimedOut
+                });
             }
         }
     };
     // Anything the program left running is ended, so the pipes close.
     drop(job);
+    let stdout = stdout.join().unwrap_or_default();
+    if too_much.load(Ordering::Relaxed) {
+        return Err(RunError::TooMuchOutput);
+    }
     Ok(Output {
         code: status.code(),
-        stdout: stdout.join().unwrap_or_default(),
+        stdout,
         stderr: stderr.join().unwrap_or_default(),
     })
 }
@@ -180,6 +235,33 @@ mod tests {
         assert_eq!(
             run(&script, &[], b"", &temp.0, &[], Duration::from_millis(500)),
             Err(RunError::TimedOut)
+        );
+        assert!(
+            started.elapsed() < Duration::from_secs(5),
+            "{:?}",
+            started.elapsed()
+        );
+    }
+
+    #[test]
+    fn output_past_the_cap_ends_the_run() {
+        let temp = Temp::new("run-loud");
+        let script = temp.script(
+            "loud.cmd",
+            &["@for /l %%i in (1,1,2000) do @echo 0123456789012345678901234567890123456789"],
+        );
+        let started = Instant::now();
+        assert_eq!(
+            run_capped(
+                &script,
+                &[],
+                b"",
+                &temp.0,
+                &[],
+                Duration::from_secs(10),
+                1024
+            ),
+            Err(RunError::TooMuchOutput)
         );
         assert!(
             started.elapsed() < Duration::from_secs(5),

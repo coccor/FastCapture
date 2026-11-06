@@ -389,6 +389,7 @@ pub(crate) mod tests {
 
     #[test]
     fn text_and_images_read_back_from_the_clipboard() {
+        let _ui = crate::ui::test_support::lock();
         let _backup = Backup::take();
         super::set_text(std::ptr::null_mut(), "zăpadă 🦀").unwrap();
         assert!(super::has_text());
@@ -414,6 +415,7 @@ pub(crate) mod tests {
 
     #[test]
     fn html_format_reads_its_fragment_and_source() {
+        let _ui = crate::ui::test_support::lock();
         let bytes = super::html_bytes("<b>zăpadă</b> & more", Some("https://example.com/a"));
         assert_eq!(
             super::parse_html(&bytes),
@@ -437,6 +439,7 @@ pub(crate) mod tests {
 
     #[test]
     fn html_reads_back_from_the_clipboard() {
+        let _ui = crate::ui::test_support::lock();
         let _backup = Backup::take();
         super::set_html(
             std::ptr::null_mut(),

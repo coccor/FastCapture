@@ -38,6 +38,9 @@ pub fn file_note(
         Target::Folder(folder) => folder.clone(),
         Target::Topic(topic) => topic.parent().unwrap_or(Path::new("")).to_path_buf(),
     };
+    if !home::within(&folder) {
+        return Err(home::outside_message(&folder));
+    }
     let exists = |path: &Path| root.join(path).exists();
     for _ in 0..TRIES {
         let (text, stamp) = read(root, note)?;
@@ -79,7 +82,7 @@ pub fn file_note(
                 && Stamp::of(&root.join(&topic.path)) == Some(topic.after)
                 && let Err(error) = undo::overwrite(root, &topic.path, &topic.before)
             {
-                crate::log::line(&format!("file: {}: {error}", topic.path.display()));
+                crate::log::line(&format!("file: a topic note was not put back: {error}"));
             }
         };
 
@@ -220,6 +223,21 @@ mod tests {
 
     fn stem(path: &Path) -> String {
         path.file_stem().unwrap().to_string_lossy().into_owned()
+    }
+
+    #[test]
+    fn a_home_outside_the_notebook_leaves_the_note_where_it_is() {
+        let scratch = notebook("file-outside");
+        let error = file_note(
+            &scratch.0,
+            Path::new(r"inbox\Lag spikes.md"),
+            &Target::Folder(PathBuf::from(r"..\Desktop")),
+            "2026-10-19",
+            &stem,
+        )
+        .unwrap_err();
+        assert!(error.contains("outside the notebook"), "{error}");
+        assert!(scratch.0.join(r"inbox\Lag spikes.md").exists());
     }
 
     #[test]

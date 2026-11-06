@@ -9,7 +9,8 @@ use crate::add::{self, Context};
 use crate::capture::Capture;
 use crate::capture::file::FileError;
 use crate::capture::submit::submit;
-use crate::config::settings::{Settings, SettingsFile};
+use crate::capture::sweep::{self, Swept};
+use crate::config::settings::{CloudBackend, Mode, Settings, SettingsFile};
 use crate::index::service::Indexes;
 use crate::ipc::pipe;
 use crate::platform::tray::{self, Tray};
@@ -18,6 +19,7 @@ use crate::platform::{hotkey, instance, shell, startup};
 use crate::queue::{State, Store};
 use crate::runner::from_settings::FromSettings;
 use crate::runner::{Status, Waker, Worker};
+use crate::ui::diagnostics::{Facts, LOG_LINES, report};
 use crate::ui::settings as settings_window;
 use crate::ui::{capture_box, review};
 use std::cell::RefCell;
@@ -28,9 +30,11 @@ use windows_sys::Win32::Foundation::{HWND, LPARAM, LRESULT, POINT, WPARAM};
 use windows_sys::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows_sys::Win32::UI::WindowsAndMessaging::{
     CreateWindowExW, DefWindowProcW, DestroyWindow, DispatchMessageW, GetMessageW, MSG,
-    PostMessageW, PostQuitMessage, RegisterClassExW, RegisterWindowMessageW, SendMessageW,
-    TranslateMessage, WM_APP, WM_DESTROY, WM_DWMCOLORIZATIONCOLORCHANGED, WM_HOTKEY,
-    WM_SETTINGCHANGE, WM_THEMECHANGED, WNDCLASSEXW, WS_EX_TOOLWINDOW, WS_OVERLAPPED,
+    PBT_APMRESUMEAUTOMATIC, PostMessageW, PostQuitMessage, RegisterClassExW,
+    RegisterWindowMessageW, SendMessageW, TranslateMessage, WM_APP, WM_DESTROY,
+    WM_DWMCOLORIZATIONCOLORCHANGED, WM_ENDSESSION, WM_HOTKEY, WM_POWERBROADCAST,
+    WM_QUERYENDSESSION, WM_SETTINGCHANGE, WM_THEMECHANGED, WNDCLASSEXW, WS_EX_TOOLWINDOW,
+    WS_OVERLAPPED,
 };
 
 const WM_APP_TRAY: u32 = WM_APP + 1;
@@ -50,6 +54,7 @@ const MENU_FOLDER: u32 = 5;
 const MENU_QUIT: u32 = 6;
 const MENU_PAUSE: u32 = 7;
 const MENU_SETTINGS_FILE: u32 = 8;
+const MENU_DIAGNOSTICS: u32 = 9;
 
 struct App {
     window: HWND,
@@ -112,10 +117,6 @@ pub fn run() -> i32 {
         crate::log::line("tray: already running in this session");
         return 0;
     };
-    crate::log::line(&format!(
-        "FastCapture {} started",
-        env!("CARGO_PKG_VERSION")
-    ));
     let Some(window) = create_window() else {
         crate::log::line("tray: could not create the window");
         return 1;
@@ -136,6 +137,25 @@ pub fn run() -> i32 {
     let _ = INDEXES.set(Indexes::new(crate::paths::local()));
     APP.with(|slot| *slot.borrow_mut() = Some(app));
     with_app(App::apply_settings);
+    with_app(|app| {
+        let mode = match app.settings.mode {
+            Some(Mode::Local) => "local",
+            Some(Mode::Cloud) => "cloud",
+            None => "none",
+        };
+        let build = crate::platform::system::windows_build()
+            .map_or_else(|| "?".to_owned(), |build| build.to_string());
+        let notebook = app
+            .notebook
+            .as_deref()
+            .map_or("missing", crate::platform::system::notebook_kind);
+        crate::log::line(&format!(
+            "FastCapture {} started: Windows {build} {}, mode {mode}, backend {}, notebook {notebook}",
+            env!("CARGO_PKG_VERSION"),
+            std::env::consts::ARCH,
+            app.settings.backend.key(),
+        ));
+    });
     start_worker(window);
     // Until a model is chosen, captures are kept but no notes are written: say so once.
     with_app(|app| {
@@ -231,7 +251,7 @@ fn start_pipe(window: HWND, stop: Arc<AtomicBool>) {
     });
 }
 
-/// Jobs left working by a crash are queued again, then the worker starts on the queue.
+/// Jobs left working by the last run are queued again, then the worker starts on the queue.
 fn start_worker(window: HWND) {
     let Some((queue, settings)) =
         with_app(|app| (app.context.queue.clone(), app.context.settings.clone()))
@@ -241,9 +261,36 @@ fn start_worker(window: HWND) {
     let Some(queue) = queue else {
         return;
     };
-    let recovered = Store::new(queue.clone()).recover();
-    if recovered > 0 {
-        crate::log::line(&format!("queue: {recovered} interrupted jobs queued again"));
+    // Job files a crash left half-saved are put back before the recovery reads the queue.
+    let mut own = vec![(queue.clone(), false)];
+    if let Some(local) = crate::paths::local() {
+        own.push((local.join("index"), false));
+    }
+    let swept = sweep::sweep(&own);
+    if swept.restored > 0 || swept.deleted > 0 {
+        crate::log::line(&format!(
+            "sweep: {} restored, {} removed",
+            swept.restored, swept.deleted
+        ));
+    }
+    // Whether the last run left its marker is read before this run writes its own.
+    let store = Store::new(queue.clone());
+    let unclean = store.was_running();
+    let recovered = store.recover(unclean);
+    if let Err(error) = store.mark_running() {
+        crate::log::line(&format!("queue: {error}"));
+    }
+    if recovered.queued > 0 {
+        crate::log::line(&format!(
+            "queue: {} interrupted jobs queued again",
+            recovered.queued
+        ));
+    }
+    if recovered.failed > 0 {
+        crate::log::line(&format!(
+            "queue: {} jobs failed after two interruptions",
+            recovered.failed
+        ));
     }
     let window = SendHwnd::new(window);
     let worker = Worker::start(
@@ -257,6 +304,13 @@ fn start_worker(window: HWND) {
     );
     let _ = WAKER.set(worker.waker());
     with_app(|app| app.worker = Some(worker));
+}
+
+/// Removes the queue's `.running` marker, so the next start knows this run exited cleanly.
+fn clear_running_marker() {
+    if let Some(Some(queue)) = with_app(|app| app.context.queue.clone()) {
+        Store::new(queue).clear_running();
+    }
 }
 
 fn start_settings_watch(window: HWND) {
@@ -275,27 +329,57 @@ fn start_settings_watch(window: HWND) {
     }
 }
 
-/// After a restart: raw sources with no job (written while the tray app was closed) get one.
+/// The notebook in use, then the other notebooks FastCapture knows, each listed once (paths
+/// compare without regard to case) and only if the folder exists.
+fn known_notebooks(current: Option<&Path>, recent: &[PathBuf]) -> Vec<PathBuf> {
+    let mut seen = std::collections::HashSet::new();
+    current
+        .into_iter()
+        .chain(recent.iter().map(PathBuf::as_path))
+        .filter(|path| path.is_dir() && seen.insert(path.to_string_lossy().to_lowercase()))
+        .map(Path::to_path_buf)
+        .collect()
+}
+
+/// After a restart: temps a crash left half-saved are put back or cleared, then raw sources with
+/// no job (written while the tray app was closed, or just put back) get one. Every known
+/// notebook is covered, not only the current one.
 fn start_orphan_scan(window: HWND) {
     let Some(queue) = with_app(|app| app.context.queue.clone()).flatten() else {
         return;
     };
-    let notebook = with_app(|app| app.notebook.clone()).flatten();
+    let notebooks =
+        with_app(|app| known_notebooks(app.notebook.as_deref(), &app.settings.recent_notebooks))
+            .unwrap_or_default();
     let window = SendHwnd::new(window);
     std::thread::spawn(move || {
-        let added = notebook
-            .map(|root| {
-                Store::new(queue)
-                    .enqueue_orphans(&crate::notebook::Conventions::load(&root))
-                    .len()
-            })
-            .unwrap_or(0);
-        if added > 0 {
-            crate::log::line(&format!("queue: {added} raw sources without a job"));
+        if scan_notebooks(&queue, &notebooks) > 0 {
             wake_worker();
         }
         unsafe { PostMessageW(window.get(), WM_APP_QUEUE, 0, 0) };
     });
+}
+
+/// Puts back or clears the crash leftovers in each notebook, then gives a job to every raw source in a notebook that has none. Returns how many jobs it added.
+fn scan_notebooks(queue: &Path, notebooks: &[PathBuf]) -> usize {
+    let store = Store::new(queue.to_path_buf());
+    let mut swept = Swept::default();
+    let mut added = 0;
+    for root in notebooks {
+        let conventions = crate::notebook::Conventions::load(root);
+        swept += sweep::sweep_notebook(&conventions);
+        added += store.enqueue_orphans(&conventions).len();
+    }
+    if swept.restored > 0 || swept.deleted > 0 {
+        crate::log::line(&format!(
+            "sweep: {} restored, {} removed",
+            swept.restored, swept.deleted
+        ));
+    }
+    if added > 0 {
+        crate::log::line(&format!("queue: {added} raw sources without a job"));
+    }
+    added
 }
 
 impl App {
@@ -320,6 +404,13 @@ impl App {
             .notebook
             .clone()
             .or_else(|| self.context.notebook());
+        let notebooks: Vec<PathBuf> = self
+            .notebook
+            .iter()
+            .chain(&settings.recent_notebooks)
+            .cloned()
+            .collect();
+        crate::log::set_notebooks(&notebooks);
         if let Some(notebook) = &self.notebook {
             index_notebook(notebook);
         }
@@ -403,6 +494,86 @@ impl App {
 
     fn status(&self) -> Status {
         self.worker.as_ref().map_or(Status::Idle, Worker::status)
+    }
+
+    /// What a bug report needs to know about this run.
+    fn diagnostic_facts(&self) -> Facts {
+        let settings = &self.settings;
+        let (mode, backend, model) = match settings.mode {
+            Some(Mode::Local) => (
+                "local",
+                settings.backend.key(),
+                settings.local_model.clone().unwrap_or_default(),
+            ),
+            Some(Mode::Cloud) => (
+                "cloud",
+                settings.backend.key(),
+                match settings.backend {
+                    CloudBackend::Claude => settings.claude_model.clone(),
+                    CloudBackend::OpenAi => settings.openai_model.clone().unwrap_or_default(),
+                    CloudBackend::ClaudeCode => settings.claude_code_model.clone(),
+                    CloudBackend::Copilot => settings.copilot_model.clone(),
+                },
+            ),
+            None => ("none", settings.backend.key(), String::new()),
+        };
+        let mut queue = [0; 4];
+        if let Some(dir) = &self.context.queue {
+            for job in Store::new(dir.clone()).list() {
+                let slot = match job.state {
+                    State::Queued => 0,
+                    State::Working => 1,
+                    State::Failed => 2,
+                    State::Done => 3,
+                    State::Discarded => continue,
+                };
+                queue[slot] += 1;
+            }
+        }
+        let notes = self
+            .notebook
+            .as_deref()
+            .and_then(|root| INDEXES.get()?.notes_if_open(root));
+        let paused = match self.status() {
+            Status::Paused(None) => Some("by you".to_owned()),
+            Status::Paused(Some(reason)) => Some(crate::log::scrubbed(&reason)),
+            _ => None,
+        };
+        Facts {
+            version: env!("CARGO_PKG_VERSION"),
+            build: crate::platform::system::windows_build(),
+            arch: std::env::consts::ARCH,
+            mode,
+            backend,
+            model,
+            notebook_kind: self
+                .notebook
+                .as_deref()
+                .map_or("missing", crate::platform::system::notebook_kind),
+            notes,
+            queue,
+            paused,
+        }
+    }
+
+    /// Puts the diagnostics on the clipboard and says so.
+    fn copy_diagnostics(&self) {
+        let text = report(&self.diagnostic_facts(), &crate::log::tail(LOG_LINES));
+        match crate::platform::clipboard::set_text(self.window, &text) {
+            Ok(()) => self.tray.notify(
+                "Diagnostics copied",
+                "Paste them into your bug report.",
+                false,
+            ),
+            Err(error) => {
+                crate::log::line(&format!("diagnostics: could not copy: {error}"));
+                self.tray.notify(
+                    "Could not copy the diagnostics",
+                    "The clipboard is in use. Try again.",
+                    true,
+                );
+            }
+        }
     }
 
     fn refresh_tip(&mut self) {
@@ -729,6 +900,12 @@ fn show_menu(window: HWND, at: POINT) {
                 enabled: true,
                 checked: false,
             },
+            Entry::Item {
+                id: MENU_DIAGNOSTICS,
+                text: "Copy &diagnostics",
+                enabled: true,
+                checked: false,
+            },
             Entry::Separator,
             Entry::Item {
                 id: MENU_QUIT,
@@ -759,10 +936,20 @@ fn show_menu(window: HWND, at: POINT) {
         MENU_FOLDER => {
             with_app(|app| app.open_folder());
         }
+        MENU_DIAGNOSTICS => {
+            with_app(|app| app.copy_diagnostics());
+        }
         MENU_QUIT => unsafe {
             DestroyWindow(window);
         },
         _ => {}
+    }
+}
+
+/// Saves the open capture box's draft, if there is a box.
+fn save_open_draft() {
+    if let Some(open) = capture_box::find() {
+        unsafe { SendMessageW(open, capture_box::WM_SAVE_DRAFT, 0, 0) };
     }
 }
 
@@ -830,7 +1017,31 @@ extern "system" fn window_proc(
             }
             unsafe { DefWindowProcW(window, message, wparam, lparam) }
         }
+        // Windows is signing out or restarting: what the capture box holds is kept as its draft.
+        WM_QUERYENDSESSION => {
+            save_open_draft();
+            1
+        }
+        // The PC woke from sleep: jobs may be due, and notebooks may have changed while no
+        // watcher could see.
+        WM_POWERBROADCAST if wparam == PBT_APMRESUMEAUTOMATIC as usize => {
+            wake_worker();
+            if let Some(indexes) = INDEXES.get() {
+                indexes.refresh_all();
+            }
+            1
+        }
+        WM_ENDSESSION => {
+            if wparam != 0 {
+                save_open_draft();
+                // Windows may end the process without a WM_DESTROY: this is a clean exit too.
+                clear_running_marker();
+            }
+            0
+        }
         WM_DESTROY => {
+            // A quit is a clean exit: a job mid-call when it happened isn't counted as interrupted.
+            clear_running_marker();
             // Changed indexes are written to their caches.
             if let Some(indexes) = INDEXES.get() {
                 indexes.stop();
@@ -858,7 +1069,24 @@ mod tests {
     use windows_sys::Win32::UI::WindowsAndMessaging::IsWindow;
 
     #[test]
+    fn waking_from_sleep_is_answered_without_a_panic() {
+        let _ui = crate::ui::test_support::lock();
+        let window = create_window().unwrap();
+        let answer = unsafe {
+            SendMessageW(
+                window,
+                WM_POWERBROADCAST,
+                PBT_APMRESUMEAUTOMATIC as usize,
+                0,
+            )
+        };
+        assert_eq!(answer, 1);
+        unsafe { DestroyWindow(window) };
+    }
+
+    #[test]
     fn the_box_files_a_pasted_image_and_text_into_the_notebook_and_queue() {
+        let _ui = crate::ui::test_support::lock();
         let temp = std::env::temp_dir().join(format!("fastcapture-app-box-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&temp);
         let notebook = temp.join("Notes");
@@ -911,6 +1139,40 @@ mod tests {
         let jobs = Store::new(queue).list();
         assert_eq!(jobs.len(), 1);
         assert_eq!(jobs[0].capture_id, raws[0].capture_id);
+        let _ = std::fs::remove_dir_all(&temp);
+    }
+
+    #[test]
+    fn the_scan_gives_a_job_to_a_source_in_any_known_notebook() {
+        let _ui = crate::ui::test_support::lock();
+        let temp =
+            std::env::temp_dir().join(format!("fastcapture-app-scan-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&temp);
+        let first = temp.join("First");
+        let second = temp.join("Second");
+        let queue = temp.join("queue");
+        std::fs::create_dir_all(&first).unwrap();
+        std::fs::create_dir_all(&second).unwrap();
+
+        let raw = second.join("raw");
+        std::fs::create_dir_all(&raw).unwrap();
+        std::fs::write(
+            raw.join("2026-11-05 0900 orphan.md"),
+            "---
+type: raw
+captured: 2026-11-05T09:00
+capture_id: orphan1
+---
+
+body
+",
+        )
+        .unwrap();
+
+        let notebooks = known_notebooks(Some(&first), &[second.clone(), first.clone()]);
+        assert_eq!(notebooks, vec![first, second.clone()], "listed once each");
+        assert_eq!(scan_notebooks(&queue, &notebooks), 1);
+        assert_eq!(Store::new(queue).list().len(), 1);
         let _ = std::fs::remove_dir_all(&temp);
     }
 }

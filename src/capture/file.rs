@@ -143,8 +143,8 @@ pub fn remove_attachments(root: &Path, attachments: &[StoredAttachment]) {
 /// file: a pasted image as `image_stem.png`, a file as a copy under its own cleaned name, each
 /// with ` 2`, ` 3`… when the name is taken.
 pub fn store(directory: &Path, source: &Attachment, image_stem: &str) -> Result<String, String> {
-    let (stem, extension, bytes) = match source {
-        Attachment::Png(bytes) => (image_stem.to_owned(), "png".to_owned(), bytes.clone()),
+    let (stem, extension) = match source {
+        Attachment::Png(_) => (image_stem.to_owned(), "png".to_owned()),
         Attachment::File(path) => {
             let name = path.file_name().unwrap_or_default().to_string_lossy();
             let (stem, extension) = match name.rsplit_once('.') {
@@ -153,10 +153,7 @@ pub fn store(directory: &Path, source: &Attachment, image_stem: &str) -> Result<
                 }
                 _ => (name.clone().into_owned(), String::new()),
             };
-            let bytes = std::fs::read(path).map_err(|error| {
-                format!("FastCapture could not read {}: {error}", path.display())
-            })?;
-            (title::sanitize_stem(&stem), extension, bytes)
+            (title::sanitize_stem(&stem), extension)
         }
     };
     std::fs::create_dir_all(directory).map_err(|error| {
@@ -167,7 +164,18 @@ pub fn store(directory: &Path, source: &Attachment, image_stem: &str) -> Result<
     })?;
     loop {
         let name = title::free_name(&stem, &extension, |name| directory.join(name).exists());
-        match saver::save_atomic_new(&directory.join(&name), &bytes) {
+        let target = directory.join(&name);
+        let saved = match source {
+            Attachment::Png(bytes) => saver::save_atomic_new(&target, bytes),
+            Attachment::File(path) => {
+                // Opened on each try, so a name that was taken meanwhile restarts from the first byte.
+                let mut file = std::fs::File::open(path).map_err(|error| {
+                    format!("FastCapture could not read {}: {error}", path.display())
+                })?;
+                saver::save_atomic_new_from(&target, &mut file)
+            }
+        };
+        match saved {
             Ok(()) => return Ok(name),
             Err(error) if saver::is_already_exists(&error) => {}
             Err(error) => return Err(format!("FastCapture could not save {name}: {error}")),
@@ -297,6 +305,51 @@ mod tests {
              ![](../attachments/2026-10-19%201030%20lag%20spikes%20during%20ledger%20batch.png)\n\
              [ledger.log](../attachments/ledger.log)\n"
         ));
+    }
+
+    #[test]
+    fn a_capture_failing_at_any_save_step_leaves_all_of_it_or_none() {
+        let notebook = TempNotebook::new("fail-steps");
+        let first = notebook.0.join("first.log");
+        let second = notebook.0.join("second.log");
+        fs::write(&first, b"one").unwrap();
+        fs::write(&second, b"two").unwrap();
+        let capture = Capture {
+            text: "half written?".to_owned(),
+            attachments: vec![Attachment::File(first), Attachment::File(second)],
+            source_window: None,
+            source_url: None,
+        };
+        let conventions = notebook.conventions();
+        let (mut failed, mut succeeded) = (0, 0);
+        for steps in 0..12 {
+            saver::fail_after(steps);
+            let filed = file_capture(&request(&conventions, &capture));
+            saver::fail_after(u32::MAX);
+            match filed {
+                Ok(filed) => {
+                    succeeded += 1;
+                    assert!(notebook.0.join(&filed.raw).is_file(), "steps {steps}");
+                    assert_eq!(filed.attachments.len(), 2, "steps {steps}");
+                    for attachment in &filed.attachments {
+                        assert!(notebook.0.join(&attachment.path).is_file(), "steps {steps}");
+                    }
+                }
+                Err(_) => {
+                    failed += 1;
+                    assert_eq!(notebook.files("raw"), Vec::<String>::new(), "steps {steps}");
+                    assert_eq!(
+                        notebook.files("attachments"),
+                        Vec::<String>::new(),
+                        "steps {steps}"
+                    );
+                }
+            }
+            let _ = fs::remove_dir_all(notebook.0.join("raw"));
+            let _ = fs::remove_dir_all(notebook.0.join("attachments"));
+        }
+        assert_eq!(failed, 9, "three files, three steps each");
+        assert_eq!(succeeded, 3);
     }
 
     #[test]

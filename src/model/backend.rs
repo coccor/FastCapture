@@ -56,6 +56,9 @@ pub enum BackendError {
         after: Option<Duration>,
         reason: String,
     },
+    /// The model didn't answer in time. Tried again like `Retry`, but the runner counts these
+    /// and fails the job when they keep happening.
+    TimedOut(String),
     /// Stop the whole queue until the user fixes something (a refused key, billing).
     Pause(String),
     /// Stop the whole queue until `until` (milliseconds since 1970), then carry on: a plan's
@@ -71,6 +74,7 @@ impl std::fmt::Display for BackendError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::Retry { reason, .. }
+            | Self::TimedOut(reason)
             | Self::Pause(reason)
             | Self::PauseUntil { reason, .. }
             | Self::Fail(reason) => f.write_str(reason),
@@ -95,13 +99,17 @@ pub trait Backend: Send {
     }
 }
 
-/// A transport failure as a backend error: offline and timeouts retry, the rest fail.
+/// A transport failure as a backend error: offline retries, a timeout is counted by the runner,
+/// the rest fail.
 pub fn from_http(error: HttpError, service: &str) -> BackendError {
     match error {
         HttpError::Transient(reason) => BackendError::Retry {
             after: None,
             reason: format!("{service} can't be reached: {reason}"),
         },
+        HttpError::TimedOut(reason) => {
+            BackendError::TimedOut(format!("{service} didn't answer in time: {reason}."))
+        }
         HttpError::Permanent(reason) => BackendError::Fail(format!("{service}: {reason}")),
     }
 }
@@ -229,6 +237,14 @@ mod tests {
         );
         assert_eq!(usage.total(), 25);
         assert_eq!(meter.take(), None, "taken");
+    }
+
+    #[test]
+    fn a_timeout_is_its_own_error() {
+        assert!(matches!(
+            from_http(HttpError::TimedOut("x".into()), "Claude"),
+            BackendError::TimedOut(_)
+        ));
     }
 
     #[test]

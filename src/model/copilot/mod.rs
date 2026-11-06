@@ -106,10 +106,9 @@ impl Copilot {
             let left = deadline.saturating_duration_since(Instant::now());
             if left.is_zero() {
                 let _ = server.call("session.abort", json!({"sessionId": session}), CALL_TIMEOUT);
-                return Err(BackendError::Retry {
-                    after: None,
-                    reason: format!("{SERVICE} didn't finish within 5 minutes."),
-                });
+                return Err(BackendError::TimedOut(format!(
+                    "{SERVICE} didn't finish within 5 minutes."
+                )));
             }
             match server.notification(left) {
                 Ok(notification) => {
@@ -356,7 +355,11 @@ impl Reply {
                 false
             }
             Some("session.warning") => {
-                crate::log::line(&format!("copilot: warning: {data}"));
+                // The service's text can echo the capture, so only its length is logged.
+                crate::log::line(&format!(
+                    "copilot: warning ({} characters)",
+                    data.to_string().chars().count()
+                ));
                 false
             }
             Some("session.error") => {
@@ -402,7 +405,11 @@ pub fn error_from(data: &Value, now: u64) -> BackendError {
     let kind = data["errorType"].as_str().unwrap_or("");
     let code = data["errorCode"].as_str().unwrap_or("");
     let paused = |what: &str| {
-        crate::log::line(&format!("copilot: limit: {data}"));
+        // The service's text can echo the capture, so only its length is logged.
+        crate::log::line(&format!(
+            "copilot: limit ({} characters)",
+            data.to_string().chars().count()
+        ));
         let until = now + LIMIT_WAIT.as_millis() as u64;
         BackendError::PauseUntil {
             until,
@@ -450,10 +457,7 @@ fn sentence(text: &str) -> String {
 
 fn from_start(error: StartError) -> BackendError {
     match error {
-        StartError::TimedOut => BackendError::Retry {
-            after: None,
-            reason: sentence(&error.to_string()),
-        },
+        StartError::TimedOut => BackendError::TimedOut(sentence(&error.to_string())),
         StartError::Protocol(_) => BackendError::Pause(format!(
             "{} Update FastCapture, or the Copilot CLI.",
             sentence(&error.to_string())
@@ -478,10 +482,9 @@ fn from_rpc(error: RpcError, server: &mut Server) -> BackendError {
                 ),
             }
         }
-        RpcError::TimedOut => BackendError::Retry {
-            after: None,
-            reason: "The Copilot CLI didn't answer in time.".to_owned(),
-        },
+        RpcError::TimedOut => {
+            BackendError::TimedOut("The Copilot CLI didn't answer in time.".to_owned())
+        }
         RpcError::Remote { message, .. } => BackendError::Fail(format!("{SERVICE}: {message}")),
     }
 }
@@ -590,6 +593,21 @@ mod tests {
                 home_folders: Vec::new(),
             },
         }
+    }
+
+    #[test]
+    fn a_limit_is_logged_by_length_not_by_what_the_service_said() {
+        let _ = crate::log::take_captured();
+        let data = json!({"errorType": "quota", "message": "over quota for: my secret plan"});
+        let length = data.to_string().chars().count();
+        assert!(matches!(
+            error_from(&data, NOW),
+            BackendError::PauseUntil { .. }
+        ));
+        assert_eq!(
+            crate::log::take_captured(),
+            [format!("copilot: limit ({length} characters)")]
+        );
     }
 
     /// `assistant.usage` as the screenshot check got it, cut down.

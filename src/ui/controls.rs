@@ -1118,6 +1118,7 @@ mod tests {
 
     #[test]
     fn buttons_are_bordered_and_the_default_one_is_the_accent() {
+        let _ui = crate::ui::test_support::lock();
         for (preference, palette) in [
             (ThemePreference::Light, LIGHT),
             (ThemePreference::Dark, DARK),
@@ -1142,6 +1143,7 @@ mod tests {
 
     #[test]
     fn a_check_box_is_a_toggle_and_stays_a_check_box() {
+        let _ui = crate::ui::test_support::lock();
         let parent = Parent::new(ThemePreference::Dark);
         let toggle = parent.child(
             "BUTTON",
@@ -1176,6 +1178,7 @@ mod tests {
 
     #[test]
     fn radio_buttons_are_segments_with_the_chosen_one_in_the_accent() {
+        let _ui = crate::ui::test_support::lock();
         let parent = Parent::new(ThemePreference::Light);
         let first = parent.child("BUTTON", "Local", BS_AUTORADIOBUTTON as u32, 120, 26);
         let last = parent.child("BUTTON", "Cloud", BS_AUTORADIOBUTTON as u32, 120, 26);
@@ -1205,6 +1208,7 @@ mod tests {
 
     #[test]
     fn a_combo_box_is_a_field_with_its_choice() {
+        let _ui = crate::ui::test_support::lock();
         let parent = Parent::new(ThemePreference::Dark);
         let combo = parent.child("COMBOBOX", "", CBS_DROPDOWNLIST as u32, 200, 200);
         let choice = wide("Claude API");
@@ -1230,6 +1234,7 @@ mod tests {
 
     #[test]
     fn fields_and_labels_take_the_theme_colors() {
+        let _ui = crate::ui::test_support::lock();
         let parent = Parent::new(ThemePreference::Dark);
         let edit = parent.child("EDIT", "text", 0, 200, 26);
         let label = parent.child("STATIC", "Notebook", 0, 100, 20);
@@ -1262,6 +1267,7 @@ mod tests {
 
     #[test]
     fn list_rows_and_the_header_are_painted() {
+        let _ui = crate::ui::test_support::lock();
         let parent = Parent::new(ThemePreference::Light);
         let list = parent.child("SysListView32", "", LVS_REPORT, 300, 120);
         let mut column: LVCOLUMNW = unsafe { std::mem::zeroed() };
@@ -1308,6 +1314,7 @@ mod tests {
 
     #[test]
     fn high_contrast_keeps_corners_square_and_windows_colors() {
+        let _ui = crate::ui::test_support::lock();
         let parent = Parent::new(ThemePreference::Dark);
         theme::set_system_for_test(System {
             dark: true,

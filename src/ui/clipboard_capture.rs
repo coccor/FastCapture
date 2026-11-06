@@ -47,6 +47,7 @@ mod tests {
 
     #[test]
     fn text_images_and_nothing() {
+        let _ui = crate::ui::test_support::lock();
         let _backup = Backup::take();
         clipboard::set_text(std::ptr::null_mut(), "a thought").unwrap();
         assert_eq!(
@@ -74,6 +75,7 @@ mod tests {
 
     #[test]
     fn rich_text_is_captured_as_markdown_with_its_page() {
+        let _ui = crate::ui::test_support::lock();
         let _backup = Backup::take();
         clipboard::set_html(
             std::ptr::null_mut(),

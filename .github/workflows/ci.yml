@@ -21,7 +21,36 @@ jobs:
       - name: Clippy (warnings denied)
         run: cargo clippy --locked --all-targets --all-features -- -D warnings
       - name: Unit and Windows integration tests (serial)
-        run: cargo test --locked -- --test-threads=1
+        shell: pwsh
+        run: |
+          $env:FASTCAPTURE_SKIPPED = "$env:RUNNER_TEMP\skipped.txt"
+          cargo test --locked
+          $code = $LASTEXITCODE
+          $count = if (Test-Path $env:FASTCAPTURE_SKIPPED) { (Get-Content $env:FASTCAPTURE_SKIPPED).Count } else { 0 }
+          "Tests skipped for lack of Windows' autocorrect list: $count" >> $env:GITHUB_STEP_SUMMARY
+          exit $code
+      - name: Release smoke test
+        run: |
+          cargo build --locked --release
+          cargo test --locked --release --test release_smoke -- --ignored --test-threads=1
+
+  windows-arm64:
+    runs-on: windows-11-arm
+    steps:
+      - uses: actions/checkout@v4
+      # The x64 runners come with Rust; the Arm one may not, so it is installed when missing.
+      - name: Install Rust if missing
+        shell: pwsh
+        run: |
+          if (-not (Get-Command cargo -ErrorAction SilentlyContinue)) {
+            $installer = Join-Path $env:RUNNER_TEMP "rustup-init.exe"
+            Invoke-WebRequest "https://static.rust-lang.org/rustup/dist/aarch64-pc-windows-msvc/rustup-init.exe" -OutFile $installer
+            & $installer -y --profile minimal --default-toolchain stable
+            if ($LASTEXITCODE) { throw "rustup-init failed" }
+            "$env:USERPROFILE\.cargo\bin" >> $env:GITHUB_PATH
+          }
+      - name: Unit and Windows integration tests
+        run: cargo test --locked
 
   package:
     needs: windows
@@ -48,11 +77,13 @@ jobs:
           New-Item -ItemType Directory -Force $stage | Out-Null
           Copy-Item "target/${{ matrix.target }}/release/fastcapture.exe", README.md, LICENSE $stage
           Compress-Archive -Path "$stage/*" -DestinationPath "dist/$name.zip" -Force
+          Compress-Archive -Path "target/${{ matrix.target }}/release/fastcapture.pdb" -DestinationPath "dist/$name.pdb.zip" -Force
           (Get-FileHash "dist/$name.zip" -Algorithm SHA256).Hash.ToLower() + "  $name.zip" | Set-Content "dist/$name.sha256"
       - uses: actions/upload-artifact@v4
         with:
           name: FastCapture-windows-${{ matrix.arch }}
           path: |
             dist/*.zip
+            dist/*.pdb.zip
             dist/*.sha256
           if-no-files-found: error

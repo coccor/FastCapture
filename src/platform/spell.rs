@@ -83,6 +83,29 @@ pub fn with_english<R>(f: impl FnOnce(&Speller) -> R) -> Option<R> {
     })
 }
 
+/// Reports a test that returned early because this Windows lacks what it needs. libtest hides a
+/// passing test's stderr, so the name is also appended to the file named by `FASTCAPTURE_SKIPPED`
+/// when that is set, which is what CI counts.
+#[cfg(test)]
+pub(crate) fn skipped(test: &str, why: &str) {
+    let file = std::env::var_os("FASTCAPTURE_SKIPPED").map(std::path::PathBuf::from);
+    record_skip(test, why, file.as_deref());
+}
+
+#[cfg(test)]
+fn record_skip(test: &str, why: &str, file: Option<&std::path::Path>) {
+    use std::io::Write;
+    eprintln!("skipped ({why}): {test}");
+    if let Some(file) = file
+        && let Ok(mut f) = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(file)
+    {
+        let _ = writeln!(f, "{test}");
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -90,13 +113,13 @@ mod tests {
     #[test]
     fn windows_autocorrects_teh_to_the() {
         let Some(fix) = with_english(|s| s.replacement("teh")) else {
-            eprintln!("skipped: no en-US spell checker");
+            skipped("windows_autocorrects_teh_to_the", "no en-US spell checker");
             return;
         };
         // Windows Server (CI's runners) has the checker but not its autocorrect list: nothing
         // is ever a sure fix there, and autocorrect does nothing.
         let Some(fix) = fix else {
-            eprintln!("skipped: this Windows has no autocorrect list");
+            skipped("windows_autocorrects_teh_to_the", "no autocorrect list");
             return;
         };
         assert_eq!(fix, "the");
@@ -107,10 +130,25 @@ mod tests {
         let Some((right, unsure)) =
             with_english(|s| (s.replacement("the"), s.replacement("qwzxv")))
         else {
-            eprintln!("skipped: no en-US spell checker");
+            skipped(
+                "correct_words_and_mere_misspellings_are_left_alone",
+                "no en-US spell checker",
+            );
             return;
         };
         assert_eq!(right, None);
         assert_eq!(unsure, None, "GET_SUGGESTIONS is not a sure fix");
+    }
+
+    #[test]
+    fn a_skip_is_appended_to_the_named_file() {
+        let file = std::env::temp_dir().join(format!("fc-skipped-{}.txt", std::process::id()));
+        let _ = std::fs::remove_file(&file);
+        record_skip("one", "why", Some(&file));
+        record_skip("two", "why", Some(&file));
+        assert_eq!(std::fs::read_to_string(&file).unwrap(), "one\ntwo\n");
+        let _ = std::fs::remove_file(&file);
+        record_skip("three", "why", None);
+        assert!(!file.exists());
     }
 }

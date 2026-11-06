@@ -20,6 +20,9 @@ pub enum Launch {
     Settings,
     Version,
     Help,
+    /// `extract <file>`: says what a capture would read from the file. Not in the usage; the
+    /// release smoke test runs it.
+    Extract(PathBuf),
 }
 
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
@@ -71,6 +74,10 @@ pub fn parse(args: &[OsString], cwd: &Path) -> Result<Launch, String> {
     };
     match text(first)?.as_str() {
         "add" => parse_add(rest, cwd).map(Launch::Add),
+        "extract" => match rest {
+            [file] => Ok(Launch::Extract(cwd.join(file))),
+            _ => Err("extract takes one file.".to_owned()),
+        },
         "--settings" => only(Launch::Settings),
         "--version" | "-V" => only(Launch::Version),
         "--help" | "-h" | "/?" => only(Launch::Help),
@@ -247,5 +254,16 @@ mod tests {
         );
         let long = "x".repeat(MAX_TEXT_BYTES + 1);
         assert_eq!(error(&["add", &long]), too_long());
+    }
+
+    #[test]
+    fn extract_takes_one_file_and_is_not_in_the_usage() {
+        assert_eq!(
+            parse(&args(&["extract", "a.pdf"]), &cwd()),
+            Ok(Launch::Extract(r"C:\work\a.pdf".into()))
+        );
+        assert!(parse(&args(&["extract"]), &cwd()).is_err());
+        assert!(parse(&args(&["extract", "a.pdf", "b.pdf"]), &cwd()).is_err());
+        assert!(!USAGE.contains("extract"));
     }
 }

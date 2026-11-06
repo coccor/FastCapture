@@ -40,34 +40,35 @@ fn fetch_pages_with(
             continue;
         }
         let page = match fetch(&url) {
-            Err(HttpError::Transient(reason)) if job.attempts < FETCH_TRIES => {
+            Err(HttpError::Transient(reason) | HttpError::TimedOut(reason))
+                if job.attempts < FETCH_TRIES =>
+            {
                 return Err(BackendError::Retry {
                     after: None,
                     reason: format!("The page at {url} couldn't be fetched yet: {reason}"),
                 });
             }
-            Err(HttpError::Transient(reason) | HttpError::Permanent(reason)) => {
-                Err(format!("failed ({reason})"))
-            }
+            Err(
+                HttpError::Transient(reason)
+                | HttpError::TimedOut(reason)
+                | HttpError::Permanent(reason),
+            ) => Err(format!("failed ({reason})")),
             Ok(Fetched::Status(status)) => Err(format!("failed ({status})")),
             Ok(Fetched::NotPage { content_type }) => Err(format!("not a page ({content_type})")),
             Ok(Fetched::Page {
                 url: page_url,
                 html,
-            }) => {
-                let page = page::extract(&html, &page_url);
-                if page.markdown.is_empty() {
-                    Err("no main text".to_owned())
-                } else {
-                    Ok(PageFacts {
-                        page_url: (page_url != url).then_some(page_url),
-                        title: page.title,
-                        site: page.site,
-                        published: page.published,
-                        markdown: page.markdown,
-                    })
-                }
-            }
+            }) => match crate::crash::guarded(|| page::extract(&html, &page_url)) {
+                Err(_) => Err("the page couldn't be read".to_owned()),
+                Ok(page) if page.markdown.is_empty() => Err("no main text".to_owned()),
+                Ok(page) => Ok(PageFacts {
+                    page_url: (page_url != url).then_some(page_url),
+                    title: page.title,
+                    site: page.site,
+                    published: page.published,
+                    markdown: page.markdown,
+                }),
+            },
         };
         if let Err(reason) = &page {
             crate::log::line(&format!("pages: {reason}"));
@@ -236,6 +237,7 @@ mod tests {
             headers: vec![("content-type".to_owned(), "text/html".to_owned())],
             body: ARTICLE.as_bytes().to_vec(),
             delay: std::time::Duration::ZERO,
+            drip: None,
         }]);
         let notebook = Notebook::new("real");
         let job = notebook.capture(&format!("{}/lag", server.url()));
